@@ -1,0 +1,18 @@
+Current State
+- Architecture assumes OpenAI GPT-4o handles clause extraction via [GREEN]/[AMBER]/[RED] markup before embeddings and reconciliation, and the cost model already budgets ~$7.50/month for 300 contracts (Documentation/1-ARCHITECTURE.md:46, Documentation/1-ARCHITECTURE.md:61, Documentation/README.md:82, Documentation/README.md:102).
+- Database design supports OpenAI output now: clause_boundaries / clause_match_results store extraction + parsing quality, and pgmq with triggers enqueues uploads for async processing (Documentation/2-DATABASE-SCHEMA.md:51, Documentation/2-DATABASE-SCHEMA.md:66, supabase/migrations/003_enable_pgmq_and_pg_cron.sql:35, supabase/migrations/005_add_rag_parsing_risk.sql:5).
+- Frontend screens are mock-driven; deals/new writes to localStorage and reconciliation renders a baked-in contract string, so no OpenAI output is consumed yet (app/deals/new/page.tsx:35, app/deals/new/page.tsx:130, app/reconciliation/page.tsx:139, app/reconciliation/page.tsx:211, app/reconciliation/complete/page.tsx:50).
+- Repo deps don’t include openai/pdf/js extraction libraries from the implementation plan, so nothing can call the API today (package.json:1, plan.md:32).
+
+Gaps & Risks
+- Edge Functions for extract-clauses, embedding generation, matching, and PDF export exist only in plan.md; no backend worker consumes pgmq and calls OpenAI yet (plan.md:55, supabase/migrations/003_enable_pgmq_and_pg_cron.sql:35).
+- PII detection/redaction is currently theoretical—the lib/ directory lacks the promised lib/pii modules, so sending raw contracts to OpenAI would violate the design (plan.md:226, lib/supabase/client.ts:1).
+- Generated Supabase types lag migrations: clause_boundaries lacks parsing_quality/parsing_issues etc., so new code relying on them will fail type-checks (types/database.ts:103, supabase/migrations/005_add_rag_parsing_risk.sql:16).
+- UI bypasses Supabase for uploads/status, so even with OpenAI extraction the user wouldn’t see results; we need real API routes that create document_repository rows and display processing states (app/deals/new/page.tsx:130, Documentation/3-IMPLEMENTATION-GUIDE.md:166).
+
+Recommendations
+1. Install openai/pdf.js-extract/mammoth/pdf-lib/fastest-levenshtein and plumb OPENAI_API_KEY into both Next.js API routes and Supabase Edge Functions (plan.md:32).
+2. Build the extract-clauses Edge Function per spec (download storage object, detect format, run unpdf/mammoth, call PII detect/redact helpers, hit GPT-4o, persist to clause_boundaries) (plan.md:55, plan.md:226).
+3. Implement generate-embeddings, match-and-reconcile, and generate-highlighted-pdf workers so pgmq jobs flow end-to-end once OpenAI extraction exists (plan.md:80, plan.md:98, plan.md:126).
+4. Regenerate Supabase types so TypeScript sees the new schema fields (Documentation/3-IMPLEMENTATION-GUIDE.md:100, types/database.ts:103).
+5. Replace mock/localStorage flows with Supabase-backed APIs (create document_repository rows on upload, poll clause_boundaries / clause_match_results for results) so OpenAI outputs surface in the UI (Documentation/3-IMPLEMENTATION-GUIDE.md:166, app/reconciliation/page.tsx:211).

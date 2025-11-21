@@ -1,0 +1,440 @@
+{
+  "config": {
+    "configFile": "/Users/work/Desktop/developer/ContractBuddy/playwright.config.ts",
+    "rootDir": "/Users/work/Desktop/developer/ContractBuddy/e2e",
+    "forbidOnly": false,
+    "fullyParallel": false,
+    "globalSetup": null,
+    "globalTeardown": null,
+    "globalTimeout": 0,
+    "grep": {},
+    "grepInvert": null,
+    "maxFailures": 0,
+    "metadata": {
+      "actualWorkers": 1
+    },
+    "preserveOutput": "always",
+    "reporter": [
+      [
+        "list",
+        null
+      ],
+      [
+        "html",
+        {
+          "outputFolder": "e2e/reports/html",
+          "open": "never"
+        }
+      ],
+      [
+        "json",
+        {
+          "outputFile": "e2e/reports/test-results.json"
+        }
+      ]
+    ],
+    "reportSlowTests": {
+      "max": 5,
+      "threshold": 300000
+    },
+    "quiet": false,
+    "projects": [
+      {
+        "outputDir": "/Users/work/Desktop/developer/ContractBuddy/e2e/artifacts",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "id": "chromium",
+        "name": "chromium",
+        "testDir": "/Users/work/Desktop/developer/ContractBuddy/e2e",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 120000
+      }
+    ],
+    "shard": null,
+    "updateSnapshots": "missing",
+    "updateSourceMethod": "patch",
+    "version": "1.56.1",
+    "workers": 1,
+    "webServer": null
+  },
+  "suites": [
+    {
+      "title": "upload-and-reconcile.spec.ts",
+      "file": "upload-and-reconcile.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [],
+      "suites": [
+        {
+          "title": "Upload → Reconciliation Pipeline",
+          "file": "upload-and-reconcile.spec.ts",
+          "line": 14,
+          "column": 6,
+          "specs": [
+            {
+              "title": "C14.pdf - Contract Processing",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 120000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 27480,
+                      "errors": [],
+                      "stdout": [
+                        {
+                          "text": "═══════════════════════════════════════════\n"
+                        },
+                        {
+                          "text": "🚀 E2E REGRESSION TEST SUITE\n"
+                        },
+                        {
+                          "text": "📅 Started: 2025-11-18T11:20:03.429Z\n"
+                        },
+                        {
+                          "text": "═══════════════════════════════════════════\n\n"
+                        },
+                        {
+                          "text": "\n╔══════════════════════════════════════════╗\n"
+                        },
+                        {
+                          "text": "║         Testing: C14.pdf                  ║\n"
+                        },
+                        {
+                          "text": "╚══════════════════════════════════════════╝\n\n"
+                        },
+                        {
+                          "text": "🎬 Starting HAR recording: e2e/artifacts/har/C14.har\n"
+                        },
+                        {
+                          "text": "━━━ STEP 1: NAVIGATION ━━━\n"
+                        },
+                        {
+                          "text": "✅ Navigated to /deals/new\n"
+                        },
+                        {
+                          "text": "   📸 Screenshot saved: e2e/artifacts/screenshot-C14-deals-new-1763464808663.png\n"
+                        },
+                        {
+                          "text": "\n━━━ STEP 2: FILE UPLOAD ━━━\n"
+                        },
+                        {
+                          "text": "\n📤 Uploading contract: /Users/work/Downloads/C14.pdf\n"
+                        },
+                        {
+                          "text": "   File size: 209.98 KB\n"
+                        },
+                        {
+                          "text": "   ✅ File selected successfully (127ms)\n"
+                        },
+                        {
+                          "text": "\n━━━ STEP 3: FORM FILLING ━━━\n"
+                        },
+                        {
+                          "text": "\n📝 Filling deal form:\n"
+                        },
+                        {
+                          "text": "   Deal Name: C14 Test Contract\n"
+                        },
+                        {
+                          "text": "   Talent: Test Talent C14\n"
+                        },
+                        {
+                          "text": "   Brand: Test Brand C14\n"
+                        },
+                        {
+                          "text": "   Fee: 10000\n"
+                        },
+                        {
+                          "text": "   Adding 1 pre-agreed terms...\n"
+                        },
+                        {
+                          "text": "      + Filled term 1: Payment Terms\n"
+                        },
+                        {
+                          "text": "   ✅ Form filled successfully\n"
+                        },
+                        {
+                          "text": "   📸 Screenshot saved: e2e/artifacts/screenshot-C14-form-filled-1763464810139.png\n"
+                        },
+                        {
+                          "text": "\n━━━ STEP 4: CREATE & START RECONCILIATION ━━━\n"
+                        },
+                        {
+                          "text": "   ⏳ Waiting for API response...\n"
+                        },
+                        {
+                          "text": "   ✅ Deal created with ID: 9e100631-7435-40d3-bc20-19ae80ca2879\n"
+                        },
+                        {
+                          "text": "   API Status: 200\n"
+                        },
+                        {
+                          "text": "   ✅ Navigated to reconciliation page\n"
+                        },
+                        {
+                          "text": "   📸 Screenshot saved: e2e/artifacts/screenshot-C14-reconciliation-1763464816871.png\n"
+                        },
+                        {
+                          "text": "\n━━━ STEP 5: WAIT FOR BACKEND PROCESSING ━━━\n"
+                        },
+                        {
+                          "text": "\n⏳ Waiting for backend processing (dealId: 9e100631-7435-40d3-bc20-19ae80ca2879)...\n"
+                        },
+                        {
+                          "text": "   [1.9s] status=processing, clauses=0\n"
+                        },
+                        {
+                          "text": "   [5.5s] status=processing, clauses=1\n"
+                        },
+                        {
+                          "text": "   [9.0s] status=processing, clauses=1\n"
+                        },
+                        {
+                          "text": "   [12.6s] status=completed, clauses=1\n"
+                        },
+                        {
+                          "text": "\n╔══════════════════════════════════════════╗\n"
+                        },
+                        {
+                          "text": "║         C14.pdf TEST COMPLETE             ║\n"
+                        },
+                        {
+                          "text": "╠══════════════════════════════════════════╣\n"
+                        },
+                        {
+                          "text": "║ Status: PASSED                           ║\n"
+                        },
+                        {
+                          "text": "║ Clauses: 1                                ║\n"
+                        },
+                        {
+                          "text": "║ Doc Status: completed                     ║\n"
+                        },
+                        {
+                          "text": "║ Processing: 12.6s                         ║\n"
+                        },
+                        {
+                          "text": "╚══════════════════════════════════════════╝\n"
+                        }
+                      ],
+                      "stderr": [
+                        {
+                          "text": "   🟡 Console Warning: No clauses found in API response, using mock data\n"
+                        },
+                        {
+                          "text": "   🟡 Console Warning: No clauses found in API response, using mock data\n"
+                        }
+                      ],
+                      "retry": 0,
+                      "startTime": "2025-11-18T11:20:03.423Z",
+                      "annotations": [],
+                      "attachments": [
+                        {
+                          "name": "video",
+                          "contentType": "video/webm",
+                          "path": "/Users/work/Desktop/developer/ContractBuddy/e2e/artifacts/upload-and-reconcile-Uploa-b6399-4-pdf---Contract-Processing-chromium/video.webm"
+                        },
+                        {
+                          "name": "trace",
+                          "contentType": "application/zip",
+                          "path": "/Users/work/Desktop/developer/ContractBuddy/e2e/artifacts/upload-and-reconcile-Uploa-b6399-4-pdf---Contract-Processing-chromium/trace.zip"
+                        }
+                      ]
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "77305e19e1c5a8c1d54f-9f787d4d8d919d8e6be0",
+              "file": "upload-and-reconcile.spec.ts",
+              "line": 42,
+              "column": 7
+            },
+            {
+              "title": "C19.pdf - Contract Processing",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 120000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 5881,
+                      "errors": [],
+                      "stdout": [
+                        {
+                          "text": "\n╔══════════════════════════════════════════╗\n"
+                        },
+                        {
+                          "text": "║         Testing: C19.pdf                  ║\n"
+                        },
+                        {
+                          "text": "╚══════════════════════════════════════════╝\n\n"
+                        },
+                        {
+                          "text": "🎬 Starting HAR recording: e2e/artifacts/har/C19.har\n"
+                        },
+                        {
+                          "text": "━━━ STEP 1: NAVIGATION ━━━\n"
+                        },
+                        {
+                          "text": "✅ Navigated to /deals/new\n"
+                        },
+                        {
+                          "text": "   📸 Screenshot saved: e2e/artifacts/screenshot-C19-deals-new-1763464834430.png\n"
+                        },
+                        {
+                          "text": "\n━━━ STEP 2: FILE UPLOAD ━━━\n"
+                        },
+                        {
+                          "text": "\n📤 Uploading contract: /Users/work/Downloads/C19.pdf\n"
+                        },
+                        {
+                          "text": "   File size: 176.51 KB\n"
+                        },
+                        {
+                          "text": "   ✅ File selected successfully (126ms)\n"
+                        },
+                        {
+                          "text": "\n━━━ STEP 3: FORM FILLING ━━━\n"
+                        },
+                        {
+                          "text": "\n📝 Filling deal form:\n"
+                        },
+                        {
+                          "text": "   Deal Name: C19 Marketing Agreement\n"
+                        },
+                        {
+                          "text": "   Talent: Influencer C19\n"
+                        },
+                        {
+                          "text": "   Brand: Brand Partner C19\n"
+                        },
+                        {
+                          "text": "   Fee: 25000\n"
+                        },
+                        {
+                          "text": "   Adding 1 pre-agreed terms...\n"
+                        },
+                        {
+                          "text": "      + Filled term 1: Content Rights\n"
+                        },
+                        {
+                          "text": "   ✅ Form filled successfully\n"
+                        },
+                        {
+                          "text": "   📸 Screenshot saved: e2e/artifacts/screenshot-C19-form-filled-1763464835870.png\n"
+                        },
+                        {
+                          "text": "\n━━━ STEP 4: CREATE & START RECONCILIATION ━━━\n"
+                        },
+                        {
+                          "text": "   ⏳ Waiting for API response...\n"
+                        },
+                        {
+                          "text": "   📸 Screenshot saved: e2e/artifacts/screenshot-C19-error-1763464837446.png\n"
+                        },
+                        {
+                          "text": "\n═══════════════════════════════════════════\n"
+                        },
+                        {
+                          "text": "📊 GENERATING REPORTS...\n"
+                        },
+                        {
+                          "text": "═══════════════════════════════════════════\n"
+                        },
+                        {
+                          "text": "\n📄 Markdown report generated: e2e/reports/test-report-2025-11-18T11-20-37-977Z.md\n"
+                        },
+                        {
+                          "text": "📊 JSON report generated: e2e/reports/test-results.json\n"
+                        },
+                        {
+                          "text": "\n═══════════════════════════════════════════\n"
+                        },
+                        {
+                          "text": "✅ E2E REGRESSION TEST COMPLETE\n"
+                        },
+                        {
+                          "text": "📅 Finished: 2025-11-18T11:20:37.977Z\n"
+                        },
+                        {
+                          "text": "═══════════════════════════════════════════\n"
+                        }
+                      ],
+                      "stderr": [
+                        {
+                          "text": "   🔴 Console Error: Failed to load resource: the server responded with a status of 500 (Internal Server Error)\n"
+                        },
+                        {
+                          "text": "   🔴 Console Error: Error creating deal: SyntaxError: Unexpected token '<', \"<!DOCTYPE \"... is not valid JSON\n"
+                        },
+                        {
+                          "text": "\n❌ Test failed with error: SyntaxError: Unexpected token '<', \"<!DOCTYPE \"... is not valid JSON\n"
+                        },
+                        {
+                          "text": "   🔴 Console Error: Failed to load resource: the server responded with a status of 500 (Internal Server Error)\n"
+                        }
+                      ],
+                      "retry": 0,
+                      "startTime": "2025-11-18T11:20:32.089Z",
+                      "annotations": [],
+                      "attachments": [
+                        {
+                          "name": "video",
+                          "contentType": "video/webm",
+                          "path": "/Users/work/Desktop/developer/ContractBuddy/e2e/artifacts/upload-and-reconcile-Uploa-6a5af-9-pdf---Contract-Processing-chromium/video.webm"
+                        },
+                        {
+                          "name": "trace",
+                          "contentType": "application/zip",
+                          "path": "/Users/work/Desktop/developer/ContractBuddy/e2e/artifacts/upload-and-reconcile-Uploa-6a5af-9-pdf---Contract-Processing-chromium/trace.zip"
+                        }
+                      ]
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "77305e19e1c5a8c1d54f-82e6ed1b588292a84ac6",
+              "file": "upload-and-reconcile.spec.ts",
+              "line": 168,
+              "column": 7
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "stats": {
+    "startTime": "2025-11-18T11:20:03.024Z",
+    "duration": 35271.558999999994,
+    "expected": 2,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0
+  }
+}

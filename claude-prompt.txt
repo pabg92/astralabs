@@ -1,0 +1,19 @@
+Context:
+- We now store clause approvals and risk acceptance in Supabase (`clause_reviews`), but the current implementation hardcodes reviewer_id="system" and ignores tenant/user auth, so any user can write reviews for any clause.
+- We also added clause info drawers and pdf highlights, but may need to reference future RAG improvements.
+
+Tasks for Claude:
+1. Update supabase/migrations/012_add_risk_accepted_to_clause_reviews.sql to include reviewer_id (UUID) and tenant_id columns plus comments, and add basic foreign keys or notes for RLS.
+2. Update app/api/reconciliation/[dealId]/clauses/[clauseBoundaryId]/route.ts so PATCH/GET enforce authentication with createServerClient(), check the user's tenant matches the deal, and store reviewer_id + tenant_id. Ensure only authorized users (same tenant) can upsert clause reviews. Remove the hardcoded "system" reviewer.
+3. Add tenant-aware fetching in app/api/reconciliation/[dealId]/route.ts – include clause_reviews joined with clause_boundaries so the UI receives persisted decisions (and risk flags) keyed by boundary IDs.
+4. Update app/reconciliation/page.tsx to consume persisted clause_reviews, set clauseBoundaryId on each Clause, and send real user decisions via the new API. Ensure state updates after API success, and handle loading/failure gracefully.
+5. Refresh pdf-rag.md to mention the new persistence + highlight context, and update plan.md with the persisted approval feature plus future improvements (PDF highlight v2, clause insights). If necessary, mention Next 15 param-await fix.
+6. Testing: describe manual steps (approve clause, refresh, cross-tenant attempt to ensure denial, pdf highlight check) and any notes.
+
+Deliverables:
+- Modified migration (012) with reviewer_id/tenant_id.
+- Updated API route (PATCH/GET) with auth + tenant checks.
+- Updated /api/reconciliation/[dealId] route to return clause_reviews.
+- UI adjustments to use clauseBoundaryId and call the API for approval.
+- Documentation updates (pdf-rag.md, plan.md) summarizing persistence & PDF highlight future.
+- Testing notes.

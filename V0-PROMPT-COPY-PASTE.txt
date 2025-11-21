@@ -1,0 +1,118 @@
+Create an admin dashboard for ContractBuddy, a legal contract reconciliation platform. Follow our existing design system exactly.
+
+DESIGN SYSTEM:
+- Primary color: Blue (bg-blue-500/600/700, text-blue-700, border-blue-200)
+- Success: Emerald, Warning: Amber, Error: Red, Info: Purple
+- Cards: rounded-xl shadow-md border border-gray-200 p-6
+- Badges: rounded-full px-3 py-1 text-xs font-medium
+- Hover: transition-all duration-200 hover:shadow-lg hover:scale-105
+- Layout: max-w-[1600px] mx-auto px-6 py-8
+- Typography: Page title text-3xl font-bold, section text-xl font-semibold
+
+LAYOUT:
+
+1. HEADER:
+   - H1: "Admin Dashboard"
+   - Subtitle: "Manage clause library, review AI-drafted clauses, and monitor system health"
+   - Admin badge (purple) with Shield icon
+
+2. KPI CARDS (4 cards in grid, md:grid-cols-2 lg:grid-cols-4):
+
+   Card 1 - Pending Reviews (Amber):
+   - Icon: AlertCircle
+   - Value: 12
+   - Label: "Pending Reviews"
+   - Change: "+3 today"
+   - Gradient bg from amber-50 to white, border-amber-200
+
+   Card 2 - Processing Queue (Blue):
+   - Icon: Activity
+   - Value: 8
+   - Label: "Processing Queue"
+   - Change: "Active"
+   - Gradient bg from blue-50 to white, border-blue-200
+
+   Card 3 - Completed Today (Emerald):
+   - Icon: CheckCircle2
+   - Value: 156
+   - Label: "Completed Today"
+   - Change: "+42 vs yesterday"
+   - Gradient bg from emerald-50 to white, border-emerald-200
+
+   Card 4 - Failed Jobs (Red):
+   - Icon: XCircle
+   - Value: 2
+   - Label: "Failed Jobs"
+   - Change: "Needs attention"
+   - Gradient bg from red-50 to white, border-red-200
+
+3. MAIN CONTENT (grid lg:grid-cols-3 gap-6):
+
+   LEFT COLUMN (lg:col-span-2):
+
+   Section A: New Clause Approval Queue
+   - Card with title "New Clauses Pending Review" + badge showing count
+   - Tabs: "High Priority (3)" | "Medium (6)" | "Low (3)"
+   - For each clause, show card with:
+     * Top: Clause ID badge "LCL-NEW-234" + Type badge "Payment Terms" + Score badge (color-coded: <0.85 red, 0.85-0.90 amber, ≥0.90 green)
+     * Clause text (2 lines, truncated)
+     * Bottom: Source doc + timestamp + Approve/Reject buttons
+   - 3 mock clauses with scores 0.73, 0.84, 0.91
+
+   Section B: Deduplication Review Queue
+   - Card with title "Duplicate Clusters" + badge showing count
+   - For each cluster, show card with:
+     * Cluster ID badge "DUP-001" + Similarity badge "89% similar"
+     * Primary clause preview
+     * List: "3 duplicates found" with similarity scores
+     * Buttons: "Merge All" (purple) | "Review"
+   - 2 mock clusters
+
+   RIGHT COLUMN (lg:col-span-1):
+
+   Section C: System Health
+   - Card with title "System Health"
+   - Queue Depth: "8" with progress bar (32% of capacity)
+   - Oldest Message: Badge showing "5m 20s" (amber if 5-15min)
+   - Dead Letter Queue: "2 failed" in red
+   - Button: "View Queue Details"
+
+   Section D: Recent Activity
+   - Card with title "Recent Activity"
+   - Timeline list (4 items):
+     * Icon + description + user + timestamp
+     * Color-coded: upload (blue), approval (green), rejection (red), merge (purple)
+   - Mock activities: contract upload, clause approval, duplicate merge, reconciliation complete
+
+MOCK DATA:
+
+const newClausesMock = [
+  { id: "nc-001", clause_id: "LCL-NEW-234", clause_type: "payment_terms", text: "Payment shall be made within 30 days of invoice receipt via wire transfer to the account specified by Contractor.", factual_correctness_score: 0.73, source: "Brand X - Jane Doe.pdf", timestamp: "23 min ago" },
+  { id: "nc-002", clause_id: "LCL-NEW-235", clause_type: "liability_cap", text: "In no event shall Contractor's liability exceed 50% of fees paid under this Agreement.", factual_correctness_score: 0.84, source: "Agency Y - Contract v1.0.pdf", timestamp: "1 hr ago" },
+  { id: "nc-003", clause_id: "LCL-NEW-236", clause_type: "termination", text: "Either party may terminate this Agreement upon 30 days written notice.", factual_correctness_score: 0.91, source: "Brand Z - Agreement.pdf", timestamp: "3 hrs ago" }
+]
+
+const dedupMock = [
+  { cluster_id: "DUP-001", primary: { id: "LCL-042", text: "Influencer shall comply with all applicable advertising regulations..." }, duplicates: [{ id: "LCL-156", similarity: 0.89 }, { id: "LCL-203", similarity: 0.87 }], avg_similarity: 0.88 },
+  { cluster_id: "DUP-002", primary: { id: "LCL-089", text: "Payment due net 30 days from invoice date." }, duplicates: [{ id: "LCL-112", similarity: 0.91 }], avg_similarity: 0.91 }
+]
+
+const activityMock = [
+  { type: "upload", icon: "FileText", description: "Contract uploaded: Brand X - Jane Doe.pdf", user: "sarah@agency.com", time: "2m ago", color: "blue" },
+  { type: "approval", icon: "CheckCircle2", description: "Clause approved: LCL-234 Payment Terms", user: "admin@contractbuddy.com", time: "5m ago", color: "emerald" },
+  { type: "merge", icon: "GitMerge", description: "Duplicate merged: DUP-012 → LCL-089", user: "admin@contractbuddy.com", time: "12m ago", color: "purple" },
+  { type: "complete", icon: "CheckCircle2", description: "Reconciliation completed: Brand Y - Contract v2.0", user: "john@agency.com", time: "28m ago", color: "emerald" }
+]
+
+REQUIREMENTS:
+- Use Next.js 15 App Router with "use client"
+- TypeScript with proper typing
+- shadcn/ui components (Card, Button, Badge, Progress, Tabs)
+- Lucide React icons
+- Tailwind CSS utility classes
+- Responsive grid layouts (mobile-first)
+- Hover states with transitions
+- Console.log on button clicks for now
+- Match the clean, professional style of existing pages
+
+Build a complete page component ready to drop into app/admin/page.tsx
