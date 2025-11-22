@@ -103,6 +103,59 @@ export async function GET(
       )
       .eq("document_id", document.id)
 
+    // Fetch redlines and comments for this document
+    const clauseIds = clauses?.map((c) => c.id) || []
+    let redlines: any[] = []
+    let comments: any[] = []
+
+    if (clauseIds.length > 0 && deal.tenant_id) {
+      const { data: redlinesData, error: redlinesError } = await supabaseServer
+        .from("clause_redlines")
+        .select(`
+          *,
+          user_profiles!clause_redlines_author_id_fkey (
+            email,
+            full_name
+          )
+        `)
+        .in("clause_boundary_id", clauseIds)
+        .eq("tenant_id", deal.tenant_id)
+        .order("created_at", { ascending: false })
+
+      if (redlinesError) {
+        console.error("Error fetching redlines for export:", redlinesError)
+        return NextResponse.json(
+          { error: "Failed to fetch redlines", details: redlinesError.message },
+          { status: 500 }
+        )
+      }
+
+      redlines = redlinesData || []
+
+      const { data: commentsData, error: commentsError } = await supabaseServer
+        .from("clause_comments")
+        .select(`
+          *,
+          user_profiles!clause_comments_author_id_fkey (
+            email,
+            full_name
+          )
+        `)
+        .in("clause_boundary_id", clauseIds)
+        .eq("tenant_id", deal.tenant_id)
+        .order("created_at", { ascending: false })
+
+      if (commentsError) {
+        console.error("Error fetching comments for export:", commentsError)
+        return NextResponse.json(
+          { error: "Failed to fetch comments", details: commentsError.message },
+          { status: 500 }
+        )
+      }
+
+      comments = commentsData || []
+    }
+
     // Create match results map
     const matchMap = new Map()
     matchResults?.forEach((match: any) => {
@@ -155,6 +208,23 @@ export async function GET(
               matched_template: match?.matched_template || null,
             }
           }) || [],
+        redlines: redlines.map((r) => ({
+          id: r.id,
+          clause_boundary_id: r.clause_boundary_id,
+          change_type: r.change_type,
+          proposed_text: r.proposed_text,
+          status: r.status,
+          author: r.user_profiles?.full_name || r.user_profiles?.email || "Unknown",
+          created_at: r.created_at,
+          resolved_at: r.resolved_at,
+        })),
+        comments: comments.map((c) => ({
+          id: c.id,
+          clause_boundary_id: c.clause_boundary_id,
+          comment_text: c.comment_text,
+          author: c.user_profiles?.full_name || c.user_profiles?.email || "Unknown",
+          created_at: c.created_at,
+        })),
       })
     }
 
@@ -227,6 +297,49 @@ export async function GET(
       report += `[/${statusColor}]\n`
       report += "\n" + "-" .repeat(80) + "\n\n"
     })
+
+    // Redlines & Comments Section
+    if (redlines.length > 0 || comments.length > 0) {
+      report += "=" .repeat(80) + "\n"
+      report += "REDLINES & COMMENTS\n"
+      report += "=" .repeat(80) + "\n\n"
+
+      if (redlines.length > 0) {
+        report += "-" .repeat(80) + "\n"
+        report += "REDLINES (Suggested Changes)\n"
+        report += "-" .repeat(80) + "\n\n"
+
+        redlines.forEach((redline, index) => {
+          const author = redline.user_profiles?.full_name || redline.user_profiles?.email || "Unknown"
+          report += `Redline ${index + 1} [${redline.status.toUpperCase()}]\n`
+          report += `Clause ID: ${redline.clause_boundary_id}\n`
+          report += `Type: ${redline.change_type.toUpperCase()}\n`
+          report += `Author: ${author}\n`
+          report += `Created: ${new Date(redline.created_at).toLocaleString()}\n`
+          if (redline.resolved_at) {
+            report += `Resolved: ${new Date(redline.resolved_at).toLocaleString()}\n`
+          }
+          report += `\nProposed Text:\n${redline.proposed_text}\n`
+          report += "\n" + "-" .repeat(80) + "\n\n"
+        })
+      }
+
+      if (comments.length > 0) {
+        report += "-" .repeat(80) + "\n"
+        report += "COMMENTS\n"
+        report += "-" .repeat(80) + "\n\n"
+
+        comments.forEach((comment, index) => {
+          const author = comment.user_profiles?.full_name || comment.user_profiles?.email || "Unknown"
+          report += `Comment ${index + 1}\n`
+          report += `Clause ID: ${comment.clause_boundary_id}\n`
+          report += `Author: ${author}\n`
+          report += `Created: ${new Date(comment.created_at).toLocaleString()}\n`
+          report += `\nComment:\n${comment.comment_text}\n`
+          report += "\n" + "-" .repeat(80) + "\n\n"
+        })
+      }
+    }
 
     // Footer
     report += "=" .repeat(80) + "\n"

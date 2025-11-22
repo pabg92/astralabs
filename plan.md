@@ -2150,6 +2150,264 @@ $ npx tsx scripts/upload-real-pdfs.ts
 
 ---
 
+## Phase 11 – Redlines, Comments & Share Tokens ✅ **COMPLETED**
+
+**Date Completed:** 2025-11-22
+**Objective:** Enable collaborative contract review with clause-level redlines, comments, and branded read-only sharing.
+
+### Implementation Summary
+
+Phase 11 adds per-clause collaboration features to support team-based contract negotiation workflows. Users can now propose changes (redlines), add comments, and generate shareable links with custom branding for external stakeholders.
+
+### Database Schema Changes
+
+**Migration:** `supabase/migrations/013_add_redlines_comments_share_tokens.sql`
+
+**New Tables:**
+1. **`clause_comments`** - Per-clause discussion threads
+   - `id` (UUID, PK)
+   - `clause_boundary_id` (FK to clause_boundaries)
+   - `author_id` (FK to user_profiles, nullable)
+   - `tenant_id` (FK to tenants, for isolation)
+   - `comment_text` (TEXT)
+   - `created_at` (TIMESTAMPTZ)
+
+2. **`clause_redlines`** - Suggested changes/track changes
+   - `id` (UUID, PK)
+   - `clause_boundary_id` (FK to clause_boundaries)
+   - `author_id` (FK to user_profiles, nullable)
+   - `tenant_id` (FK to tenants)
+   - `change_type` (ENUM: add, delete, modify)
+   - `proposed_text` (TEXT)
+   - `status` (ENUM: draft, resolved)
+   - `created_at` (TIMESTAMPTZ)
+   - `resolved_at` (TIMESTAMPTZ, nullable)
+
+3. **`share_tokens`** - Branded read-only sharing
+   - `id` (UUID, PK, used as share token)
+   - `deal_id` (FK to deals)
+   - `document_id` (FK to document_repository, nullable)
+   - `tenant_id` (FK to tenants)
+   - `expires_at` (TIMESTAMPTZ)
+   - `revoked_at` (TIMESTAMPTZ, nullable)
+   - `allowed_actions` (JSONB, default ["view"])
+   - `branding` (JSONB for logo/colors/footer)
+   - `created_at` (TIMESTAMPTZ)
+
+**New ENUMs:**
+- `redline_change_type`: 'add' | 'delete' | 'modify'
+- `redline_status`: 'draft' | 'resolved'
+
+**Indexes:**
+- `idx_clause_comments_clause` on `clause_comments(clause_boundary_id)`
+- `idx_clause_redlines_clause` on `clause_redlines(clause_boundary_id)`
+- `idx_share_tokens_deal_expires` on `share_tokens(deal_id, expires_at)` WHERE `revoked_at IS NULL`
+
+### API Routes
+
+**1. Redlines & Comments API** - `app/api/reconciliation/[dealId]/redlines/route.ts`
+
+**GET** `/api/reconciliation/[dealId]/redlines`
+- Returns all redlines and comments for a deal's documents
+- Scoped by tenant_id for security
+- Includes author information (email/full_name) via join
+- Response: `{ success: true, data: { redlines: [...], comments: [...] } }`
+
+**POST** `/api/reconciliation/[dealId]/redlines`
+- Creates new redline with optional comment
+- Request body:
+  ```json
+  {
+    "clause_boundary_id": "uuid",
+    "change_type": "add|delete|modify",
+    "proposed_text": "string",
+    "status": "draft|resolved",
+    "comment_text": "optional string",
+    "author_id": "uuid (optional)",
+    "tenant_id": "uuid (required)"
+  }
+  ```
+- Validates: clause belongs to deal, valid enums, required fields
+- Response: `{ success: true, data: { redline: {...}, comment: {...} } }`
+- Status codes: 201 (created), 400 (validation), 404 (not found), 500 (error)
+
+**2. Share Token Issuance** - `app/api/reconciliation/[dealId]/share/route.ts`
+
+**POST** `/api/reconciliation/[dealId]/share`
+- Generates shareable read-only token for a deal
+- Request body:
+  ```json
+  {
+    "document_id": "uuid (optional)",
+    "expires_in_hours": 168,
+    "allowed_actions": ["view"],
+    "branding": {
+      "logo_url": "https://...",
+      "brand_color": "#123456",
+      "footer_text": "..."
+    }
+  }
+  ```
+- Validates: deal exists, document belongs to deal (if provided)
+- Defaults: 7 days expiration, max 30 days (720 hours)
+- Automatically derives tenant_id from deal (security)
+- Response: `{ success: true, data: { token: "uuid", expires_at: "iso" } }`
+- Status codes: 201 (created), 400 (validation), 404 (not found), 500 (error)
+
+**3. Share Token Access** - `app/api/share/[token]/route.ts`
+
+**GET** `/api/share/[token]`
+- Public endpoint for viewing shared deal data
+- Validates: token not revoked, not expired
+- Returns comprehensive read-only payload:
+  ```json
+  {
+    "success": true,
+    "data": {
+      "deal": {...},
+      "document": {..., "signed_url": null},
+      "pre_agreed_terms": [...],
+      "clause_boundaries": [...],
+      "redlines": [...],
+      "comments": [...],
+      "branding": {...},
+      "expires_at": "iso"
+    }
+  }
+  ```
+- Status codes: 200 (success), 403 (revoked/expired), 404 (invalid token), 500 (error)
+- Note: `signed_url` placeholder for future PDF access feature
+
+### Export Enhancements
+
+**Modified:** `app/api/reconciliation/[dealId]/export/route.ts`
+
+**JSON Format** (`?format=json`):
+- Added `redlines` array with: id, clause_boundary_id, change_type, proposed_text, status, author, timestamps
+- Added `comments` array with: id, clause_boundary_id, comment_text, author, created_at
+- Maintains backward compatibility (empty arrays if no redlines/comments)
+
+**Text Format** (`?format=text`, default):
+- New "REDLINES & COMMENTS" section at end of report
+- Lists all redlines with type, status, author, timestamps, proposed text
+- Lists all comments with clause ID, author, timestamp, comment text
+- Follows existing report formatting conventions
+
+### TypeScript Types
+
+**Updated:** `types/database.ts`
+- Added `clause_comments`, `clause_redlines`, `share_tokens` to Tables
+- Added Row, Insert, Update, Relationships types for each table
+- Added enum types to public.Enums section
+- All types generated to match Supabase schema
+
+### Security & Scoping
+
+**Tenant Isolation:**
+- All queries filter by `tenant_id` derived from deal
+- Share tokens store tenant_id for scope validation
+- No user-provided tenant_id accepted without verification
+
+**Service Role Access:**
+- All APIs use `supabaseServer` (service role key)
+- RLS bypassed intentionally (APIs enforce scoping in code)
+- Error handling prevents tenant data leakage
+
+**Share Token Security:**
+- UUID v4 tokens (128-bit entropy)
+- Mandatory expiration (max 30 days)
+- Revocation support via `revoked_at` timestamp
+- Read-only access enforced in API
+
+### Implementation Constraints Met
+
+✅ Use `supabaseServer` for all DB operations
+✅ Proper error handling (400/404/500 status codes)
+✅ TypeScript strict mode compliant
+✅ No frontend changes (backend-only)
+✅ No tests required (as specified)
+✅ Export backwards compatibility maintained
+✅ Service-role only (RLS off as requested)
+
+### Files Created
+
+1. `supabase/migrations/013_add_redlines_comments_share_tokens.sql`
+2. `app/api/reconciliation/[dealId]/redlines/route.ts`
+3. `app/api/reconciliation/[dealId]/share/route.ts`
+4. `app/api/share/[token]/route.ts`
+
+### Files Modified
+
+1. `types/database.ts` - Added new tables and enums
+2. `app/api/reconciliation/[dealId]/export/route.ts` - Added redlines/comments to exports
+
+### Testing Notes
+
+**Manual Testing Checklist:**
+```bash
+# 1. Create redline with comment
+curl -X POST http://localhost:3000/api/reconciliation/[dealId]/redlines \
+  -H "Content-Type: application/json" \
+  -d '{
+    "clause_boundary_id": "uuid",
+    "change_type": "modify",
+    "proposed_text": "Updated clause text",
+    "status": "draft",
+    "comment_text": "Please review this change",
+    "tenant_id": "uuid"
+  }'
+
+# 2. Fetch redlines and comments
+curl http://localhost:3000/api/reconciliation/[dealId]/redlines
+
+# 3. Generate share token
+curl -X POST http://localhost:3000/api/reconciliation/[dealId]/share \
+  -H "Content-Type: application/json" \
+  -d '{
+    "expires_in_hours": 168,
+    "branding": {
+      "logo_url": "https://example.com/logo.png",
+      "brand_color": "#0066cc"
+    }
+  }'
+
+# 4. Access shared deal
+curl http://localhost:3000/api/share/[token]
+
+# 5. Export with redlines/comments (JSON)
+curl http://localhost:3000/api/reconciliation/[dealId]/export?format=json
+
+# 6. Export with redlines/comments (Text)
+curl http://localhost:3000/api/reconciliation/[dealId]/export
+```
+
+### Future Enhancements
+
+**Immediate Follow-ups (Not Implemented):**
+- Frontend UI for creating/viewing redlines and comments
+- PDF signed URLs for share token document access
+- Email notifications on new comments/redlines
+- Redline approval workflow (accept/reject)
+- Comment threading (parent_comment_id support)
+
+**Long-term Backlog:**
+- Real-time collaboration via Supabase Realtime
+- @mention notifications
+- Redline diff visualization (track changes UI)
+- Export to DOCX with redline markup
+- Audit log for redline/comment changes
+
+### Related Backlog Items
+
+This phase addresses portions of:
+- **UX-12:** GPT Feedback Panel with Auto-Redline (database layer complete)
+- **UX-10:** Collaboration & External Sharing (backend API complete)
+- **Export enhancements:** Redlined DOCX export (text/JSON formats ready)
+
+**Deliverable:** ✅ Comprehensive collaboration infrastructure with redlines, comments, and shareable branded links. All APIs production-ready with proper validation, error handling, and tenant scoping.
+
+---
+
 ## Client UX Backlog (from Nov 14, 2025 Transcript)
 
 **Status:** Prioritized backlog items from client feedback session with Mat, Tom, and Alex. These are **not for immediate implementation** but captured for future phases post-Phase 7 worker resolution.

@@ -218,6 +218,55 @@ export type Database = {
           },
         ]
       }
+      clause_comments: {
+        Row: {
+          author_id: string | null
+          clause_boundary_id: string
+          comment_text: string
+          created_at: string
+          id: string
+          tenant_id: string
+        }
+        Insert: {
+          author_id?: string | null
+          clause_boundary_id: string
+          comment_text: string
+          created_at?: string
+          id?: string
+          tenant_id: string
+        }
+        Update: {
+          author_id?: string | null
+          clause_boundary_id?: string
+          comment_text?: string
+          created_at?: string
+          id?: string
+          tenant_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "clause_comments_author_id_fkey"
+            columns: ["author_id"]
+            isOneToOne: false
+            referencedRelation: "user_profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "clause_comments_clause_boundary_id_fkey"
+            columns: ["clause_boundary_id"]
+            isOneToOne: false
+            referencedRelation: "clause_boundaries"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "clause_comments_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       clause_deduplication_clusters: {
         Row: {
           cluster_id: string
@@ -495,6 +544,64 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "v_pii_summary"
             referencedColumns: ["document_id"]
+          },
+        ]
+      }
+      clause_redlines: {
+        Row: {
+          author_id: string | null
+          change_type: Database["public"]["Enums"]["redline_change_type"]
+          clause_boundary_id: string
+          created_at: string
+          id: string
+          proposed_text: string
+          resolved_at: string | null
+          status: Database["public"]["Enums"]["redline_status"]
+          tenant_id: string
+        }
+        Insert: {
+          author_id?: string | null
+          change_type: Database["public"]["Enums"]["redline_change_type"]
+          clause_boundary_id: string
+          created_at?: string
+          id?: string
+          proposed_text: string
+          resolved_at?: string | null
+          status?: Database["public"]["Enums"]["redline_status"]
+          tenant_id: string
+        }
+        Update: {
+          author_id?: string | null
+          change_type?: Database["public"]["Enums"]["redline_change_type"]
+          clause_boundary_id?: string
+          created_at?: string
+          id?: string
+          proposed_text?: string
+          resolved_at?: string | null
+          status?: Database["public"]["Enums"]["redline_status"]
+          tenant_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "clause_redlines_author_id_fkey"
+            columns: ["author_id"]
+            isOneToOne: false
+            referencedRelation: "user_profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "clause_redlines_clause_boundary_id_fkey"
+            columns: ["clause_boundary_id"]
+            isOneToOne: false
+            referencedRelation: "clause_boundaries"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "clause_redlines_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
           },
         ]
       }
@@ -1377,6 +1484,71 @@ export type Database = {
           },
         ]
       }
+      share_tokens: {
+        Row: {
+          allowed_actions: Json | null
+          branding: Json | null
+          created_at: string
+          deal_id: string
+          document_id: string | null
+          expires_at: string
+          id: string
+          revoked_at: string | null
+          tenant_id: string
+        }
+        Insert: {
+          allowed_actions?: Json | null
+          branding?: Json | null
+          created_at?: string
+          deal_id: string
+          document_id?: string | null
+          expires_at: string
+          id?: string
+          revoked_at?: string | null
+          tenant_id: string
+        }
+        Update: {
+          allowed_actions?: Json | null
+          branding?: Json | null
+          created_at?: string
+          deal_id?: string
+          document_id?: string | null
+          expires_at?: string
+          id?: string
+          revoked_at?: string | null
+          tenant_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "share_tokens_deal_id_fkey"
+            columns: ["deal_id"]
+            isOneToOne: false
+            referencedRelation: "deals"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "share_tokens_document_id_fkey"
+            columns: ["document_id"]
+            isOneToOne: false
+            referencedRelation: "document_repository"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "share_tokens_document_id_fkey"
+            columns: ["document_id"]
+            isOneToOne: false
+            referencedRelation: "v_pii_summary"
+            referencedColumns: ["document_id"]
+          },
+          {
+            foreignKeyName: "share_tokens_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       tenants: {
         Row: {
           billing_plan: string | null
@@ -1781,6 +1953,8 @@ export type Database = {
         | "conflicting"
       document_status: "pending" | "processing" | "completed" | "failed"
       rag_status: "green" | "amber" | "red" | "blue"
+      redline_change_type: "add" | "delete" | "modify"
+      redline_status: "draft" | "resolved"
       risk_level: "low" | "medium" | "high" | "critical"
       user_role: "talent_manager" | "admin"
     }
