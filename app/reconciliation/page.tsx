@@ -10,6 +10,14 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import {
   CheckCircle2,
   AlertCircle,
   AlertTriangle,
@@ -32,10 +40,14 @@ import {
   FileText,
   Shield,
   Info,
+  Pencil,
 } from "lucide-react"
 import type { JSX } from "react/jsx-runtime"
 import { useRouter, useSearchParams } from "next/navigation"
 import { useToast } from "@/hooks/use-toast"
+import { RedlineEditor } from "@/components/redlines/redline-editor"
+import { CommentThread } from "@/components/redlines/comment-thread"
+import type { Database } from "@/types/database"
 
 // Phase 9: Lazy-load PDF viewer to avoid SSR bloat (plan-pdf.md §4)
 const PDFViewer = dynamic(
@@ -52,6 +64,23 @@ const PDFViewer = dynamic(
 )
 
 type ClauseStatus = "match" | "review" | "issue"
+
+// Phase 11: Redlines and comments types
+type ClauseRedline = Database["public"]["Tables"]["clause_redlines"]["Row"] & {
+  user_profiles?: {
+    email: string | null
+    first_name: string | null
+    last_name: string | null
+  } | null
+}
+
+type ClauseComment = Database["public"]["Tables"]["clause_comments"]["Row"] & {
+  user_profiles?: {
+    email: string | null
+    first_name: string | null
+    last_name: string | null
+  } | null
+}
 
 interface Clause {
   id: number
@@ -429,6 +458,16 @@ function ReconciliationContent() {
   const [chatWindowPosition, setChatWindowPosition] = useState({ x: 0, y: 0 })
   const [isChatDragging, setIsChatDragging] = useState(false)
   const [chatDragOffset, setChatDragOffset] = useState({ x: 0, y: 0 })
+
+  // Phase 11: Redlines and comments state (mapped by clause_boundary_id)
+  const [redlinesByClause, setRedlinesByClause] = useState<Record<string, ClauseRedline[]>>({})
+  const [commentsByClause, setCommentsByClause] = useState<Record<string, ClauseComment[]>>({})
+  const [redlinesLoading, setRedlinesLoading] = useState(false)
+  const [redlinesError, setRedlinesError] = useState<string | null>(null)
+  const [tenantId, setTenantId] = useState<string | null>(null)
+  const [commentDrafts, setCommentDrafts] = useState<Record<string, string>>({})
+  const [redlineModalOpen, setRedlineModalOpen] = useState(false)
+  const [redlineModalClause, setRedlineModalClause] = useState<Clause | null>(null)
   const chatWindowRef = useRef<HTMLDivElement>(null)
 
   const autoSaveTimeoutRef = useRef<NodeJS.Timeout>()
@@ -557,6 +596,11 @@ function ReconciliationContent() {
           setHasPdf(true)
         }
 
+        // Phase 11: Store tenant_id for redlines/comments
+        if (apiData.deal?.tenant_id) {
+          setTenantId(apiData.deal.tenant_id)
+        }
+
         setLoading(false)
       } catch (error) {
         console.error("Error loading reconciliation data:", error)
@@ -570,6 +614,61 @@ function ReconciliationContent() {
     }
 
     fetchReconciliationData()
+  }, [dealId])
+
+  // Phase 11: Fetch redlines and comments
+  useEffect(() => {
+    const fetchRedlinesAndComments = async () => {
+      if (!dealId) {
+        // No dealId, skip fetching
+        return
+      }
+
+      try {
+        setRedlinesLoading(true)
+        setRedlinesError(null)
+
+        const response = await fetch(`/api/reconciliation/${dealId}/redlines`)
+
+        if (!response.ok) {
+          throw new Error(`Failed to fetch redlines: ${response.statusText}`)
+        }
+
+        const result = await response.json()
+
+        if (result.success && result.data) {
+          // Group redlines by clause_boundary_id
+          const redlinesMap: Record<string, ClauseRedline[]> = {}
+          result.data.redlines.forEach((redline: ClauseRedline) => {
+            const clauseId = redline.clause_boundary_id
+            if (!redlinesMap[clauseId]) {
+              redlinesMap[clauseId] = []
+            }
+            redlinesMap[clauseId].push(redline)
+          })
+          setRedlinesByClause(redlinesMap)
+
+          // Group comments by clause_boundary_id
+          const commentsMap: Record<string, ClauseComment[]> = {}
+          result.data.comments.forEach((comment: ClauseComment) => {
+            const clauseId = comment.clause_boundary_id
+            if (!commentsMap[clauseId]) {
+              commentsMap[clauseId] = []
+            }
+            commentsMap[clauseId].push(comment)
+          })
+          setCommentsByClause(commentsMap)
+        }
+
+        setRedlinesLoading(false)
+      } catch (error) {
+        console.error("Error fetching redlines and comments:", error)
+        setRedlinesError(error instanceof Error ? error.message : "Failed to load redlines")
+        setRedlinesLoading(false)
+      }
+    }
+
+    fetchRedlinesAndComments()
   }, [dealId])
 
   // Helper function to map RAG status to clause status
@@ -636,6 +735,102 @@ function ReconciliationContent() {
     localStorage.setItem("chatBuddyPosition", JSON.stringify(chatBuddyPosition))
   }, [chatBuddyVisible, chatBuddyPosition])
 
+  // Phase 11: Handle redline save
+  const handleRedlineSave = (redline: ClauseRedline | null, comment?: ClauseComment | null) => {
+    // Update local state to reflect the new redline
+    if (redline) {
+      const clauseId = redline.clause_boundary_id
+      setRedlinesByClause((prev) => {
+        const existing = prev[clauseId] || []
+        const index = existing.findIndex((r) => r.id === redline.id)
+        if (index >= 0) {
+          const updated = [...existing]
+          updated[index] = redline
+          return { ...prev, [clauseId]: updated }
+        } else {
+          return { ...prev, [clauseId]: [...existing, redline] }
+        }
+      })
+    }
+
+    // Flag clause for review when redline saved
+    if (redline && redlineModalClause) {
+      setClauseStatuses((prev) => ({
+        ...prev,
+        [redlineModalClause.id]: "issue",
+      }))
+    }
+
+    if (comment && comment.clause_boundary_id) {
+      const clauseId = comment.clause_boundary_id
+      setCommentsByClause((prev) => {
+        const existing = prev[clauseId] || []
+        return { ...prev, [clauseId]: [comment, ...existing] }
+      })
+      // clear draft if present
+      setCommentDrafts((prev) => ({ ...prev, [clauseId]: "" }))
+    }
+
+    toast({
+      title: "Redline Saved",
+      description: "Your suggested change has been saved successfully",
+    })
+
+    // Close modal on save if open
+    if (redlineModalOpen) {
+      setRedlineModalOpen(false)
+      setRedlineModalClause(null)
+    }
+  }
+
+  // Phase 11: Handle redline/comment error
+  const handleRedlineError = (error: string) => {
+    toast({
+      title: "Error",
+      description: error,
+      variant: "destructive",
+    })
+  }
+
+  const handleAddComment = async (clauseBoundaryId: string) => {
+    if (!dealId) return
+    const draft = commentDrafts[clauseBoundaryId]?.trim()
+    if (!draft) return
+
+    try {
+      const response = await fetch(`/api/reconciliation/${dealId}/redlines`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clause_boundary_id: clauseBoundaryId,
+          comment_text: draft,
+          author_id: null,
+        }),
+      })
+
+      const data = await response.json()
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to post comment")
+      }
+
+      if (data.success && data.data?.comment) {
+        const comment: ClauseComment = data.data.comment
+        setCommentsByClause((prev) => {
+          const existing = prev[clauseBoundaryId] || []
+          return { ...prev, [clauseBoundaryId]: [comment, ...existing] }
+        })
+        setCommentDrafts((prev) => ({ ...prev, [clauseBoundaryId]: "" }))
+        toast({
+          title: "Comment added",
+          description: "Your comment has been posted",
+        })
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to post comment"
+      handleRedlineError(message)
+    }
+  }
+
   // Handle drag start
   const handleMouseDown = (e: React.MouseEvent) => {
     if (!chatBuddyRef.current) return
@@ -690,6 +885,21 @@ function ReconciliationContent() {
     localStorage.setItem("clauseNotes", JSON.stringify(clauseNotes)) // Also save notes
     router.push("/reconciliation/complete")
   }
+
+  const selectedClauseKey = selectedClause?.clauseBoundaryId
+  const selectedClauseRedlines =
+    selectedClauseKey && redlinesByClause[selectedClauseKey] ? redlinesByClause[selectedClauseKey] : []
+  const existingRedlineForSelected = selectedClauseRedlines[0] || null
+  const selectedClauseComments =
+    selectedClauseKey && commentsByClause[selectedClauseKey] ? commentsByClause[selectedClauseKey] : []
+  // Allow redline UI when dealId is present; tenant is derived server-side
+  const canEditSelectedRedline = Boolean(dealId && selectedClauseKey)
+
+  // Modal state helpers
+  const modalClauseKey = redlineModalClause?.clauseBoundaryId
+  const modalRedlines = modalClauseKey && redlinesByClause[modalClauseKey] ? redlinesByClause[modalClauseKey] : []
+  const modalComments = modalClauseKey && commentsByClause[modalClauseKey] ? commentsByClause[modalClauseKey] : []
+  const modalCommentDraft = modalClauseKey ? commentDrafts[modalClauseKey] || "" : ""
 
   // Export handlers
   const handleExportText = async () => {
@@ -1181,6 +1391,29 @@ function ReconciliationContent() {
                   <span className="text-xs text-slate-500">
                     Pages {clause.position.start}-{clause.position.end} • {Math.round(clause.confidence * 100)}%
                   </span>
+                  {clause.clauseBoundaryId ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-xs"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        handleClauseSelect(clause)
+                        setRedlineModalClause(clause)
+                        setRedlineModalOpen(true)
+                      }}
+                      disabled={!dealId}
+                      title={dealId ? "Suggest a change on this clause" : "Connect a deal to enable redlines"}
+                    >
+                      <Pencil className="w-3 h-3 mr-1" />
+                      Suggest change
+                    </Button>
+                  ) : (
+                    <Button variant="outline" size="sm" className="h-7 text-xs" disabled title="No clause ID available">
+                      <Pencil className="w-3 h-3 mr-1" />
+                      Suggest change
+                    </Button>
+                  )}
                   <Button
                     variant="ghost"
                     size="icon"
@@ -1198,6 +1431,7 @@ function ReconciliationContent() {
               <p className="text-sm text-slate-800 leading-relaxed whitespace-pre-wrap">{clause.text}</p>
 
               {infoClauseId === clause.id && renderClauseInsight(clause)}
+
             </div>
           )
         })}
@@ -1305,6 +1539,132 @@ function ReconciliationContent() {
 
   return (
     <div className="min-h-screen bg-slate-50">
+      <Dialog
+        open={redlineModalOpen}
+        onOpenChange={(open) => {
+          setRedlineModalOpen(open)
+          if (!open) {
+            setRedlineModalClause(null)
+          }
+        }}
+      >
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>Suggest change</DialogTitle>
+            <DialogDescription>
+              Propose edits or add comments for this clause. Saved redlines are stored in Supabase and will flag the clause for review.
+            </DialogDescription>
+          </DialogHeader>
+
+          {redlineModalClause ? (
+            <div className="space-y-4">
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                <div className="flex items-center justify-between mb-2">
+                  <Badge variant="outline" className="text-xs">
+                    {redlineModalClause.clauseType}
+                  </Badge>
+                  <span className="text-xs text-slate-500">
+                    Pages {redlineModalClause.position.start}-{redlineModalClause.position.end}
+                  </span>
+                </div>
+                <p className="text-sm text-slate-800 whitespace-pre-wrap leading-relaxed">
+                  {redlineModalClause.text}
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <div className="space-y-3">
+                  <h4 className="text-sm font-semibold text-slate-700">Comments</h4>
+                  <CommentThread comments={modalComments} />
+                  <div className="space-y-2">
+                    <label className="text-xs font-medium text-slate-700">Add Comment</label>
+                    <textarea
+                      className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring focus:border-blue-500"
+                      rows={3}
+                      value={modalCommentDraft}
+                      onChange={(e) => {
+                        if (!modalClauseKey) return
+                        const value = e.target.value
+                        setCommentDrafts((prev) => ({
+                          ...prev,
+                          [modalClauseKey]: value,
+                        }))
+                      }}
+                      placeholder="Leave a comment without proposing a text change..."
+                      disabled={!modalClauseKey || !dealId}
+                    />
+                    <div className="flex justify-end">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => modalClauseKey && handleAddComment(modalClauseKey)}
+                        disabled={!modalClauseKey || !dealId || !modalCommentDraft.trim()}
+                      >
+                        <Send className="w-4 h-4 mr-2" />
+                        Post Comment
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  <h4 className="text-sm font-semibold text-slate-700">Redline</h4>
+                  {dealId && tenantId ? (
+                    <RedlineEditor
+                      clauseBoundaryId={modalClauseKey!}
+                      dealId={dealId}
+                      tenantId={tenantId}
+                      existingRedline={modalRedlines[0] || null}
+                      onSave={handleRedlineSave}
+                      onError={handleRedlineError}
+                    />
+                  ) : (
+                    <div className="rounded-md border border-dashed border-slate-200 bg-white p-3 text-xs text-slate-600">
+                      Connect to a real deal to enable redlines and comments.
+                    </div>
+                  )}
+
+                  {modalRedlines && modalRedlines.length > 0 && (
+                    <div className="border-t pt-3 space-y-2">
+                      <h5 className="text-[11px] font-semibold text-slate-700">
+                        Existing Redlines ({modalRedlines.length})
+                      </h5>
+                      {modalRedlines.map((redline) => (
+                        <div key={redline.id} className="bg-slate-50 rounded-lg p-2 border border-slate-200">
+                          <div className="flex items-center justify-between mb-1">
+                            <Badge variant="outline" className="text-[11px]">
+                              {redline.change_type}
+                            </Badge>
+                            <Badge
+                              className={
+                                redline.status === "resolved"
+                                  ? "bg-emerald-100 text-emerald-700"
+                                  : "bg-amber-100 text-amber-700"
+                              }
+                            >
+                              {redline.status}
+                            </Badge>
+                          </div>
+                          <p className="text-[11px] text-slate-700 leading-relaxed">{redline.proposed_text}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <p className="text-sm text-slate-600">Select a clause to propose changes.</p>
+          )}
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRedlineModalOpen(false)}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <div className="flex h-screen">
         {/* Left Column - Progress & Filters */}
         <div className="w-[28%] border-r border-slate-200 bg-white p-6 overflow-y-auto">
@@ -1907,6 +2267,109 @@ function ReconciliationContent() {
                     </Button>
                   </div>
                 </Card>
+
+                {/* Phase 11: Redline Editor and Comments */}
+                {selectedClause.clauseBoundaryId ? (
+                  <div className="space-y-4">
+                    {/* Comment Thread */}
+                    <Card className="p-5 shadow-sm rounded-2xl border-slate-200 space-y-4">
+                      <CommentThread comments={selectedClauseComments} />
+
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-slate-700">Add Comment</label>
+                        <textarea
+                          className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring focus:border-blue-500"
+                          rows={3}
+                          value={selectedClause.clauseBoundaryId ? commentDrafts[selectedClause.clauseBoundaryId] || "" : ""}
+                          onChange={(e) => {
+                            if (!selectedClause.clauseBoundaryId) return
+                            const value = e.target.value
+                            setCommentDrafts((prev) => ({
+                              ...prev,
+                              [selectedClause.clauseBoundaryId!]: value,
+                            }))
+                          }}
+                          placeholder="Leave a comment without proposing a text change..."
+                        />
+                        <div className="flex justify-end">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() =>
+                              selectedClause.clauseBoundaryId
+                                ? handleAddComment(selectedClause.clauseBoundaryId)
+                                : undefined
+                            }
+                            disabled={
+                              !selectedClause.clauseBoundaryId ||
+                              !(commentDrafts[selectedClause.clauseBoundaryId || ""] || "").trim()
+                            }
+                          >
+                            <Send className="w-4 h-4 mr-2" />
+                            Post Comment
+                          </Button>
+                        </div>
+                      </div>
+                    </Card>
+
+                    {/* Redline Editor */}
+                    <Card className="p-5 shadow-sm rounded-2xl border-slate-200">
+                      <div className="mb-4">
+                        <h3 className="font-semibold text-sm text-slate-700">Suggest Changes</h3>
+                        <p className="text-xs text-slate-500 mt-1">
+                          Propose modifications to this clause and optionally add a comment explaining your reasoning.
+                        </p>
+                      </div>
+                      <RedlineEditor
+                        clauseBoundaryId={selectedClause.clauseBoundaryId}
+                        dealId={dealId}
+                        tenantId={tenantId}
+                        existingRedline={existingRedlineForSelected}
+                        onSave={handleRedlineSave}
+                        onError={handleRedlineError}
+                      />
+                      {selectedClauseRedlines && selectedClauseRedlines.length > 0 && (
+                          <div className="mt-4 pt-4 border-t">
+                            <h4 className="text-xs font-semibold text-slate-700 mb-3">
+                              Existing Redlines ({selectedClauseRedlines.length})
+                            </h4>
+                            <div className="space-y-2">
+                              {selectedClauseRedlines.map((redline) => (
+                                <div key={redline.id} className="bg-slate-50 rounded-lg p-3 border border-slate-200">
+                                  <div className="flex items-center justify-between mb-2">
+                                    <Badge
+                                      variant="outline"
+                                      className="text-xs"
+                                    >
+                                      {redline.change_type}
+                                    </Badge>
+                                    <Badge
+                                      className={
+                                        redline.status === "resolved"
+                                          ? "bg-emerald-100 text-emerald-700"
+                                          : "bg-amber-100 text-amber-700"
+                                      }
+                                    >
+                                      {redline.status}
+                                    </Badge>
+                                  </div>
+                                  <p className="text-xs text-slate-600 leading-relaxed">
+                                    {redline.proposed_text}
+                                  </p>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                    </Card>
+                  </div>
+                ) : (
+                  <Card className="p-5 shadow-sm rounded-2xl border-slate-200">
+                    <p className="text-sm text-slate-600">
+                      Select a clause with an ID to suggest changes or add comments.
+                    </p>
+                  </Card>
+                )}
 
                 {/* Upcoming Clauses Queue */}
                 <div>

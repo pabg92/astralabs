@@ -98,7 +98,8 @@ export async function GET(
         *,
         user_profiles!clause_redlines_author_id_fkey (
           email,
-          full_name
+          first_name,
+          last_name
         )
       `)
       .in("clause_boundary_id", clauseIds)
@@ -120,7 +121,8 @@ export async function GET(
         *,
         user_profiles!clause_comments_author_id_fkey (
           email,
-          full_name
+          first_name,
+          last_name
         )
       `)
       .in("clause_boundary_id", clauseIds)
@@ -179,12 +181,26 @@ export async function POST(
       author_id,
     } = body
 
-    // Validate required fields
-    if (!clause_boundary_id || !change_type || !proposed_text) {
+    // Validate base required field
+    if (!clause_boundary_id) {
       return NextResponse.json(
         {
           error: "Missing required fields",
-          details: "clause_boundary_id, change_type, and proposed_text are required",
+          details: "clause_boundary_id is required",
+        },
+        { status: 400 }
+      )
+    }
+
+    // Determine mode: redline, comment-only, or both
+    const hasRedlinePayload = Boolean(change_type && proposed_text)
+    const hasCommentPayload = Boolean(comment_text)
+
+    if (!hasRedlinePayload && !hasCommentPayload) {
+      return NextResponse.json(
+        {
+          error: "Missing required fields",
+          details: "Provide redline fields (change_type + proposed_text) and/or comment_text",
         },
         { status: 400 }
       )
@@ -204,20 +220,21 @@ export async function POST(
       )
     }
 
-    // Validate change_type
-    if (!["add", "delete", "modify"].includes(change_type)) {
-      return NextResponse.json(
-        { error: "Invalid change_type", details: "Must be 'add', 'delete', or 'modify'" },
-        { status: 400 }
-      )
-    }
+    // Validate change_type/status if redline is being created
+    if (hasRedlinePayload) {
+      if (!["add", "delete", "modify"].includes(change_type)) {
+        return NextResponse.json(
+          { error: "Invalid change_type", details: "Must be 'add', 'delete', or 'modify'" },
+          { status: 400 }
+        )
+      }
 
-    // Validate status
-    if (!["draft", "resolved"].includes(status)) {
-      return NextResponse.json(
-        { error: "Invalid status", details: "Must be 'draft' or 'resolved'" },
-        { status: 400 }
-      )
+      if (!["draft", "resolved"].includes(status)) {
+        return NextResponse.json(
+          { error: "Invalid status", details: "Must be 'draft' or 'resolved'" },
+          { status: 400 }
+        )
+      }
     }
 
     // Verify clause_boundary exists and belongs to a document in this deal
@@ -244,28 +261,33 @@ export async function POST(
     }
 
     // Insert redline
-    const redlineInsert: ClauseRedlineInsert = {
-      clause_boundary_id,
-      change_type: change_type as "add" | "delete" | "modify",
-      proposed_text,
-      status: status as "draft" | "resolved",
-      author_id: author_id || null,
-      tenant_id: deal.tenant_id,
-      resolved_at: status === "resolved" ? new Date().toISOString() : null,
-    }
+    let redline: ClauseRedline | null = null
+    if (hasRedlinePayload) {
+      const redlineInsert: ClauseRedlineInsert = {
+        clause_boundary_id,
+        change_type: change_type as "add" | "delete" | "modify",
+        proposed_text,
+        status: status as "draft" | "resolved",
+        author_id: author_id || null,
+        tenant_id: deal.tenant_id,
+        resolved_at: status === "resolved" ? new Date().toISOString() : null,
+      }
 
-    const { data: redline, error: redlineError } = await supabaseServer
-      .from("clause_redlines")
-      .insert(redlineInsert)
-      .select()
-      .single()
+      const { data: redlineData, error: redlineError } = await supabaseServer
+        .from("clause_redlines")
+        .insert(redlineInsert)
+        .select()
+        .single()
 
-    if (redlineError) {
-      console.error("Error inserting redline:", redlineError)
-      return NextResponse.json(
-        { error: "Failed to create redline", details: redlineError.message },
-        { status: 500 }
-      )
+      if (redlineError) {
+        console.error("Error inserting redline:", redlineError)
+        return NextResponse.json(
+          { error: "Failed to create redline", details: redlineError.message },
+          { status: 500 }
+        )
+      }
+
+      redline = redlineData
     }
 
     // Optionally insert comment if comment_text is provided
@@ -293,13 +315,16 @@ export async function POST(
       }
     }
 
-    return NextResponse.json({
-      success: true,
-      data: {
-        redline,
-        comment,
+    return NextResponse.json(
+      {
+        success: true,
+        data: {
+          redline,
+          comment,
+        },
       },
-    }, { status: 201 })
+      { status: 201 }
+    )
   } catch (error) {
     console.error("Unexpected error in POST /api/reconciliation/[dealId]/redlines:", error)
     return NextResponse.json(
