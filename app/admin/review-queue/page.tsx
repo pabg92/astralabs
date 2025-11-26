@@ -41,6 +41,7 @@ interface ReviewQueueItem {
   clause_boundary_id: string | null
   document_id: string | null
   flagged_at: string
+  resolved_at: string | null
   metadata: {
     similarity_score?: number
     clause_type?: string
@@ -257,7 +258,14 @@ export default function AdminReviewQueuePage() {
           <div className="text-sm text-muted-foreground">New Clause Candidates</div>
         </Card>
         <Card className="p-4">
-          <div className="text-2xl font-bold">{queueItems.filter((i) => i.status === "resolved").length}</div>
+          <div className="text-2xl font-bold">
+            {queueItems.filter((i) => {
+              if (i.status === "pending" || !i.resolved_at) return false
+              const resolvedDate = new Date(i.resolved_at).toDateString()
+              const today = new Date().toDateString()
+              return resolvedDate === today
+            }).length}
+          </div>
           <div className="text-sm text-muted-foreground">Resolved Today</div>
         </Card>
       </div>
@@ -312,8 +320,10 @@ export default function AdminReviewQueuePage() {
               {item.metadata.matched_clause_id && (
                 <div className="mb-4 p-3 bg-blue-50 rounded-lg">
                   <div className="text-sm">
-                    <span className="font-medium">Closest Match:</span> {item.metadata.matched_clause_id} (
-                    {(item.metadata.similarity_score! * 100).toFixed(1)}% similar)
+                    <span className="font-medium">Closest Match:</span> {item.metadata.matched_clause_id}
+                    {item.metadata.similarity_score !== undefined && (
+                      <> ({(item.metadata.similarity_score * 100).toFixed(1)}% similar)</>
+                    )}
                   </div>
                 </div>
               )}

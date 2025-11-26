@@ -571,10 +571,21 @@ function splitIntoMicroClauses(
   const MICRO_MAX = MAX_CLAUSE_LENGTH
   const pieces = candidates.flatMap((text) => {
     if (text.length <= MICRO_MAX) return [text]
-    // Chunk oversized sentences to avoid mega-clauses
+    // Chunk oversized sentences at word boundaries to avoid mid-word splits
     const segments: string[] = []
-    for (let i = 0; i < text.length; i += MICRO_MAX) {
-      segments.push(text.slice(i, i + MICRO_MAX))
+    let remaining = text
+    while (remaining.length > MICRO_MAX) {
+      // Find the last space within the max length
+      let splitAt = remaining.lastIndexOf(' ', MICRO_MAX)
+      // If no space found (very long word), fall back to hard split
+      if (splitAt === -1 || splitAt < MICRO_MAX * 0.5) {
+        splitAt = MICRO_MAX
+      }
+      segments.push(remaining.slice(0, splitAt).trim())
+      remaining = remaining.slice(splitAt).trim()
+    }
+    if (remaining.length > 0) {
+      segments.push(remaining)
     }
     return segments
   })
@@ -983,7 +994,7 @@ async function validateAndGateQuality(
     action = "flag_for_review"
 
     // Insert into admin review queue for manual inspection
-    await supabase.from("admin_review_queue").insert({
+    const { error: reviewInsertError } = await supabase.from("admin_review_queue").insert({
       document_id: documentId,
       tenant_id: tenantId,
       review_type: "extraction_quality",
@@ -995,14 +1006,18 @@ async function validateAndGateQuality(
         warnings,
         extraction_model: EXTRACTION_MODEL
       }
-    }).catch((err: any) => console.error("Failed to insert review queue item:", err))
+    })
+    if (reviewInsertError) {
+      console.error("Failed to insert review queue item:", reviewInsertError)
+    }
 
     // Set distinct processing_status so document isn't stuck as "processing"
-    await supabase.from("document_repository").update({
+    const { error: statusUpdateError } = await supabase.from("document_repository").update({
       processing_status: "needs_review"
-    }).eq("id", documentId).catch((err: any) =>
-      console.error("Failed to update document status to needs_review:", err)
-    )
+    }).eq("id", documentId)
+    if (statusUpdateError) {
+      console.error("Failed to update document status to needs_review:", statusUpdateError)
+    }
 
     console.warn(`Quality gate FLAGGED document ${documentId}: ${warnings.join("; ")}`)
   }
@@ -1013,7 +1028,7 @@ async function validateAndGateQuality(
     console.error(`Quality gate REJECTED document ${documentId}: No clauses extracted`)
 
     // Flag for manual intervention
-    await supabase.from("admin_review_queue").insert({
+    const { error: failedInsertError } = await supabase.from("admin_review_queue").insert({
       document_id: documentId,
       tenant_id: tenantId,
       review_type: "extraction_failed",
@@ -1021,7 +1036,10 @@ async function validateAndGateQuality(
       priority: "critical",
       issue_description: "Zero clauses extracted - requires manual re-extraction",
       metadata: { metrics, extraction_model: EXTRACTION_MODEL }
-    }).catch((err: any) => console.error("Failed to insert review queue item:", err))
+    })
+    if (failedInsertError) {
+      console.error("Failed to insert review queue item:", failedInsertError)
+    }
   }
 
   return {
