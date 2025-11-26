@@ -16,6 +16,7 @@
 import { createClient } from '@supabase/supabase-js'
 import dotenv from 'dotenv'
 import path from 'path'
+import { performP1Reconciliation } from './p1-reconciliation.js'
 
 // Load environment variables
 dotenv.config({ path: path.resolve(process.cwd(), '.env.local') })
@@ -178,9 +179,27 @@ class DocumentProcessingWorker {
         throw new Error(`Match and reconcile failed: ${matchResult.error}`)
       }
 
-      console.log(`   ✅ Processed ${matchResult.clauses_reconciled || 0} clauses`)
+      console.log(`   ✅ Matched ${matchResult.clauses_reconciled || 0} clauses against LCL`)
 
-      // Step 4: Update document status to completed
+      // Step 4: P1 Reconciliation (server-side with unlimited memory)
+      const openaiApiKey = process.env.OPENAI_API_KEY
+      if (openaiApiKey) {
+        try {
+          const p1Result = await performP1Reconciliation(
+            document_id,
+            this.supabase,
+            openaiApiKey
+          )
+          console.log(`   ✅ P1: ${p1Result.p1_comparisons_made} comparisons made`)
+        } catch (p1Error) {
+          console.error(`   ⚠️ P1 comparison failed (non-fatal):`, p1Error)
+          // Don't throw - P1 is enhancement, not required
+        }
+      } else {
+        console.log(`   ℹ️ Skipping P1: OPENAI_API_KEY not set`)
+      }
+
+      // Step 5: Update document status to completed
       const { error: updateError } = await this.supabase
         .from('document_repository')
         .update({

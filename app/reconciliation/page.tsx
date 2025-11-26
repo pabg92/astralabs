@@ -1279,7 +1279,7 @@ function ReconciliationContent() {
       const parts: JSX.Element[] = []
 
       // Sort clauses by their start position to render them correctly
-      const sortedClauses = [...mockClauses].sort((a, b) => a.position.start - b.position.start)
+      const sortedClauses = [...clauses].sort((a, b) => a.position.start - b.position.start)
 
       sortedClauses.forEach((clause, idx) => {
         const beforeText = contractText.slice(lastIndex, clause.position.start)
@@ -1739,15 +1739,15 @@ function ReconciliationContent() {
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-sm font-medium text-slate-700">Overall Completion</span>
                   <span className="text-sm font-semibold text-slate-900">
-                    {Math.round((statusCounts.match / mockClauses.length) * 100)}%
+                    {Math.round((statusCounts.match / clauses.length) * 100)}%
                   </span>
                 </div>
                 <Progress
-                  value={(statusCounts.match / mockClauses.length) * 100}
+                  value={(statusCounts.match / clauses.length) * 100}
                   className="h-2 transition-all duration-500 ease-out"
                 />
                 <p className="text-xs text-slate-500 mt-1">
-                  {statusCounts.match} of {mockClauses.length} clauses approved
+                  {statusCounts.match} of {clauses.length} clauses approved
                 </p>
               </div>
 
@@ -2433,7 +2433,7 @@ function ReconciliationContent() {
                 ) : (
                   <div className="space-y-3">
                     {preAgreedTerms.map((term) => {
-                      const matchingClause = mockClauses.find(
+                      const matchingClause = clauses.find(
                         (c) => c.clauseType.toLowerCase() === term.clauseType.toLowerCase(),
                       )
                       const currentStatus = matchingClause ? getClauseStatus(matchingClause) : "issue" // Default to issue if no matching clause
@@ -2537,7 +2537,7 @@ function ReconciliationContent() {
                         <span className="text-xs font-semibold text-emerald-600 transition-all duration-300">
                           {
                             preAgreedTerms.filter((term) => {
-                              const matchingClause = mockClauses.find(
+                              const matchingClause = clauses.find(
                                 (c) => c.clauseType.toLowerCase() === term.clauseType.toLowerCase(),
                               )
                               return (
@@ -2554,7 +2554,7 @@ function ReconciliationContent() {
                         <span className="text-xs font-semibold text-orange-600 transition-all duration-300">
                           {
                             preAgreedTerms.filter((term) => {
-                              const matchingClause = mockClauses.find(
+                              const matchingClause = clauses.find(
                                 (c) => c.clauseType.toLowerCase() === term.clauseType.toLowerCase(),
                               )
                               return (

@@ -16,6 +16,320 @@ const OPENAI_MIN_CHARS_FOR_CHUNK = 600
 const OPENAI_MIN_CLAUSES_PER_CHUNK = 3
 const OPENAI_MAX_ATTEMPTS = 2
 
+// ============ MODEL CONFIGURATION ============
+const ALLOWED_MODELS = ["gpt-4o", "gpt-5.1", "gpt-5.1-codex-mini"] as const
+type AllowedModel = typeof ALLOWED_MODELS[number]
+
+const MAX_CLAUSE_LENGTH = 400 // Single source of truth - used everywhere
+
+// Model context limits (tokens)
+const MODEL_CONTEXT_LIMITS: Record<AllowedModel, number> = {
+  "gpt-4o": 128_000,
+  "gpt-5.1": 400_000,
+  "gpt-5.1-codex-mini": 400_000
+}
+
+// Timeout budget for GPT-5.1 (Supabase Edge default 60s, max 150s)
+const GPT51_TIMEOUT_MS = 90_000 // 90 seconds
+
+function getExtractionModel(): { model: AllowedModel; isValid: boolean } {
+  const configuredModel = Deno.env.get("EXTRACTION_MODEL") || "gpt-5.1"
+
+  if (ALLOWED_MODELS.includes(configuredModel as AllowedModel)) {
+    return { model: configuredModel as AllowedModel, isValid: true }
+  }
+
+  console.error(`Invalid EXTRACTION_MODEL: "${configuredModel}". Allowed: ${ALLOWED_MODELS.join(", ")}`)
+  console.warn(`Falling back to gpt-4o chunked extraction`)
+  return { model: "gpt-4o", isValid: false }
+}
+
+const { model: EXTRACTION_MODEL, isValid: modelConfigValid } = getExtractionModel()
+console.log(`Extraction model: ${EXTRACTION_MODEL} (config valid: ${modelConfigValid})`)
+
+// Rough token estimation: ~4 chars per token for English text
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4)
+}
+
+interface ExtractionPathDecision {
+  path: "single_pass" | "chunked"
+  model: AllowedModel
+  reason: string
+  estimatedTokens: number
+  contextLimit: number
+}
+
+function decideExtractionPath(
+  text: string,
+  preferredModel: AllowedModel
+): ExtractionPathDecision {
+  const estimatedTokens = estimateTokens(text)
+  const contextLimit = MODEL_CONTEXT_LIMITS[preferredModel]
+
+  // Reserve 30% of context for system prompt + output (conservative for OCR/noisy docs)
+  const safeInputLimit = Math.floor(contextLimit * 0.7)
+
+  if (estimatedTokens <= safeInputLimit) {
+    return {
+      path: "single_pass",
+      model: preferredModel,
+      reason: `Input (${estimatedTokens} tokens) fits in ${preferredModel} context (${safeInputLimit} safe limit)`,
+      estimatedTokens,
+      contextLimit
+    }
+  }
+
+  // Context overflow - fall back to chunked extraction
+  // Use same model family for consistency (chunked 5.1 if configured, else 4o)
+  const fallbackModel = preferredModel.startsWith("gpt-5") ? preferredModel : "gpt-4o"
+  console.warn(`Context overflow: ${estimatedTokens} tokens exceeds ${safeInputLimit} safe limit for ${preferredModel}`)
+
+  return {
+    path: "chunked",
+    model: fallbackModel,
+    reason: `Input too large (${estimatedTokens} tokens), falling back to chunked ${fallbackModel} extraction`,
+    estimatedTokens,
+    contextLimit
+  }
+}
+
+// ============ HELPER FUNCTIONS ============
+
+function validateRagStatus(status: any): "green" | "amber" | "red" {
+  const normalized = String(status || "amber").toLowerCase()
+  if (normalized === "green" || normalized === "amber" || normalized === "red") {
+    return normalized
+  }
+  return "amber"
+}
+
+// ============ ROBUST JSON PARSING ============
+
+function parseClausesResponse(data: any): any[] {
+  // Handle SDK structured outputs (message.parsed)
+  if (data.choices?.[0]?.message?.parsed) {
+    const parsed = data.choices[0].message.parsed
+    return extractClausesArray(parsed)
+  }
+
+  // Handle string content that needs parsing
+  const content = data.choices?.[0]?.message?.content
+  if (!content) {
+    console.error("No content in OpenAI response")
+    return []
+  }
+
+  // If content is already parsed (object/array), use directly
+  if (typeof content === "object") {
+    return extractClausesArray(content)
+  }
+
+  // Parse string content
+  try {
+    const parsed = JSON.parse(content)
+    return extractClausesArray(parsed)
+  } catch (err) {
+    console.error(`JSON parse error: ${err}. Content preview: ${String(content).slice(0, 200)}`)
+    return []
+  }
+}
+
+function extractClausesArray(parsed: any): any[] {
+  // Handle direct array
+  if (Array.isArray(parsed)) {
+    return parsed
+  }
+
+  // Handle { clauses: [...] }
+  if (parsed?.clauses && Array.isArray(parsed.clauses)) {
+    return parsed.clauses
+  }
+
+  // Handle single clause object
+  if (parsed?.content && parsed?.clause_type) {
+    return [parsed]
+  }
+
+  console.warn("Unexpected response shape, returning empty array")
+  return []
+}
+
+// ============ GPT-5.1 SINGLE-PASS EXTRACTION ============
+
+async function extractClausesGPT51(
+  contractText: string,
+  apiKey: string,
+  model: AllowedModel = "gpt-5.1"
+): Promise<ExtractedClause[]> {
+  const estimatedTokens = estimateTokens(contractText)
+  console.log(`${model} extraction: ${contractText.length} chars (~${estimatedTokens} tokens) in single pass`)
+
+  // Create abort controller for timeout
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), GPT51_TIMEOUT_MS)
+
+  try {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      signal: controller.signal,
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: model,
+        temperature: 0.2,
+        response_format: { type: "json_object" },
+        messages: [
+          {
+            role: "system",
+            content: `You are "ContractBuddy Clause Extractor" - a precision legal document parser.
+
+YOUR PRIMARY OBJECTIVE: Decompose this contract into ATOMIC, SINGLE-OBLIGATION clauses.
+
+WHAT IS AN ATOMIC CLAUSE?
+- ONE obligation, requirement, right, or definition
+- 50-${MAX_CLAUSE_LENGTH} characters (ideal: 150-300)
+- 1-2 sentences maximum
+- Can stand alone grammatically
+
+MANDATORY SPLITTING RULES:
+1. NUMBERED LISTS (1., 2., 3.): Each item = separate clause
+2. BULLETED LISTS (-, *, •): Each bullet = separate clause
+3. MULTIPLE SENTENCES: Split if expressing DIFFERENT obligations
+4. CONJUNCTIONS ("and shall", "and must"): Split at each obligation
+5. DIFFERENT DEADLINES: Each deadline = separate clause
+6. DIFFERENT ACTORS ("Influencer must", "Brand shall"): Split by actor
+
+HARD LIMIT: Maximum ${MAX_CLAUSE_LENGTH} characters per clause. If longer, SPLIT IT.
+
+EXAMPLE:
+Input: "PAYMENT: Invoice within 7 days. Payment within 30 days. Invoice must include: (1) date (2) VAT number (3) address"
+Output: 5 clauses (one per obligation)
+
+WHEN IN DOUBT: SPLIT. More small clauses is always better than one mega-clause.
+
+OUTPUT FORMAT:
+{
+  "clauses": [
+    {
+      "section_title": "exact section heading from document",
+      "content": "verbatim clause text (50-${MAX_CLAUSE_LENGTH} chars)",
+      "clause_type": "snake_case_type",
+      "summary": "1 sentence description",
+      "confidence": 0.0-1.0,
+      "rag_status": "green" | "amber" | "red"
+    }
+  ]
+}
+
+VALIDATION BEFORE OUTPUT:
+- Every clause < ${MAX_CLAUSE_LENGTH} chars? If not, SPLIT IT
+- Every clause has ≤ 2 sentences? If not, SPLIT IT
+- Every list item is a separate clause? If not, FIX IT
+- Expected: 80-150 clauses for a typical contract`
+          },
+          {
+            role: "user",
+            content: `Extract all clauses from this contract. Remember: SPLIT aggressively. Each obligation = one clause.
+
+CONTRACT TEXT:
+${contractText}`
+          }
+        ]
+      })
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text()
+      throw new Error(`${model} API error (${response.status}): ${errorText}`)
+    }
+
+    const data = await response.json()
+
+    // Robust JSON parsing - handle SDK structured outputs and edge cases
+    const clausesArray = parseClausesResponse(data)
+
+    return clausesArray.map((clause: any, index: number) => ({
+      content: String(clause.content || ""),
+      clause_type: String(clause.clause_type || "general_terms").replace(/\s+/g, "_"),
+      summary: String(clause.summary || ""),
+      confidence: Number(clause.confidence || 0.8),
+      rag_status: validateRagStatus(clause.rag_status),
+      section_title: clause.section_title || null,
+      chunk_index: 0, // Single pass, no chunks
+      start_page: clause.start_page || null,
+      end_page: clause.end_page || null,
+      parsing_quality: Number(clause.confidence || 0.8)
+    }))
+  } catch (err: any) {
+    if (err.name === "AbortError") {
+      console.warn(`${model} extraction timed out after ${GPT51_TIMEOUT_MS / 1000}s`)
+      // Don't retry here - let caller decide (may fall back to chunked)
+      throw new Error(`${model} extraction timed out after ${GPT51_TIMEOUT_MS / 1000}s - consider chunked fallback`)
+    }
+    throw err
+  } finally {
+    clearTimeout(timeoutId)
+  }
+}
+
+// ============ EXTRACTION WRAPPERS ============
+
+// Wrapper with timeout fallback to chunked extraction
+async function extractWithTimeoutFallback(
+  contractText: string,
+  apiKey: string,
+  pathDecision: ExtractionPathDecision
+): Promise<{ clauses: ExtractedClause[]; usedFallback: boolean }> {
+  if (pathDecision.path === "chunked") {
+    // Already chunked path - use existing flow
+    const clauses = await runChunkedExtraction(contractText, apiKey, pathDecision.model)
+    return { clauses, usedFallback: false }
+  }
+
+  try {
+    const clauses = await extractClausesGPT51(contractText, apiKey, pathDecision.model)
+    return { clauses, usedFallback: false }
+  } catch (err: any) {
+    if (err.message.includes("timed out")) {
+      console.warn(`Single-pass timed out, falling back to chunked extraction`)
+      const clauses = await runChunkedExtraction(contractText, apiKey, "gpt-4o")
+      return { clauses, usedFallback: true }
+    }
+    throw err
+  }
+}
+
+// runChunkedExtraction wraps the existing chunked flow
+// Note: Forward declaration - callOpenAIForChunk and chunkContractText defined below
+async function runChunkedExtraction(
+  contractText: string,
+  apiKey: string,
+  model: AllowedModel
+): Promise<ExtractedClause[]> {
+  const textChunks = chunkContractText(contractText)
+  let extractedClauses: ExtractedClause[] = []
+
+  for (let i = 0; i < textChunks.length; i++) {
+    const chunkPayload = textChunks[i]
+    // IMPORTANT: Pass model to allow chunked 5.1 if needed
+    const chunkClauses = await callOpenAIForChunk({
+      apiKey,
+      chunkText: chunkPayload.text,
+      chunkIndex: i,
+      totalChunks: textChunks.length,
+      sections: chunkPayload.sections,
+      model // Pass model param
+    })
+    const coveredClauses = ensureSectionCoverage(chunkPayload.sections, chunkClauses, i)
+    extractedClauses.push(...coveredClauses)
+  }
+
+  return dedupeClauses(extractedClauses)
+}
+
 type ExtractedClause = {
   content: string
   clause_type: string
@@ -229,6 +543,59 @@ function inferClauseTypeFromTitle(title: string) {
   return normalized || "general_terms"
 }
 
+// Split long/compound text into micro-clauses (single obligations) for better matching.
+function splitIntoMicroClauses(
+  content: string,
+  sectionTitle: string | null,
+  clauseType: string,
+  chunkIndex: number
+): ExtractedClause[] {
+  const sanitized = content.trim()
+  if (!sanitized) return []
+
+  // Prefer bullet/line splits; fallback to sentences.
+  const bulletParts = sanitized
+    .split(/(?:\r?\n|\r)[\u2022\u2023\u25E6\u2024\u2043\-•▪]\s*/g)
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0)
+
+  const candidates =
+    bulletParts.length > 1
+      ? bulletParts
+      : sanitized
+          .split(/(?<=[\.!\?])\s+/)
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0)
+
+  const MICRO_MIN = 40
+  const MICRO_MAX = MAX_CLAUSE_LENGTH
+  const pieces = candidates.flatMap((text) => {
+    if (text.length <= MICRO_MAX) return [text]
+    // Chunk oversized sentences to avoid mega-clauses
+    const segments: string[] = []
+    for (let i = 0; i < text.length; i += MICRO_MAX) {
+      segments.push(text.slice(i, i + MICRO_MAX))
+    }
+    return segments
+  })
+
+  return pieces
+    .map((piece) => piece.trim())
+    .filter((piece) => piece.length >= MICRO_MIN)
+    .map((piece) => ({
+      content: piece,
+      clause_type: clauseType,
+      summary: piece.slice(0, 220),
+      confidence: 0.6,
+      rag_status: "amber" as const,
+      parsing_quality: 0.6,
+      section_title: sectionTitle,
+      chunk_index: chunkIndex,
+      start_page: null,
+      end_page: null,
+    }))
+}
+
 function ensureSectionCoverage(
   sections: SectionInfo[],
   clauses: ExtractedClause[],
@@ -250,24 +617,25 @@ function ensureSectionCoverage(
     }
 
     const snippet = section.content?.trim() || section.title
-    clauses.push({
-      content: snippet.slice(0, 1200),
-      clause_type: inferClauseTypeFromTitle(section.title),
-      summary: snippet.slice(0, 200) || section.title,
-      confidence: 0.55,
-      rag_status: "amber",
-      parsing_quality: 0.55,
-      section_title: section.title,
-      chunk_index: chunkIndex,
-    })
+    const microClauses =
+      splitIntoMicroClauses(
+        snippet,
+        section.title,
+        inferClauseTypeFromTitle(section.title),
+        chunkIndex
+      ) || []
+
+    if (microClauses.length > 0) {
+      clauses.push(...microClauses)
+      added += microClauses.length
+    }
 
     coverage.add(normalizedTitle)
-    added++
   }
 
   if (added > 0) {
     console.log(
-      `🧩 Added ${added} clause(s) to cover missing headings in chunk ${chunkIndex + 1}`
+      `🧩 Added ${added} micro-clause(s) to cover missing headings in chunk ${chunkIndex + 1}`
     )
   }
 
@@ -315,19 +683,19 @@ function chunkContractText(text: string): ChunkPayload[] {
  * Splits the chunk into paragraphs so downstream steps never receive <1 clause.
  */
 function heuristicClausesFromChunk(chunk: string, chunkIndex: number) {
-  const paragraphs = chunk
-    .split(/\n{2,}/)
+  const sentences = chunk
+    .split(/(?<=[\.!\?])\s+/)
     .map((p) => p.trim())
-    .filter((p) => p.length >= OPENAI_MIN_CHARS_FOR_CHUNK)
+    .filter((p) => p.length >= 40)
 
-  if (paragraphs.length === 0) {
+  if (sentences.length === 0) {
     return []
   }
 
-  return paragraphs.slice(0, 5).map((para) => ({
-    content: para,
+  return sentences.slice(0, 12).map((sentence) => ({
+    content: sentence.slice(0, MAX_CLAUSE_LENGTH),
     clause_type: "general_terms",
-    summary: para.slice(0, 180),
+    summary: sentence.slice(0, 180),
     confidence: 0.45,
     rag_status: "amber" as const,
     parsing_quality: 0.45,
@@ -352,18 +720,493 @@ function dedupeClauses(clauses: ExtractedClause[]) {
   })
 }
 
+function enforceClauseGranularity(
+  clauses: ExtractedClause[],
+  chunkIndex: number
+): ExtractedClause[] {
+  const result: ExtractedClause[] = []
+  let splits = 0
+  let tooLong = 0
+  let bulletSplits = 0
+
+  const countBullets = (text: string) => {
+    const matches = text.match(/[\u2022\u2023\u25E6\u2024\u2043•▪\-]\s/g)
+    return matches ? matches.length : 0
+  }
+
+  for (const clause of clauses) {
+    const bulletCount = countBullets(clause.content)
+    const needsSplit =
+      clause.content.length > MAX_CLAUSE_LENGTH ||
+      clause.content.split(/(?<=[\.!\?])\s+/).length > 3 ||
+      bulletCount > 1
+
+    if (needsSplit) {
+      if (clause.content.length > MAX_CLAUSE_LENGTH) tooLong++
+      if (bulletCount > 1) bulletSplits++
+
+      const micros = splitIntoMicroClauses(
+        clause.content,
+        clause.section_title || null,
+        clause.clause_type,
+        clause.chunk_index ?? chunkIndex
+      )
+
+      if (micros.length > 0) {
+        splits += micros.length
+        const merged = micros.map((m) => ({
+          ...m,
+          rag_status: clause.rag_status,
+          confidence: Math.min(clause.confidence, m.confidence),
+          parsing_quality: Math.min(clause.parsing_quality || clause.confidence, m.parsing_quality || m.confidence),
+          start_page: clause.start_page ?? null,
+          end_page: clause.end_page ?? null,
+        }))
+        result.push(...merged)
+        continue
+      }
+    }
+
+    result.push(clause)
+  }
+
+  if (splits > 0 || tooLong > 0 || bulletSplits > 0) {
+    console.log(
+      `📏 Granularity enforcement: added ${splits} micro-clauses (tooLong=${tooLong}, bulletSplits=${bulletSplits}) for chunk ${chunkIndex + 1}`
+    )
+  }
+
+  return result
+}
+
+// ============ SMART FORCE-SPLIT (List-Aware) ============
+
+function forceGranularitySmart(clauses: ExtractedClause[]): ExtractedClause[] {
+  const result: ExtractedClause[] = []
+
+  for (const clause of clauses) {
+    if (clause.content.length <= MAX_CLAUSE_LENGTH) {
+      result.push(clause)
+      continue
+    }
+
+    console.warn(`Force-splitting mega-clause: ${clause.content.length} chars in "${clause.section_title}"`)
+
+    const splitClauses = smartSplitClause(clause)
+    result.push(...splitClauses)
+  }
+
+  return result
+}
+
+function smartSplitClause(clause: ExtractedClause): ExtractedClause[] {
+  const content = clause.content
+
+  // PRIORITY 1: Split numbered lists (1., 2., 3. or (1), (2), (3))
+  const numberedPattern = /(?:^|\n)\s*(?:\d+[\.\)]\s+|\(\d+\)\s+)/
+  if (numberedPattern.test(content)) {
+    const items = content.split(/(?=(?:^|\n)\s*(?:\d+[\.\)]\s+|\(\d+\)\s+))/)
+      .map(s => s.trim())
+      .filter(s => s.length >= 30)
+
+    if (items.length > 1) {
+      return items.flatMap((item, idx) => createSplitClause(clause, item, idx))
+    }
+  }
+
+  // PRIORITY 2: Split bulleted lists
+  const bulletPattern = /(?:^|\n)\s*[•\-\*▪]\s+/
+  if (bulletPattern.test(content)) {
+    const items = content.split(/(?=(?:^|\n)\s*[•\-\*▪]\s+)/)
+      .map(s => s.trim())
+      .filter(s => s.length >= 30)
+
+    if (items.length > 1) {
+      return items.flatMap((item, idx) => createSplitClause(clause, item, idx))
+    }
+  }
+
+  // PRIORITY 3: Split on semicolons (common obligation separator)
+  if (content.includes(';')) {
+    const items = content.split(/;\s*/)
+      .map(s => s.trim())
+      .filter(s => s.length >= 30)
+
+    if (items.length > 1) {
+      return items.flatMap((item, idx) => createSplitClause(clause, item, idx))
+    }
+  }
+
+  // PRIORITY 4: Split on sentence boundaries (with abbreviation protection)
+  const protectedText = content
+    .replace(/\b(Mr|Mrs|Ms|Dr|Inc|Ltd|LLC|Corp|etc|e\.g|i\.e|vs|No)\./gi, '$1###DOT###')
+
+  const sentences = protectedText
+    .split(/(?<=[\.!\?])\s+(?=[A-Z])/)
+    .map(s => s.replace(/###DOT###/g, '.').trim())
+    .filter(s => s.length >= 30)
+
+  if (sentences.length > 1) {
+    return sentences.flatMap((item, idx) => createSplitClause(clause, item, idx))
+  }
+
+  // PRIORITY 5: Hard chunk at word boundaries if still too long
+  if (content.length > MAX_CLAUSE_LENGTH) {
+    const chunks = chunkAtWordBoundaries(content, MAX_CLAUSE_LENGTH)
+    return chunks.flatMap((item, idx) => createSplitClause(clause, item, idx))
+  }
+
+  // Can't split further, keep as-is but flag
+  return [{
+    ...clause,
+    rag_status: "amber",
+    confidence: Math.min(clause.confidence, 0.5)
+  }]
+}
+
+function createSplitClause(
+  parent: ExtractedClause,
+  content: string,
+  index: number
+): ExtractedClause[] {
+  // Final length check - recurse if still too long
+  if (content.length > MAX_CLAUSE_LENGTH) {
+    const subChunks = chunkAtWordBoundaries(content, MAX_CLAUSE_LENGTH)
+    return subChunks.map((chunk, idx) => ({
+      ...parent,
+      content: chunk,
+      summary: chunk.slice(0, 200),
+      confidence: Math.min(parent.confidence, 0.6),
+      parsing_quality: 0.6,
+      chunk_index: index * 100 + idx // Nested index
+    }))
+  }
+
+  return [{
+    ...parent,
+    content: content,
+    summary: content.slice(0, 200),
+    confidence: Math.min(parent.confidence, 0.6),
+    parsing_quality: 0.6,
+    chunk_index: index
+  }]
+}
+
+function chunkAtWordBoundaries(text: string, maxLength: number): string[] {
+  const words = text.split(/\s+/)
+  const chunks: string[] = []
+  let current: string[] = []
+  let currentLen = 0
+
+  for (const word of words) {
+    if (currentLen + word.length + 1 > maxLength && current.length > 0) {
+      chunks.push(current.join(' '))
+      current = []
+      currentLen = 0
+    }
+    current.push(word)
+    currentLen += word.length + 1
+  }
+
+  if (current.length > 0) {
+    chunks.push(current.join(' '))
+  }
+
+  return chunks
+}
+
+// ============ QUALITY GATE ============
+
+interface ExtractionMetrics {
+  clauseCount: number
+  avgLength: number
+  megaClauseCount: number
+  megaClauseRate: number
+  underMinCount: number
+}
+
+function computeExtractionMetrics(clauses: ExtractedClause[]): ExtractionMetrics {
+  const total = clauses.length
+  const avgLength = total > 0
+    ? Math.round(clauses.reduce((s, c) => s + c.content.length, 0) / total)
+    : 0
+  const megaClauseCount = clauses.filter(c => c.content.length > MAX_CLAUSE_LENGTH).length
+  const underMinCount = clauses.filter(c => c.content.length < 30).length
+
+  return {
+    clauseCount: total,
+    avgLength,
+    megaClauseCount,
+    megaClauseRate: total > 0 ? megaClauseCount / total : 0,
+    underMinCount
+  }
+}
+
+interface QualityGateResult {
+  passed: boolean
+  warnings: string[]
+  action: "persist" | "flag_for_review" | "reject"
+}
+
+async function validateAndGateQuality(
+  clauses: ExtractedClause[],
+  documentId: string,
+  tenantId: string,
+  supabase: any
+): Promise<QualityGateResult> {
+  const metrics = computeExtractionMetrics(clauses)
+  const warnings: string[] = []
+
+  // Quality thresholds (aligned with MAX_CLAUSE_LENGTH = 400 target)
+  const MIN_CLAUSE_COUNT = 50        // Expect 80-150, warn below 50
+  // MAX_AVG_LENGTH = 450 provides 50-char headroom above MAX_CLAUSE_LENGTH = 400
+  // This accounts for variance - some clauses at 350, some at 450 = avg ~400
+  const MAX_AVG_LENGTH = 450
+  const MAX_MEGA_RATE = 0.10         // 10% mega-clauses max
+
+  if (metrics.clauseCount < MIN_CLAUSE_COUNT) {
+    warnings.push(`Low clause count: ${metrics.clauseCount} (expected ${MIN_CLAUSE_COUNT}+)`)
+  }
+
+  if (metrics.avgLength > MAX_AVG_LENGTH) {
+    warnings.push(`High avg length: ${metrics.avgLength} chars (max ${MAX_AVG_LENGTH})`)
+  }
+
+  if (metrics.megaClauseRate > MAX_MEGA_RATE) {
+    warnings.push(`High mega-clause rate: ${(metrics.megaClauseRate * 100).toFixed(1)}% (max ${MAX_MEGA_RATE * 100}%)`)
+  }
+
+  // Determine action based on severity
+  let action: QualityGateResult["action"] = "persist"
+
+  if (warnings.length >= 2 || metrics.clauseCount < 10) {
+    action = "flag_for_review"
+
+    // Insert into admin review queue for manual inspection
+    await supabase.from("admin_review_queue").insert({
+      document_id: documentId,
+      tenant_id: tenantId,
+      review_type: "extraction_quality",
+      status: "pending",
+      priority: warnings.length >= 3 ? "high" : "medium",
+      issue_description: `Extraction quality concerns: ${warnings.join("; ")}`,
+      metadata: {
+        metrics,
+        warnings,
+        extraction_model: EXTRACTION_MODEL
+      }
+    }).catch((err: any) => console.error("Failed to insert review queue item:", err))
+
+    // Set distinct processing_status so document isn't stuck as "processing"
+    await supabase.from("document_repository").update({
+      processing_status: "needs_review"
+    }).eq("id", documentId).catch((err: any) =>
+      console.error("Failed to update document status to needs_review:", err)
+    )
+
+    console.warn(`Quality gate FLAGGED document ${documentId}: ${warnings.join("; ")}`)
+  }
+
+  // REJECT: Zero clauses = bail before DB insert
+  if (metrics.clauseCount === 0) {
+    action = "reject"
+    console.error(`Quality gate REJECTED document ${documentId}: No clauses extracted`)
+
+    // Flag for manual intervention
+    await supabase.from("admin_review_queue").insert({
+      document_id: documentId,
+      tenant_id: tenantId,
+      review_type: "extraction_failed",
+      status: "pending",
+      priority: "critical",
+      issue_description: "Zero clauses extracted - requires manual re-extraction",
+      metadata: { metrics, extraction_model: EXTRACTION_MODEL }
+    }).catch((err: any) => console.error("Failed to insert review queue item:", err))
+  }
+
+  return {
+    passed: warnings.length === 0,
+    warnings,
+    action
+  }
+}
+
+// ============ TELEMETRY ============
+
+interface ExtractionTelemetry {
+  // Identification
+  document_id: string
+  tenant_id: string
+  extraction_id: string // Unique per run
+
+  // Model info
+  model: string
+  extraction_mode: "single_pass" | "chunked"
+  model_config_valid: boolean
+
+  // Input metrics
+  input_chars: number
+  tokens_in_estimate: number
+  context_overflow: boolean
+
+  // Output metrics
+  clause_count: number
+  avg_clause_length: number
+  mega_clause_count: number
+  mega_clause_rate: number
+  under_min_count: number
+
+  // Quality
+  quality_passed: boolean
+  quality_action: string
+  quality_warnings: string[]
+  force_split_count: number
+
+  // Performance
+  extraction_time_ms: number
+  tokens_out_estimate: number
+
+  // Timestamps
+  started_at: string
+  completed_at: string
+}
+
+function emitExtractionTelemetry(telemetry: ExtractionTelemetry): void {
+  // Structured log for aggregation (works with Supabase Edge Function logs)
+  console.log(JSON.stringify({
+    event: "extraction_complete",
+    level: telemetry.quality_passed ? "info" : "warn",
+    ...telemetry
+  }))
+}
+
+// ============ A/B SAMPLING ============
+
+// A/B configuration - simple sampling by document ID hash
+const AB_SAMPLE_RATE = parseFloat(Deno.env.get("AB_SAMPLE_RATE") || "0") // 0-1, e.g., 0.1 = 10%
+
+function shouldRunABComparison(documentId: string): boolean {
+  if (AB_SAMPLE_RATE <= 0) return false
+
+  // Deterministic sampling based on document ID hash
+  // Same document always gets same decision (reproducible)
+  const hash = simpleHash(documentId)
+  return (hash % 100) < (AB_SAMPLE_RATE * 100)
+}
+
+function simpleHash(str: string): number {
+  let hash = 0
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) - hash) + str.charCodeAt(i)
+    hash |= 0
+  }
+  return Math.abs(hash)
+}
+
+// Alert thresholds (configurable via env, aligned with quality gate)
+const ALERT_MEGA_RATE_THRESHOLD = parseFloat(Deno.env.get("ALERT_MEGA_RATE") || "0.15")
+const ALERT_MIN_CLAUSE_COUNT = parseInt(Deno.env.get("ALERT_MIN_CLAUSES") || "50")
+const ALERT_MAX_AVG_LENGTH = parseInt(Deno.env.get("ALERT_MAX_AVG_LEN") || "450")
+
+interface AlertCondition {
+  triggered: boolean
+  severity: "warning" | "error"
+  message: string
+}
+
+function checkAlertConditions(metrics: ExtractionMetrics): AlertCondition[] {
+  const alerts: AlertCondition[] = []
+
+  if (metrics.megaClauseRate > ALERT_MEGA_RATE_THRESHOLD) {
+    alerts.push({
+      triggered: true,
+      severity: "warning",
+      message: `High mega-clause rate: ${(metrics.megaClauseRate * 100).toFixed(1)}% > ${ALERT_MEGA_RATE_THRESHOLD * 100}% threshold`
+    })
+  }
+
+  if (metrics.clauseCount < ALERT_MIN_CLAUSE_COUNT) {
+    alerts.push({
+      triggered: true,
+      severity: metrics.clauseCount < 10 ? "error" : "warning",
+      message: `Low clause count: ${metrics.clauseCount} < ${ALERT_MIN_CLAUSE_COUNT} threshold`
+    })
+  }
+
+  if (metrics.avgLength > ALERT_MAX_AVG_LENGTH) {
+    alerts.push({
+      triggered: true,
+      severity: "warning",
+      message: `High avg clause length: ${metrics.avgLength} > ${ALERT_MAX_AVG_LENGTH} threshold`
+    })
+  }
+
+  return alerts
+}
+
+// Log alerts for monitoring system to pick up
+function emitAlerts(alerts: AlertCondition[], documentId: string): void {
+  for (const alert of alerts) {
+    if (alert.triggered) {
+      console.log(JSON.stringify({
+        event: "extraction_alert",
+        level: alert.severity,
+        document_id: documentId,
+        alert_message: alert.message
+      }))
+    }
+  }
+}
+
+function normalizeForMatch(value: string) {
+  return value.replace(/\s+/g, " ").trim().toLowerCase()
+}
+
+function ensureContentFromChunk(
+  clauses: ExtractedClause[],
+  chunkText: string,
+  chunkIndex: number
+): ExtractedClause[] {
+  const normalizedChunk = normalizeForMatch(chunkText)
+  const filtered: ExtractedClause[] = []
+  let removed = 0
+
+  for (const clause of clauses) {
+    const normalizedContent = normalizeForMatch(clause.content)
+    if (!normalizedContent) {
+      removed++
+      continue
+    }
+    if (!normalizedChunk.includes(normalizedContent)) {
+      removed++
+      continue
+    }
+    filtered.push(clause)
+  }
+
+  if (removed > 0) {
+    console.warn(
+      `🧹 Dropped ${removed} clause(s) not found verbatim in chunk ${chunkIndex + 1}`
+    )
+  }
+
+  return filtered
+}
+
 async function callOpenAIForChunk({
   apiKey,
   chunkText,
   chunkIndex,
   totalChunks,
   sections,
+  model = "gpt-4o",
 }: {
   apiKey: string
   chunkText: string
   chunkIndex: number
   totalChunks: number
   sections: SectionInfo[]
+  model?: AllowedModel
 }) {
   let attempt = 0
   let lastError: any = null
@@ -381,7 +1224,7 @@ async function callOpenAIForChunk({
             Authorization: `Bearer ${apiKey}`,
           },
           body: JSON.stringify({
-            model: "gpt-4o",
+            model: model,
             temperature: attempt === 1 ? 0.2 : 0.1,
             response_format: { type: "json_object" },
             messages: [
@@ -402,8 +1245,9 @@ Global rules:
 - You NEVER include explanations, commentary, markdown, or any text outside of the JSON object.
 - All keys MUST be in double quotes, no trailing commas, and the JSON MUST be syntactically valid.
 
-Semantics:
-- A "clause" is a coherent block of obligation/rights/definition text under a given section heading.
+Semantics (granular clauses required):
+- A "clause" is a **single obligation/definition/right**, ideally 50–400 characters, max 3 sentences. Do NOT merge multiple obligations into one clause.
+- Split bullets/numbered lists into separate clauses (one per bullet/sub-item). If a paragraph has multiple obligations, split them.
 - If a clause looks truncated at the start or end (chunk boundary), still return it but:
   - set a lower confidence (≤ 0.4)
   - mention "likely truncated at chunk boundary" in the summary.
@@ -450,9 +1294,10 @@ No other fields. No extra top-level keys. No comments. No markdown.
 
 ### 2. Section / clause rules
 
-1. For EVERY section heading listed above, you MUST create at least one clause object.
-   - If there are ${sections.length} headings above, the "clauses" array MUST contain at least ${sections.length} distinct clause objects.
-   - If a section has multiple distinct sub-paragraphs or subclauses in this chunk, create multiple clause objects with the SAME section_title.
+1. For EVERY section heading listed above, create as many clauses as there are distinct obligations/sub-clauses in this chunk.
+   - If there are ${sections.length} headings above, you MUST have at least ${sections.length} clauses total, but usually more.
+   - NEVER merge multiple obligations into one clause; split paragraphs with multiple requirements into separate clauses (one per obligation).
+   - Split bullets/numbered lists into separate clauses with the SAME section_title.
 
 2. section_title:
    - MUST be an exact string match to one of the listed headings.
@@ -460,7 +1305,7 @@ No other fields. No extra top-level keys. No comments. No markdown.
    - NEVER combine multiple headings into a single clause.
 
 3. Mapping content to headings:
-   - Attach each paragraph or sentence to the nearest relevant heading that appears in this chunk.
+   - Attach each obligation/sentence/bullet to the nearest relevant heading that appears in this chunk.
    - If a heading from the list has no visible content in this chunk, still create a clause object with:
      {
        "section_title": heading,
@@ -478,7 +1323,8 @@ No other fields. No extra top-level keys. No comments. No markdown.
 
 ### 3. Field semantics
 
-- content: Verbatim or lightly cleaned text from this chunk only (core clause body).
+- content: Verbatim or lightly cleaned text from this chunk only (core clause body). Aim for 50–400 characters; NEVER return a mega-clause.
+- content: **Verbatim text from this chunk only** (light whitespace cleanup allowed). Aim for 50–400 characters; NEVER paraphrase or merge multiple obligations; NEVER return a mega-clause.
 - clause_type (snake_case): e.g. "parties", "scope_of_work", "fees_and_payment", "term_and_termination", "usage_rights", "confidentiality", "miscellaneous".
 - summary: 1–3 sentences, neutral and factual.
 - confidence: 0.8–1.0 (clear), 0.5–0.79 (some ambiguity), 0.0–0.49 (incomplete/ambiguous/truncated).
@@ -489,7 +1335,7 @@ No other fields. No extra top-level keys. No comments. No markdown.
 
 Before returning the JSON, ensure:
 - Top level is { "clauses": [ ... ] }.
-- clauses.length ≥ ${sections.length}.
+- clauses.length ≥ ${sections.length}, and clauses are split so no clause is a multi-obligation blob.
 - EVERY heading from the list appears in at least one section_title.
 - All required fields exist for every clause.
 - rag_status ∈ { "green", "amber", "red" }.
@@ -547,6 +1393,9 @@ ${chunkText}`,
         chunk_index: chunkIndex,
       }))
 
+      normalizedClauses = enforceClauseGranularity(normalizedClauses, chunkIndex)
+      normalizedClauses = ensureContentFromChunk(normalizedClauses, chunkText, chunkIndex)
+
       if (
         normalizedClauses.length < OPENAI_MIN_CLAUSES_PER_CHUNK &&
         chunkText.length > OPENAI_MIN_CHARS_FOR_CHUNK
@@ -559,6 +1408,16 @@ ${chunkText}`,
         lastError = new Error("Insufficient clauses returned")
         continue
       }
+
+      const avgLength =
+        normalizedClauses.reduce((sum, c) => sum + c.content.length, 0) /
+        (normalizedClauses.length || 1)
+      const overLimit = normalizedClauses.filter((c) => c.content.length > MAX_CLAUSE_LENGTH).length
+      console.log(
+        `📊 Chunk ${chunkIndex + 1}/${totalChunks}: clauses=${normalizedClauses.length}, avgLen=${Math.round(
+          avgLength
+        )}, overLimit=${overLimit}`
+      )
 
       if (normalizedClauses.length === 0) {
         normalizedClauses = heuristicClausesFromChunk(chunkText, chunkIndex)
@@ -885,54 +1744,35 @@ Deno.serve(async (req) => {
     }
 
     let extractedClauses: ExtractedClause[] = []
-    const textChunks = chunkContractText(extractedText)
 
-    if (textChunks.length === 0) {
-      throw new Error("Unable to split contract text into chunks for OpenAI")
-    }
+    // ============ UNIFIED EXTRACTION WITH PATH DECISION ============
+    const extractionId = crypto.randomUUID()
+    const startedAt = new Date().toISOString()
 
-    console.log(
-      `Checkpoint C: OpenAI clause extraction starting with ${textChunks.length} chunk(s)`
-    )
+    // Decide extraction path based on input size and model
+    const pathDecision = decideExtractionPath(extractedText, EXTRACTION_MODEL)
+    console.log(`Extraction path: ${pathDecision.path} (${pathDecision.reason})`)
+
+    console.log(`Checkpoint C: ${pathDecision.model} extraction starting...`)
 
     try {
-      for (let i = 0; i < textChunks.length; i++) {
-        const chunkPayload = textChunks[i]
-        console.log(
-          `➡️  Processing chunk ${i + 1}/${textChunks.length} (${chunkPayload.text.length} chars)`
-        )
-        console.log(
-          `   🔍 Sections detected in chunk ${i + 1}: ${chunkPayload.sections.length} section(s)`
-        )
-        if (chunkPayload.sections.length > 0) {
-          console.log(`   📋 Section titles: ${chunkPayload.sections.map(s => s.title).join(', ')}`)
-        }
-        const chunkClauses = await callOpenAIForChunk({
-          apiKey: openaiApiKey,
-          chunkText: chunkPayload.text,
-          chunkIndex: i,
-          totalChunks: textChunks.length,
-          sections: chunkPayload.sections,
-        })
+      const startTime = Date.now()
 
-        console.log(
-          `   ↳ Chunk ${i + 1} returned ${chunkClauses.length} clause(s)`
-        )
-        const coveredClauses = ensureSectionCoverage(
-          chunkPayload.sections,
-          chunkClauses,
-          i
-        )
-        if (coveredClauses.length !== chunkClauses.length) {
-          console.log(
-            `   ✨ Backfilling added ${coveredClauses.length - chunkClauses.length} clause(s) for missing sections`
-          )
-        }
-        extractedClauses.push(...coveredClauses)
+      // Use wrapper that handles timeouts and falls back to chunked if needed
+      const { clauses: rawClauses, usedFallback } = await extractWithTimeoutFallback(
+        extractedText,
+        openaiApiKey,
+        pathDecision
+      )
+      const extractionTime = Date.now() - startTime
+
+      if (usedFallback) {
+        console.warn(`Extraction used timeout fallback to chunked path`)
       }
 
-      const preDedupCount = extractedClauses.length
-      extractedClauses = dedupeClauses(extractedClauses)
+      // Deduplication
+      const preDedupCount = rawClauses.length
+      extractedClauses = dedupeClauses(rawClauses)
 
       if (extractedClauses.length !== preDedupCount) {
         console.log(
@@ -940,9 +1780,83 @@ Deno.serve(async (req) => {
         )
       }
 
+      // Capture mega-clause count BEFORE force-split
+      const preSplitMetrics = computeExtractionMetrics(extractedClauses)
+      const preSplitMegaCount = preSplitMetrics.megaClauseCount
+
+      // Force-split any remaining mega-clauses (safety net)
+      if (preSplitMegaCount > 0) {
+        console.log(`Force-splitting ${preSplitMegaCount} mega-clauses...`)
+        extractedClauses = forceGranularitySmart(extractedClauses)
+        const postSplitMetrics = computeExtractionMetrics(extractedClauses)
+        console.log(`Post-split: ${postSplitMetrics.clauseCount} clauses, avg ${postSplitMetrics.avgLength} chars`)
+      }
+
+      // Compute final metrics AFTER force-split
+      const metrics = computeExtractionMetrics(extractedClauses)
+
+      console.log(`Extraction results: ${metrics.clauseCount} clauses, avg ${metrics.avgLength} chars, ${metrics.megaClauseCount} over ${MAX_CLAUSE_LENGTH} chars, ${extractionTime}ms`)
+
+      // Quality gate - route to review if metrics are bad (MUST await)
+      const qualityResult = await validateAndGateQuality(extractedClauses, document_id, tenant_id, supabase)
+
+      // Check alert conditions
+      const alerts = checkAlertConditions(metrics)
+      emitAlerts(alerts, document_id)
+
+      // context_overflow = true when configured model couldn't be used (downshifted)
+      const contextOverflow = pathDecision.path === "chunked" && EXTRACTION_MODEL !== "gpt-4o"
+
+      // Cap tokens_out_estimate to avoid blowing logs (sample first 50 clauses, scale up)
+      const tokensOutEstimate = extractedClauses.length === 0 ? 0 : Math.min(
+        estimateTokens(JSON.stringify(extractedClauses.slice(0, 50))) *
+          Math.ceil(extractedClauses.length / 50),
+        100_000 // Hard cap
+      )
+
+      // Emit telemetry
+      const telemetry: ExtractionTelemetry = {
+        document_id,
+        tenant_id,
+        extraction_id: extractionId,
+        model: usedFallback ? "gpt-4o" : pathDecision.model,
+        extraction_mode: usedFallback ? "chunked" : pathDecision.path,
+        model_config_valid: modelConfigValid,
+        input_chars: extractedText.length,
+        tokens_in_estimate: pathDecision.estimatedTokens,
+        context_overflow: contextOverflow,
+        clause_count: metrics.clauseCount,
+        avg_clause_length: metrics.avgLength,
+        mega_clause_count: metrics.megaClauseCount,
+        mega_clause_rate: metrics.megaClauseRate,
+        under_min_count: metrics.underMinCount,
+        quality_passed: qualityResult.passed,
+        quality_action: qualityResult.action,
+        quality_warnings: qualityResult.warnings,
+        force_split_count: preSplitMegaCount - metrics.megaClauseCount,
+        extraction_time_ms: extractionTime,
+        tokens_out_estimate: tokensOutEstimate,
+        started_at: startedAt,
+        completed_at: new Date().toISOString()
+      }
+
+      emitExtractionTelemetry(telemetry)
+
+      // Handle quality gate reject action
+      if (qualityResult.action === "reject") {
+        // Update document status and return early - do NOT persist empty clauses
+        await supabase.from("document_repository").update({
+          processing_status: "failed",
+          error_message: `Extraction rejected: ${qualityResult.warnings.join("; ")}`
+        }).eq("id", document_id)
+
+        throw new Error(`Extraction failed quality gate: ${qualityResult.warnings.join("; ")}`)
+      }
+
+      // Fallback for zero clauses (should be caught by quality gate, but just in case)
       if (extractedClauses.length === 0) {
         console.warn(
-          `⚠️ All chunk attempts returned zero clauses for document ${document_id}`
+          `⚠️ Zero clauses extracted for document ${document_id}`
         )
         await supabase.from("edge_function_logs").insert({
           document_id,
@@ -951,14 +1865,15 @@ Deno.serve(async (req) => {
           clause_count: 1,
           raw_payload: {
             text_length: extractedText.length,
-            chunk_count: textChunks.length,
-            reason: "All chunks empty after retries",
+            model: pathDecision.model,
+            extraction_mode: pathDecision.path,
+            reason: "Zero clauses extracted",
           },
         })
 
         extractedClauses = [
           {
-            content: extractedText.substring(0, 1000),
+            content: extractedText.substring(0, MAX_CLAUSE_LENGTH),
             clause_type: "general_terms",
             summary: "Full contract text (no clauses extracted)",
             confidence: 0.5,
@@ -974,21 +1889,22 @@ Deno.serve(async (req) => {
           clause_count: extractedClauses.length,
           raw_payload: {
             text_length: extractedText.length,
-            chunk_count: textChunks.length,
-            clause_types: extractedClauses.map((c) => c.clause_type),
+            model: usedFallback ? "gpt-4o" : pathDecision.model,
+            extraction_mode: usedFallback ? "chunked_fallback" : pathDecision.path,
+            extraction_time_ms: extractionTime,
+            metrics,
+            quality_passed: qualityResult.passed,
+            quality_warnings: qualityResult.warnings,
             rag_distribution: {
-              green: extractedClauses.filter((c) => c.rag_status === "green")
-                .length,
-              amber: extractedClauses.filter((c) => c.rag_status === "amber")
-                .length,
-              red: extractedClauses.filter((c) => c.rag_status === "red")
-                .length,
+              green: extractedClauses.filter((c) => c.rag_status === "green").length,
+              amber: extractedClauses.filter((c) => c.rag_status === "amber").length,
+              red: extractedClauses.filter((c) => c.rag_status === "red").length,
             },
           },
         })
       }
 
-      console.log(`✅ Extracted ${extractedClauses.length} clauses from OpenAI`)
+      console.log(`✅ Extracted ${extractedClauses.length} clauses using ${pathDecision.model}`)
       console.log(
         `RAG distribution: ${
           extractedClauses.filter((c) => c.rag_status === "green").length
@@ -1081,7 +1997,7 @@ Deno.serve(async (req) => {
             tenant_id,
             review_type: "low_confidence_clause",
             status: "pending",
-            original_text: clause.content.substring(0, 500), // Limit to 500 chars
+            original_text: clause.content, // Store full text (removed 500 char truncation)
             original_clause_type: clause.clause_type,
             confidence_score: clause.confidence,
             issue_description: `Low confidence score (${clause.confidence.toFixed(2)}) - requires manual review`,

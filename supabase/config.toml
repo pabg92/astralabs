@@ -1,0 +1,19 @@
+# Supabase Project Configuration
+# https://supabase.com/docs/guides/cli/config
+
+[api]
+enabled = true
+port = 54321
+
+[db]
+port = 54322
+
+[studio]
+enabled = true
+port = 54323
+
+# Edge Functions configuration
+# Note: Request timeout is 150s (built-in), not configurable via config.toml
+# Our GPT51_TIMEOUT_MS = 90s is well within this limit
+[functions.extract-clauses]
+verify_jwt = false
