@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { useRouter } from "next/navigation"
+import { useRouter, useSearchParams } from "next/navigation"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -20,17 +20,19 @@ import {
   TrendingUp,
   FileText,
   Send,
+  Loader2,
 } from "lucide-react"
 
 type ClauseStatus = "match" | "review" | "issue" | "info" | "improve"
 
 interface Clause {
-  id: number
+  id: string
   text: string
   status: ClauseStatus
   summary: string
   confidence: number
   clauseType: string
+  reviewDecision?: "approved" | "rejected" | null
 }
 
 interface PreAgreedTerm {
@@ -42,144 +44,115 @@ interface PreAgreedTerm {
 
 export default function ResolutionPage() {
   const router = useRouter()
-  const [clauseStatuses, setClauseStatuses] = useState<Record<number, ClauseStatus>>({})
+  const searchParams = useSearchParams()
+  const dealId = searchParams.get("dealId")
+
+  const [clauses, setClauses] = useState<Clause[]>([])
   const [preAgreedTerms, setPreAgreedTerms] = useState<PreAgreedTerm[]>([])
   const [contractFileName, setContractFileName] = useState<string>("")
-
-  // Mock clauses data (in real app, this would come from context/props)
-  const mockClauses: Clause[] = [
-    {
-      id: 1,
-      text: "Scope of Work clause...",
-      status: "review",
-      summary: "Standard scope",
-      confidence: 96,
-      clauseType: "Scope of Work",
-    },
-    {
-      id: 2,
-      text: "Payment Terms clause...",
-      status: "review",
-      summary: "Payment schedule",
-      confidence: 93,
-      clauseType: "Payment Terms",
-    },
-    {
-      id: 3,
-      text: "Deliverables clause...",
-      status: "review",
-      summary: "Acceptance terms",
-      confidence: 81,
-      clauseType: "Deliverables",
-    },
-    {
-      id: 4,
-      text: "IP Rights clause...",
-      status: "review",
-      summary: "Work for hire",
-      confidence: 95,
-      clauseType: "Intellectual Property",
-    },
-    {
-      id: 5,
-      text: "Confidentiality clause...",
-      status: "review",
-      summary: "5-year obligation",
-      confidence: 97,
-      clauseType: "Confidentiality",
-    },
-    {
-      id: 6,
-      text: "Warranties clause...",
-      status: "review",
-      summary: "90-day warranty",
-      confidence: 79,
-      clauseType: "Warranties",
-    },
-    {
-      id: 7,
-      text: "Liability clause...",
-      status: "issue",
-      summary: "50% cap",
-      confidence: 68,
-      clauseType: "Liability Cap",
-    },
-    {
-      id: 8,
-      text: "Indemnification clause...",
-      status: "issue",
-      summary: "Mutual indemnity",
-      confidence: 95,
-      clauseType: "Indemnification",
-    },
-    {
-      id: 9,
-      text: "Termination clause...",
-      status: "issue",
-      summary: "30-day notice",
-      confidence: 92,
-      clauseType: "Termination",
-    },
-    {
-      id: 10,
-      text: "Dispute Resolution clause...",
-      status: "improve",
-      summary: "Arbitration",
-      confidence: 83,
-      clauseType: "Dispute Resolution",
-    },
-    {
-      id: 11,
-      text: "General Provisions clause...",
-      status: "info",
-      summary: "Boilerplate",
-      confidence: 99,
-      clauseType: "General Provisions",
-    },
-  ]
+  const [dealName, setDealName] = useState<string>("")
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    // Load data from localStorage
-    const savedStatuses = localStorage.getItem("clauseStatuses")
-    const savedTerms = localStorage.getItem("preAgreedTerms")
-    const savedFileName = localStorage.getItem("contractFileName")
+    async function fetchReconciliationData() {
+      if (!dealId) {
+        setError("No deal ID provided")
+        setIsLoading(false)
+        return
+      }
 
-    if (savedStatuses) {
-      setClauseStatuses(JSON.parse(savedStatuses))
+      try {
+        const response = await fetch(`/api/reconciliation/${dealId}`)
+        if (!response.ok) {
+          throw new Error("Failed to fetch reconciliation data")
+        }
+
+        const result = await response.json()
+        if (!result.success || !result.data) {
+          throw new Error("Invalid response format")
+        }
+
+        const data = result.data
+
+        // Set deal info
+        setDealName(data.deal_name || data.talent_name || "Contract")
+        setContractFileName(data.document?.original_filename || "Contract Document")
+
+        // Map pre-agreed terms
+        if (data.pre_agreed_terms) {
+          setPreAgreedTerms(data.pre_agreed_terms.map((term: { id: string; clause_type: string; expected_term: string; notes: string }) => ({
+            id: term.id,
+            clauseType: term.clause_type || "General",
+            expectedTerm: term.expected_term || "",
+            notes: term.notes || "",
+          })))
+        }
+
+        // Map clause boundaries with their reviews to our Clause format
+        if (data.document?.clause_boundaries) {
+          const mappedClauses: Clause[] = data.document.clause_boundaries.map((boundary: {
+            id: string
+            clause_text: string
+            clause_type: string
+            match_result?: { similarity_score?: number; rag_status?: string; gpt_summary?: string } | null
+            review?: { decision?: string } | null
+          }) => {
+            // Determine status from RAG status or review decision
+            let status: ClauseStatus = "review"
+            const ragStatus = boundary.match_result?.rag_status
+
+            if (ragStatus === "green") status = "match"
+            else if (ragStatus === "amber") status = "review"
+            else if (ragStatus === "red") status = "issue"
+            else if (ragStatus === "blue") status = "info"
+
+            // Override with review decision if present
+            const reviewDecision = boundary.review?.decision as "approved" | "rejected" | null
+
+            return {
+              id: boundary.id,
+              text: boundary.clause_text || "",
+              status,
+              summary: boundary.match_result?.gpt_summary || boundary.clause_type || "No summary",
+              confidence: Math.round((boundary.match_result?.similarity_score || 0) * 100),
+              clauseType: boundary.clause_type || "General",
+              reviewDecision,
+            }
+          })
+
+          setClauses(mappedClauses)
+        }
+
+        setIsLoading(false)
+      } catch (err) {
+        console.error("Error fetching reconciliation data:", err)
+        setError(err instanceof Error ? err.message : "Failed to load data")
+        setIsLoading(false)
+      }
     }
-    if (savedTerms) {
-      setPreAgreedTerms(JSON.parse(savedTerms))
-    }
-    if (savedFileName) {
-      setContractFileName(savedFileName)
-    }
 
-    const dealId = new URLSearchParams(window.location.search).get("dealId") || "1"
-    if (savedStatuses) {
-      localStorage.setItem(`reconciliation_${dealId}_statuses`, savedStatuses)
-    }
-  }, [])
+    fetchReconciliationData()
+  }, [dealId])
 
-  const getClauseStatus = (clause: Clause): ClauseStatus => {
-    return clauseStatuses[clause.id] ?? clause.status
-  }
+  // Calculate statistics based on review decisions
+  // Accepted = clauses with "approved" review decision
+  const acceptedClauses = clauses.filter((c) => c.reviewDecision === "approved")
+  // Rejected = clauses with "rejected" review decision
+  const rejectedClauses = clauses.filter((c) => c.reviewDecision === "rejected")
+  // Pending = clauses without a review decision yet
+  const pendingClauses = clauses.filter((c) => !c.reviewDecision)
 
-  // Calculate statistics
-  const acceptedClauses = mockClauses.filter((c) => getClauseStatus(c) === "match")
-  const rejectedClauses = mockClauses.filter((c) => getClauseStatus(c) === "issue")
-  const pendingClauses = mockClauses.filter((c) => {
-    const status = getClauseStatus(c)
-    return status === "review" || status === "improve" || status === "info"
-  })
-
-  const totalClauses = mockClauses.length
+  const totalClauses = clauses.length
   const acceptedCount = acceptedClauses.length
   const rejectedCount = rejectedClauses.length
   const pendingCount = pendingClauses.length
-  const completionRate = Math.round((acceptedCount / totalClauses) * 100)
+  const reviewedCount = acceptedCount + rejectedCount
+  const completionRate = totalClauses > 0 ? Math.round((reviewedCount / totalClauses) * 100) : 0
 
   // Determine overall status
   const getOverallStatus = () => {
+    if (totalClauses === 0) return "incomplete"
     if (acceptedCount === totalClauses) return "success"
     if (rejectedCount === totalClauses) return "rejected"
     if (pendingCount === 0) return "mixed"
@@ -190,8 +163,8 @@ export default function ResolutionPage() {
 
   // Calculate pre-agreed terms reconciliation
   const reconciledTerms = preAgreedTerms.filter((term) => {
-    const matchingClause = mockClauses.find((c) => c.clauseType.toLowerCase() === term.clauseType.toLowerCase())
-    return matchingClause && getClauseStatus(matchingClause) === "match"
+    const matchingClause = clauses.find((c) => c.clauseType.toLowerCase() === term.clauseType.toLowerCase())
+    return matchingClause && matchingClause.reviewDecision === "approved"
   })
 
   const getStatusIcon = (status: ClauseStatus) => {
@@ -215,7 +188,35 @@ export default function ResolutionPage() {
   }
 
   const handleGoBack = () => {
-    router.push("/reconciliation")
+    router.push(`/reconciliation?dealId=${dealId}`)
+  }
+
+  // Loading state
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <div className="text-center">
+          <Loader2 className="w-12 h-12 animate-spin text-blue-500 mx-auto mb-4" />
+          <p className="text-slate-600">Loading reconciliation summary...</p>
+        </div>
+      </div>
+    )
+  }
+
+  // Error state
+  if (error) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <div className="text-center">
+          <AlertCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
+          <p className="text-slate-900 font-medium mb-2">Failed to load data</p>
+          <p className="text-slate-600 mb-4">{error}</p>
+          <Button onClick={() => router.push("/deals")} variant="outline">
+            Back to Deals
+          </Button>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -464,7 +465,7 @@ export default function ResolutionPage() {
                 <p className="text-xs text-slate-400 text-center py-4">All clauses reviewed</p>
               ) : (
                 pendingClauses.map((clause) => {
-                  const status = getClauseStatus(clause)
+                  const status = clause.status
                   return (
                     <div
                       key={clause.id}
@@ -532,10 +533,10 @@ export default function ResolutionPage() {
 
             <div className="grid grid-cols-2 gap-4">
               {preAgreedTerms.map((term) => {
-                const matchingClause = mockClauses.find(
+                const matchingClause = clauses.find(
                   (c) => c.clauseType.toLowerCase() === term.clauseType.toLowerCase(),
                 )
-                const isReconciled = matchingClause && getClauseStatus(matchingClause) === "match"
+                const isReconciled = matchingClause && matchingClause.reviewDecision === "approved"
 
                 return (
                   <div
