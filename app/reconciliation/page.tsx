@@ -772,9 +772,9 @@ function ReconciliationContent() {
   }
 
   const handleCompleteReview = () => {
-    // Save current state to localStorage before navigating
-    localStorage.setItem("clauseStatuses", JSON.stringify(clauseStatuses))
-    localStorage.setItem("clauseNotes", JSON.stringify(clauseNotes)) // Also save notes
+    // Note: clauseStatuses are now persisted to database via clause_reviews table
+    // Only save notes to localStorage (consider migrating to database comments in future)
+    localStorage.setItem("clauseNotes", JSON.stringify(clauseNotes))
     router.push("/reconciliation/complete")
   }
 
@@ -953,24 +953,14 @@ function ReconciliationContent() {
     }, 300)
   }
 
+  // Load non-persisted state from localStorage (notes only)
+  // Note: clauseStatuses and riskAcceptedClauses are now loaded from database via clause_reviews
   useEffect(() => {
-    const savedTerms = localStorage.getItem("preAgreedTerms")
     const savedFileName = localStorage.getItem("contractFileName")
-    const savedStatuses = localStorage.getItem("clauseStatuses")
     const savedNotes = localStorage.getItem("clauseNotes")
-    const savedRiskAccepted = localStorage.getItem("riskAcceptedClauses")
-
-    if (savedTerms) {
-      setPreAgreedTerms(JSON.parse(savedTerms))
-    }
-    // Pre-agreed terms now come from API, no sample fallback needed
 
     if (savedFileName) {
       setContractFileName(savedFileName)
-    }
-
-    if (savedStatuses) {
-      setClauseStatuses(JSON.parse(savedStatuses))
     }
 
     if (savedNotes) {
@@ -979,10 +969,6 @@ function ReconciliationContent() {
       if (selectedClause && JSON.parse(savedNotes)[selectedClause.id]) {
         setCurrentNote(JSON.parse(savedNotes)[selectedClause.id])
       }
-    }
-
-    if (savedRiskAccepted) {
-      setRiskAcceptedClauses(new Set(JSON.parse(savedRiskAccepted)))
     }
   }, [selectedClause]) // Depend on selectedClause to update currentNote when it changes
 
