@@ -42,7 +42,7 @@ export async function GET(request: NextRequest) {
     if (error) {
       console.error("Error fetching deals:", error)
       return NextResponse.json(
-        { error: "Failed to fetch deals", details: error.message },
+        { success: false, error: "Failed to fetch deals", details: error.message, data: [], count: 0 },
         { status: 500 }
       )
     }
@@ -76,7 +76,7 @@ export async function GET(request: NextRequest) {
   } catch (error) {
     console.error("Unexpected error in GET /api/deals:", error)
     return NextResponse.json(
-      { error: "Internal server error" },
+      { success: false, error: "Internal server error", details: String(error), data: [], count: 0 },
       { status: 500 }
     )
   }

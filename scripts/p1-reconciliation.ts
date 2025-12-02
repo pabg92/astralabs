@@ -377,10 +377,10 @@ Match?`,
               ? "medium"
               : "low"
 
-      // Use upsert to handle re-runs (dedup by document_id + clause_boundary_id + review_type)
+      // Insert review queue item (ignore duplicates via unique constraint)
       const { error: reviewInsertError } = await supabase
         .from("admin_review_queue")
-        .upsert({
+        .insert({
           document_id: documentId,
           clause_boundary_id: clause.id,
           review_type: "new_clause",
@@ -396,13 +396,13 @@ Match?`,
             matched_clause_id: matchResult.matched_template_id,
             reason: "low_similarity_new_clause_candidate",
           },
-        }, {
-          onConflict: "document_id,clause_boundary_id,review_type",
-          ignoreDuplicates: true
         })
 
       if (reviewInsertError) {
-        console.error(`   ⚠️ Failed to insert review queue item for clause ${clause.id}:`, reviewInsertError)
+        // Ignore duplicate key errors (23505) - item already exists
+        if (reviewInsertError.code !== '23505') {
+          console.error(`   ⚠️ Failed to insert review queue item for clause ${clause.id}:`, reviewInsertError)
+        }
         // Continue processing, don't crash
       } else {
         console.log(
@@ -421,10 +421,10 @@ Match?`,
 
       const discrepancyType = rag_parsing === "red" ? "conflicting" : "modified"
 
-      // Use upsert to handle re-runs (dedup by match_result_id + discrepancy_type)
+      // Insert discrepancy (ignore duplicates via unique constraint)
       const { error: discrepancyError } = await supabase
         .from("discrepancies")
-        .upsert({
+        .insert({
           match_result_id: matchResult.id,
           document_id: documentId,
           discrepancy_type: discrepancyType,
@@ -435,13 +435,13 @@ Match?`,
             redComparisons.length > 0
               ? `Review: ${redComparisons[0].comparison_result.explanation}`
               : "Review against library",
-        }, {
-          onConflict: "match_result_id,discrepancy_type",
-          ignoreDuplicates: true
         })
 
       if (discrepancyError) {
-        console.error(`   ⚠️ Failed to insert discrepancy for match ${matchResult.id}:`, discrepancyError)
+        // Ignore duplicate key errors (23505) - item already exists
+        if (discrepancyError.code !== '23505') {
+          console.error(`   ⚠️ Failed to insert discrepancy for match ${matchResult.id}:`, discrepancyError)
+        }
         // Continue processing, don't crash
       } else {
         discrepanciesCreated++
@@ -494,20 +494,20 @@ Match?`,
     if (virtualMatch) {
       const { error: missingDiscrepancyError } = await supabase
         .from("discrepancies")
-        .upsert({
+        .insert({
           match_result_id: virtualMatch.id,
           document_id: documentId,
           discrepancy_type: "missing",
           severity: "critical",
           description: `Missing: ${missingTerm.term_category}`,
           suggested_action: `Add: ${missingTerm.term_description}`,
-        }, {
-          onConflict: "match_result_id,discrepancy_type",
-          ignoreDuplicates: true
         })
 
       if (missingDiscrepancyError) {
-        console.error(`   ⚠️ Failed to insert discrepancy for missing term ${missingTerm.id}:`, missingDiscrepancyError)
+        // Ignore duplicate key errors (23505) - item already exists
+        if (missingDiscrepancyError.code !== '23505') {
+          console.error(`   ⚠️ Failed to insert discrepancy for missing term ${missingTerm.id}:`, missingDiscrepancyError)
+        }
         // Continue processing
       } else {
         discrepanciesCreated++

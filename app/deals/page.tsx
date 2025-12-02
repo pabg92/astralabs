@@ -2,10 +2,10 @@
 
 import type React from "react"
 
-import { useState, useMemo, useEffect } from "react"
+import { useState, useMemo, useEffect, useCallback } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { Search, Plus, MoreVertical, Check, X, Upload, FileUp } from "lucide-react"
+import { Search, Plus, MoreVertical, Check, X, Upload, FileUp, AlertCircle, RefreshCw, History } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
@@ -16,6 +16,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip"
+import { VersionHistoryModal } from "@/components/deals/version-history-modal"
 import type { Tables } from "@/types/database"
 
 interface ReconciliationStatus {
@@ -33,127 +35,6 @@ type Deal = Tables<"deals"> & {
   pre_agreed_terms?: Tables<"pre_agreed_terms">[]
 }
 
-// Legacy interface for compatibility (map database fields to UI expectations)
-interface DealWithUI extends Deal {
-  deal_name: string // Maps to title
-  date_added: string // Maps to created_at
-  brand: string // Maps to client_name
-  agency: string // Needs to be added or derived
-  in_out: "In" | "Out" // New field to add
-  deliverables: string // From pre_agreed_terms
-  usage: string // From pre_agreed_terms
-  exclusivity: string // From pre_agreed_terms
-  fee_amount: number // Maps to value
-  confirmed: boolean // Needs to be added or derived
-  category: string // New field to add
-  reconciliationStatus?: ReconciliationStatus
-}
-
-const sampleDeals: Deal[] = [
-  {
-    id: "1",
-    deal_name: "Abby Smith x Gucci - February 2025 Campaign",
-    date_added: "2025-02-05",
-    status: "Signed",
-    talent_name: "Abby Smith",
-    agency: "Lit Works",
-    brand: "Gucci",
-    in_out: "In",
-    deliverables: "Instagram Post, YouTube Video, TikTok Series",
-    usage: "30 days",
-    exclusivity: "Yes - 6 months",
-    fee_amount: 32500,
-    currency: "USD",
-    confirmed: true,
-    category: "Fashion",
-  },
-  {
-    id: "2",
-    deal_name: "Ben Rogers x Asics - December 2025 Partnership",
-    date_added: "2025-12-01",
-    status: "Draft",
-    talent_name: "Ben Rogers",
-    agency: "Run Elite",
-    brand: "Asics",
-    in_out: "Out",
-    deliverables: "TikTok Video",
-    usage: "30 days",
-    exclusivity: "No",
-    fee_amount: 14000,
-    currency: "USD",
-    confirmed: false,
-    category: "Sportswear",
-  },
-  {
-    id: "3",
-    deal_name: "Maya Johnson x Fenty Beauty - March 2025 Collection",
-    date_added: "2025-03-15",
-    status: "In Review",
-    talent_name: "Maya Johnson",
-    agency: "Beauty Collective",
-    brand: "Fenty Beauty",
-    in_out: "In",
-    deliverables: "Instagram Reels, YouTube Tutorial",
-    usage: "6 months",
-    exclusivity: "Yes - 12 months",
-    fee_amount: 45000,
-    currency: "USD",
-    confirmed: false,
-    category: "Beauty",
-  },
-  {
-    id: "4",
-    deal_name: "Tom Chen x Apple - January 2025 Product Launch",
-    date_added: "2025-01-20",
-    status: "Signed",
-    talent_name: "Tom Chen",
-    agency: "Tech Influencers",
-    brand: "Apple",
-    in_out: "In",
-    deliverables: "YouTube Review, Instagram Stories",
-    usage: "90 days",
-    exclusivity: "No",
-    fee_amount: 28000,
-    currency: "USD",
-    confirmed: true,
-    category: "Tech",
-  },
-  {
-    id: "5",
-    deal_name: "Lisa Wang x Nike - April 2025 Athletic Campaign",
-    date_added: "2025-04-10",
-    status: "Draft",
-    talent_name: "Lisa Wang",
-    agency: "Sports Marketing Pro",
-    brand: "Nike",
-    in_out: "Out",
-    deliverables: "Instagram Post, TikTok Video",
-    usage: "60 days",
-    exclusivity: "Yes - 3 months",
-    fee_amount: 19500,
-    currency: "USD",
-    confirmed: false,
-    category: "Sportswear",
-  },
-  {
-    id: "6",
-    deal_name: "Sarah Kim x Chanel - May 2025 Fashion Week",
-    date_added: "2025-05-01",
-    status: "In Review",
-    talent_name: "Sarah Kim",
-    agency: "Luxury Talent",
-    brand: "Chanel",
-    in_out: "In",
-    deliverables: "Instagram Campaign, YouTube Vlog",
-    usage: "45 days",
-    exclusivity: "Yes - 9 months",
-    fee_amount: 52000,
-    currency: "USD",
-    confirmed: false,
-    category: "Fashion",
-  },
-]
-
 export default function DealsPage() {
   const router = useRouter()
   const [searchQuery, setSearchQuery] = useState("")
@@ -162,43 +43,113 @@ export default function DealsPage() {
   const [sortBy, setSortBy] = useState<string>("newest")
   const [deals, setDeals] = useState<Deal[]>([])
   const [loading, setLoading] = useState(true)
+  const [fetchError, setFetchError] = useState<string | null>(null)
   const [reconciliationStatuses, setReconciliationStatuses] = useState<Record<string, ReconciliationStatus>>({})
   const [showUploadModal, setShowUploadModal] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
+  const [draggingDealId, setDraggingDealId] = useState<string | null>(null)
+  const [uploadingDealId, setUploadingDealId] = useState<string | null>(null)
+  const [uploadMessage, setUploadMessage] = useState<string | null>(null)
+  const [historyModalDeal, setHistoryModalDeal] = useState<Deal | null>(null)
+  const demoAuthorId = process.env.NEXT_PUBLIC_DEMO_AUTHOR_ID || "00000000-0000-0000-0000-000000000002"
 
   // Fetch deals from API
+  const fetchDeals = useCallback(async () => {
+    try {
+      setLoading(true)
+      setFetchError(null)
+
+      const response = await fetch("/api/deals")
+      const result = await response.json()
+
+      if (!response.ok || !result.success) {
+        const errorMessage = result.error || result.details || `API error: ${response.statusText}`
+        setFetchError(errorMessage)
+        setDeals([])
+        return
+      }
+
+      setDeals(result.data || [])
+    } catch (error) {
+      console.error("Error fetching deals:", error)
+      setFetchError(error instanceof Error ? error.message : "Unable to connect to server")
+      setDeals([])
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
   useEffect(() => {
-    const fetchDeals = async () => {
+    fetchDeals()
+  }, [fetchDeals])
+
+  const uploadDocumentForDeal = useCallback(
+    async (deal: Deal, file: File) => {
+      setUploadingDealId(deal.id)
+      setUploadMessage(null)
       try {
-        setLoading(true)
+        const formData = new FormData()
+        formData.append("file", file)
+        formData.append("created_by", (deal as any).created_by || demoAuthorId)
 
-        // Call API endpoint instead of direct Supabase query
-        const response = await fetch('/api/deals')
-
-        if (!response.ok) {
-          throw new Error(`API error: ${response.statusText}`)
-        }
+        const response = await fetch(`/api/deals/${deal.id}/upload`, {
+          method: "POST",
+          body: formData,
+        })
 
         const result = await response.json()
 
-        if (result.success && result.data) {
-          setDeals(result.data)
-        } else {
-          console.error("API returned error:", result.error)
-          // Fallback to empty array on error
-          setDeals([])
+        if (!response.ok || !result.success) {
+          const details = result.error || result.details || "Upload failed"
+          throw new Error(details)
         }
-      } catch (error) {
-        console.error("Error fetching deals:", error)
-        // Keep empty array to avoid blank screen during development
-        setDeals([])
-      } finally {
-        setLoading(false)
-      }
-    }
 
-    fetchDeals()
+        setUploadMessage(`Uploaded "${file.name}" to ${deal.title}`)
+        // Refresh deals so latest document status shows up
+        fetchDeals()
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Upload failed"
+        setUploadMessage(message)
+        console.error("Upload error:", err)
+      } finally {
+        setUploadingDealId(null)
+      }
+    },
+    [demoAuthorId, fetchDeals]
+  )
+
+  const handleRowDrop = useCallback(
+    async (deal: Deal, event: React.DragEvent<HTMLTableRowElement>) => {
+      event.preventDefault()
+      setDraggingDealId(null)
+      const file = event.dataTransfer?.files?.[0]
+      if (!file) return
+      await uploadDocumentForDeal(deal, file)
+    },
+    [uploadDocumentForDeal]
+  )
+
+  const handleRowDragOver = useCallback(
+    (dealId: string, event: React.DragEvent<HTMLTableRowElement>) => {
+      event.preventDefault()
+      setDraggingDealId(dealId)
+    },
+    []
+  )
+
+  const handleRowDragLeave = useCallback(() => {
+    setDraggingDealId(null)
   }, [])
+
+  const handleFileInputChange = useCallback(
+    async (deal: Deal, event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0]
+      if (!file) return
+      await uploadDocumentForDeal(deal, file)
+      event.target.value = ""
+    },
+    [uploadDocumentForDeal]
+  )
 
   const getUnifiedStatus = (deal: Deal) => {
     const reconciliation = reconciliationStatuses[deal.id]
@@ -365,7 +316,8 @@ export default function DealsPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <TooltipProvider>
+    <div className="min-h-screen bg-gray-50" data-testid="deals-page">
       <div className="mx-auto max-w-[1600px] px-6 py-8">
         {/* Header */}
         <div className="mb-8 flex items-start justify-between">
@@ -378,18 +330,90 @@ export default function DealsPage() {
               variant="outline"
               onClick={() => setShowUploadModal(!showUploadModal)}
               className="border-blue-200 text-blue-600 hover:bg-blue-50 hover:text-blue-700"
+              data-testid="upload-contract-button"
             >
               <Upload className="mr-2 h-4 w-4" />
               Upload Contract
             </Button>
             <Link href="/deals/new">
-              <Button className="bg-blue-600 hover:bg-blue-700">
+              <Button className="bg-blue-600 hover:bg-blue-700" data-testid="new-deal-button">
                 <Plus className="mr-2 h-4 w-4" />
                 New Deal
               </Button>
             </Link>
           </div>
         </div>
+
+        {/* Stats Summary Bar */}
+        {!loading && deals.length > 0 && (
+          <div className="mb-6 grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="bg-white rounded-xl border border-gray-200 p-4 flex items-center gap-4">
+              <div className="w-12 h-12 rounded-lg bg-slate-100 flex items-center justify-center">
+                <span className="text-2xl">📋</span>
+              </div>
+              <div>
+                <p className="text-2xl font-bold text-gray-900">{deals.filter(d => getUnifiedStatus(d).stage === "Pending").length}</p>
+                <p className="text-sm text-gray-500">Pending</p>
+              </div>
+            </div>
+            <div className="bg-white rounded-xl border border-amber-200 p-4 flex items-center gap-4">
+              <div className="w-12 h-12 rounded-lg bg-amber-100 flex items-center justify-center">
+                <span className="text-2xl">✏️</span>
+              </div>
+              <div>
+                <p className="text-2xl font-bold text-amber-700">{deals.filter(d => getUnifiedStatus(d).stage === "Redlining").length}</p>
+                <p className="text-sm text-amber-600">Redlining</p>
+              </div>
+            </div>
+            <div className="bg-white rounded-xl border border-blue-200 p-4 flex items-center gap-4">
+              <div className="w-12 h-12 rounded-lg bg-blue-100 flex items-center justify-center">
+                <span className="text-2xl">✅</span>
+              </div>
+              <div>
+                <p className="text-2xl font-bold text-blue-700">{deals.filter(d => getUnifiedStatus(d).stage === "Approved").length}</p>
+                <p className="text-sm text-blue-600">Approved</p>
+              </div>
+            </div>
+            <div className="bg-white rounded-xl border border-emerald-200 p-4 flex items-center gap-4">
+              <div className="w-12 h-12 rounded-lg bg-emerald-100 flex items-center justify-center">
+                <span className="text-2xl">🎉</span>
+              </div>
+              <div>
+                <p className="text-2xl font-bold text-emerald-700">{deals.filter(d => getUnifiedStatus(d).stage === "Signed").length}</p>
+                <p className="text-sm text-emerald-600">Signed</p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {(uploadingDealId || uploadMessage) && (
+          <div className="mb-4 rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+            {uploadingDealId ? "Uploading document to deal..." : uploadMessage}
+          </div>
+        )}
+
+        {/* Error Banner */}
+        {fetchError && !loading && (
+          <div data-testid="deals-error-banner" className="mb-4 rounded-lg border border-red-200 bg-red-50 p-4">
+            <div className="flex items-start gap-3">
+              <AlertCircle className="h-5 w-5 text-red-500 mt-0.5 flex-shrink-0" />
+              <div className="flex-1">
+                <p className="font-semibold text-red-800">Unable to load deals</p>
+                <p className="text-sm text-red-600 mt-1">{fetchError}</p>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => { setFetchError(null); fetchDeals(); }}
+                className="flex-shrink-0 border-red-200 text-red-700 hover:bg-red-100"
+                data-testid="deals-retry-button"
+              >
+                <RefreshCw className="h-4 w-4 mr-1" />
+                Retry
+              </Button>
+            </div>
+          </div>
+        )}
 
         {/* Upload Modal with drag and drop */}
         {showUploadModal && (
@@ -447,13 +471,14 @@ export default function DealsPage() {
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="pl-10"
+                data-testid="deals-search-input"
               />
             </div>
 
             {/* Filters */}
             <div className="flex flex-wrap gap-3">
               <Select value={statusFilter} onValueChange={setStatusFilter}>
-                <SelectTrigger className="w-[140px]">
+                <SelectTrigger className="w-[140px]" data-testid="deals-status-filter">
                   <SelectValue placeholder="All Statuses" />
                 </SelectTrigger>
                 <SelectContent>
@@ -466,7 +491,7 @@ export default function DealsPage() {
               </Select>
 
               <Select value={categoryFilter} onValueChange={setCategoryFilter}>
-                <SelectTrigger className="w-[150px]">
+                <SelectTrigger className="w-[150px]" data-testid="deals-category-filter">
                   <SelectValue placeholder="All Categories" />
                 </SelectTrigger>
                 <SelectContent>
@@ -479,7 +504,7 @@ export default function DealsPage() {
               </Select>
 
               <Select value={sortBy} onValueChange={setSortBy}>
-                <SelectTrigger className="w-[150px]">
+                <SelectTrigger className="w-[150px]" data-testid="deals-sort-select">
                   <SelectValue placeholder="Sort by" />
                 </SelectTrigger>
                 <SelectContent>
@@ -495,7 +520,7 @@ export default function DealsPage() {
 
         {/* Table */}
         {filteredAndSortedDeals.length === 0 ? (
-          <div className="rounded-lg border border-gray-200 bg-white p-12 text-center">
+          <div className="rounded-lg border border-gray-200 bg-white p-12 text-center" data-testid="deals-empty-state">
             <div className="text-6xl">📋</div>
             <h3 className="mt-4 text-xl font-semibold text-gray-900">No deals found</h3>
             <p className="mt-2 text-gray-600">
@@ -510,25 +535,26 @@ export default function DealsPage() {
             )}
           </div>
         ) : loading ? (
-          <div className="rounded-lg border border-gray-200 bg-white p-12 text-center">
+          <div className="rounded-lg border border-gray-200 bg-white p-12 text-center" data-testid="deals-loading-state">
             <div className="text-4xl mb-4">⏳</div>
             <p className="text-gray-600">Loading deals...</p>
           </div>
         ) : (
-          <div className="deals-table-container overflow-x-auto rounded-lg border border-gray-200 bg-white shadow-sm">
-            <table className="w-full text-sm">
+          <div className="deals-table-container overflow-x-auto rounded-lg border border-gray-200 bg-white shadow-sm" data-testid="deals-table-container">
+            <table className="w-full text-sm" data-testid="deals-table">
               <thead className="bg-gray-50">
                 <tr>
                   <th className="px-4 py-3 text-left font-semibold text-gray-900 min-w-[280px]">Deal Name</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-900">Date Added</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-900 min-w-[180px]">Contract Status</th>
+                  <th className="px-4 py-3 text-center font-semibold text-gray-900">Contract Ver.</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-900">Talent</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-900">Brand</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-900">Fee</th>
                   <th className="px-4 py-3 text-left font-semibold text-gray-900">Actions</th>
                 </tr>
               </thead>
-              <tbody>
+              <tbody data-testid="deals-table-body">
                 {filteredAndSortedDeals.map((deal, index) => {
                   const unifiedStatus = getUnifiedStatus(deal)
                   // Helper to get pre-agreed term value
@@ -539,11 +565,26 @@ export default function DealsPage() {
                   return (
                     <tr
                       key={deal.id}
-                      className={`border-t border-gray-200 transition-colors hover:bg-blue-50 ${
+                      data-testid={`deal-row-${deal.id}`}
+                      onDragOver={(e) => handleRowDragOver(deal.id, e)}
+                      onDragLeave={handleRowDragLeave}
+                      onDrop={(e) => handleRowDrop(deal, e)}
+                      className={`group relative border-t border-gray-200 transition-colors hover:bg-blue-50 ${
                         index % 2 === 1 ? "bg-gray-50/50" : ""
-                      }`}
+                      } ${draggingDealId === deal.id ? "ring-2 ring-blue-400 bg-blue-100" : ""}`}
                     >
-                      <td className="px-4 py-4 min-w-[280px]">
+                      {/* Drag overlay */}
+                      {draggingDealId === deal.id && (
+                        <td colSpan={8} className="absolute inset-0 p-0 z-10">
+                          <div className="flex items-center justify-center h-full bg-blue-100/95 border-2 border-dashed border-blue-400 rounded">
+                            <div className="flex items-center gap-2 text-blue-700 font-medium">
+                              <FileUp className="h-5 w-5 animate-bounce" />
+                              <span>Drop to upload contract</span>
+                            </div>
+                          </div>
+                        </td>
+                      )}
+                      <td className="px-4 py-4 min-w-[280px]" data-testid={`deal-title-${deal.id}`}>
                         <Link
                           href={`/deals/${deal.id}`}
                           className="font-semibold text-blue-600 hover:text-blue-700 hover:underline text-sm"
@@ -552,7 +593,7 @@ export default function DealsPage() {
                         </Link>
                       </td>
                       <td className="px-4 py-3 text-gray-600">{formatDate(deal.created_at || "")}</td>
-                      <td className="px-4 py-3">
+                      <td className="px-4 py-3" data-testid={`deal-status-${deal.id}`}>
                         <div className="relative inline-flex items-center overflow-hidden rounded-md border-2 min-w-[140px]">
                           {/* Background progress fill for Redlining status */}
                           {unifiedStatus.stage === "Redlining" && (
@@ -583,24 +624,52 @@ export default function DealsPage() {
                           </div>
                         </div>
                       </td>
+                      <td className="px-4 py-3 text-center">
+                        <span className={`inline-flex items-center justify-center px-2.5 py-1 rounded-full font-semibold text-xs ${
+                          (deal.version || 1) >= 3
+                            ? "bg-emerald-100 text-emerald-700 ring-1 ring-emerald-200"
+                            : (deal.version || 1) === 2
+                              ? "bg-blue-100 text-blue-700 ring-1 ring-blue-200"
+                              : "bg-slate-100 text-slate-600 ring-1 ring-slate-200"
+                        }`}>
+                          v{deal.version || 1}
+                        </span>
+                      </td>
                       <td className="px-4 py-3 text-gray-900">{deal.talent_name}</td>
                       <td className="px-4 py-3 text-gray-900">{deal.client_name}</td>
                       <td className="px-4 py-3 font-semibold text-gray-900">
                         {formatCurrency(deal.value || 0, deal.currency || "USD")}
                       </td>
-                      <td className="px-4 py-3">
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
-                              <MoreVertical className="h-4 w-4" />
-                            </Button>
-                          </DropdownMenuTrigger>
+                      <td className="px-4 py-3" data-testid={`deal-actions-${deal.id}`}>
+                        <div className="flex items-center gap-2">
+                          {/* Hover-visible upload hint */}
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <div className="opacity-0 group-hover:opacity-40 hover:!opacity-70 transition-opacity cursor-pointer p-1">
+                                <Upload className="h-4 w-4 text-blue-500" />
+                              </div>
+                            </TooltipTrigger>
+                            <TooltipContent side="left">
+                              <p>Drag a contract file here to upload</p>
+                            </TooltipContent>
+                          </Tooltip>
+
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
+                                <MoreVertical className="h-4 w-4" />
+                              </Button>
+                            </DropdownMenuTrigger>
                           <DropdownMenuContent align="end">
                             <DropdownMenuItem asChild>
                               <Link href={`/deals/${deal.id}`}>View Details</Link>
                             </DropdownMenuItem>
                             <DropdownMenuItem asChild>
                               <Link href={`/deals/${deal.id}/edit`}>Edit Deal</Link>
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => setHistoryModalDeal(deal)}>
+                              <History className="mr-2 h-4 w-4" />
+                              Version History
                             </DropdownMenuItem>
                             <DropdownMenuSeparator />
                             <DropdownMenuItem asChild>
@@ -610,10 +679,22 @@ export default function DealsPage() {
                                   : "Start Reconciliation"}
                               </Link>
                             </DropdownMenuItem>
+                            <DropdownMenuItem className="cursor-pointer">
+                              <label className="flex w-full cursor-pointer items-center">
+                                <input
+                                  type="file"
+                                  accept=".pdf,.doc,.docx,.txt"
+                                  className="hidden"
+                                  onChange={(e) => handleFileInputChange(deal, e)}
+                                />
+                                Upload invoice/contract
+                              </label>
+                            </DropdownMenuItem>
                             <DropdownMenuSeparator />
                             <DropdownMenuItem className="text-red-600">Archive Deal</DropdownMenuItem>
                           </DropdownMenuContent>
-                        </DropdownMenu>
+                          </DropdownMenu>
+                        </div>
                       </td>
                     </tr>
                   )
@@ -624,5 +705,16 @@ export default function DealsPage() {
         )}
       </div>
     </div>
+
+    {/* Version History Modal */}
+    {historyModalDeal && (
+      <VersionHistoryModal
+        dealId={historyModalDeal.id}
+        dealTitle={historyModalDeal.title}
+        open={!!historyModalDeal}
+        onOpenChange={(open) => !open && setHistoryModalDeal(null)}
+      />
+    )}
+    </TooltipProvider>
   )
 }

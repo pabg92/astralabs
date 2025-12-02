@@ -40,7 +40,7 @@ export async function POST(request: NextRequest) {
         resolution_action: "reject",
         reviewed_at: new Date().toISOString(),
         metadata: {
-          ...queueItem.metadata,
+          ...((queueItem.metadata as Record<string, unknown> | null) || {}),
           rejection_reason: reason,
         },
         // TODO: Get admin user ID from session

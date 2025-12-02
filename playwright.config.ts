@@ -1,8 +1,19 @@
 import { defineConfig, devices } from '@playwright/test';
 
+// Set environment variables for E2E testing
+process.env.E2E_TESTING = 'true';
+process.env.PLAYWRIGHT_TEST = 'true';
+
 /**
  * Playwright E2E Testing Configuration
  * For bulletproof upload → reconciliation regression testing
+ *
+ * Features:
+ * - Screenshots on every step
+ * - Video recording for all tests
+ * - HAR network logging
+ * - Comprehensive trace capture
+ * - Auth bypass via E2E_TESTING env var
  */
 export default defineConfig({
   // Test directory
@@ -39,7 +50,7 @@ export default defineConfig({
   // Shared settings for all projects
   use: {
     // Base URL for the application
-    baseURL: 'http://localhost:4000',
+    baseURL: process.env.BASE_URL || 'http://localhost:3000',
 
     // Collect trace for every test
     trace: 'on',
@@ -50,9 +61,9 @@ export default defineConfig({
       size: { width: 1280, height: 720 }
     },
 
-    // Take screenshot on failure
+    // Take screenshot on every step and on failure
     screenshot: {
-      mode: 'only-on-failure',
+      mode: 'on',
       fullPage: true
     },
 
@@ -96,9 +107,24 @@ export default defineConfig({
 
   // Run local dev server before tests if needed
   webServer: process.env.CI ? {
-    command: 'pnpm dev',
+    command: 'E2E_TESTING=true PLAYWRIGHT_TEST=true pnpm dev',
     port: 3000,
     timeout: 120000,
     reuseExistingServer: !process.env.CI,
-  } : undefined,
+    env: {
+      E2E_TESTING: 'true',
+      PLAYWRIGHT_TEST: 'true',
+    },
+  } : {
+    // For local development, assume server is already running
+    // but still set the env vars
+    command: 'E2E_TESTING=true PLAYWRIGHT_TEST=true pnpm dev',
+    port: 3000,
+    timeout: 120000,
+    reuseExistingServer: true,
+    env: {
+      E2E_TESTING: 'true',
+      PLAYWRIGHT_TEST: 'true',
+    },
+  },
 });

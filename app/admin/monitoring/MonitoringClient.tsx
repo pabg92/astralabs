@@ -22,9 +22,9 @@ interface Alert {
 
 interface StuckDocument {
   document_id: string
-  deal_id: string
+  deal_id: string | null
   original_filename: string
-  processing_status: string
+  processing_status: string | null
   error_message: string | null
   created_at: string
   age_minutes: number

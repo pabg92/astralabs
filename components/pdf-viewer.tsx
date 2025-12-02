@@ -134,21 +134,21 @@ export function PDFViewer({
 
   const handleZoomIn = () => {
     if (zoomLevel === "fit" || zoomLevel === "page") {
-      setZoomLevel(100)
+      setZoomLevel(100 as ZoomLevel)
     } else if (zoomLevel < 200) {
       const levels: (number | "fit")[] = [50, 75, 100, 125, 150, 200]
       const currentIndex = levels.indexOf(zoomLevel as number)
-      setZoomLevel(levels[currentIndex + 1] as number)
+      setZoomLevel(levels[currentIndex + 1] as ZoomLevel)
     }
   }
 
   const handleZoomOut = () => {
     if (zoomLevel === "fit" || zoomLevel === "page") {
-      setZoomLevel(50)
+      setZoomLevel(50 as ZoomLevel)
     } else if (zoomLevel > 50) {
       const levels: (number | "fit")[] = [50, 75, 100, 125, 150, 200]
       const currentIndex = levels.indexOf(zoomLevel as number)
-      setZoomLevel(levels[currentIndex - 1] as number)
+      setZoomLevel(levels[currentIndex - 1] as ZoomLevel)
     }
   }
 

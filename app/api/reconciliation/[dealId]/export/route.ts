@@ -13,10 +13,10 @@ type RAGStatus = Database["public"]["Enums"]["rag_status"]
  */
 export async function GET(
   request: NextRequest,
-  { params }: { params: { dealId: string } }
+  { params }: { params: Promise<{ dealId: string }> }
 ) {
   try {
-    const { dealId } = params
+    const { dealId } = await params
     const { searchParams } = new URL(request.url)
     const format = searchParams.get("format") || "text" // text, json, or markdown
     const documentId = searchParams.get("document_id") // optional: specific document to export

@@ -108,7 +108,8 @@ export async function GET() {
 
     // Combine document data with edge function aggregates
     const stuckData = stuckDocuments.map(doc => {
-      const ageMinutes = (Date.now() - new Date(doc.created_at).getTime()) / (60 * 1000)
+      const createdDate = doc.created_at ? new Date(doc.created_at) : new Date(0)
+      const ageMinutes = (Date.now() - createdDate.getTime()) / (60 * 1000)
       const logs = logsByDocument.get(doc.id)
 
       return {
@@ -117,7 +118,7 @@ export async function GET() {
         original_filename: doc.original_filename,
         processing_status: doc.processing_status,
         error_message: doc.error_message,
-        created_at: doc.created_at,
+        created_at: doc.created_at ?? new Date().toISOString(),
         age_minutes: Math.round(ageMinutes * 100) / 100,
         edge_function_calls: logs ? logs.ids.size : 0,
         execution_history: logs ? Array.from(logs.history).join(', ') : null

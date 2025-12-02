@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { supabaseServer } from "@/lib/supabase/server"
+import type { Database } from "@/types/database"
 
 /**
  * POST /api/admin/review-queue/accept
@@ -72,31 +73,35 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    const metadata = (queueItem.metadata as Record<string, any>) || {}
+
     // 4. Insert into legal_clause_library
+    const insertPayload: Database["public"]["Tables"]["legal_clause_library"]["Insert"] = {
+      clause_id,
+      category: category || metadata.clause_type || "general",
+      clause_type: metadata.clause_type || "General",
+      standard_text: queueItem.original_text || "",
+      risk_level: (risk_level as any) || "medium",
+      is_required: false,
+      tags: (tags as string[] | null | undefined) || [],
+      version: 1,
+      metadata: {
+        embedding_model: "embed-english-v3.0",
+        cohere_embedding: metadata.embedding || null,
+        approved_from_queue: review_queue_id,
+        similarity_score: metadata.similarity_score,
+      } as unknown as Database["public"]["Tables"]["legal_clause_library"]["Insert"]["metadata"],
+      plain_english_summary,
+      factual_correctness_score: metadata.factual_correctness_score ?? 1.0,
+      new_clause_flag: false, // No longer "new" once approved
+      parent_clause_id: action === "add_variant" ? parent_clause_id : null,
+      variation_letter: action === "add_variant" ? variation_letter : "a",
+      active: true
+    }
+
     const { data: newClause, error: insertError } = await supabaseServer
       .from("legal_clause_library")
-      .insert({
-        clause_id,
-        category: category || queueItem.metadata?.clause_type || "general",
-        clause_type: queueItem.metadata?.clause_type || "General",
-        standard_text: queueItem.original_text,
-        risk_level: risk_level || "medium",
-        is_required: false,
-        tags: tags || [],
-        version: 1,
-        metadata: {
-          embedding_model: "embed-english-v3.0",
-          cohere_embedding: queueItem.metadata?.embedding || null,
-          approved_from_queue: review_queue_id,
-          similarity_score: queueItem.metadata?.similarity_score,
-        },
-        // CBA fields (if columns exist, otherwise ignored)
-        plain_english_summary,
-        factual_correctness_score: queueItem.metadata?.factual_correctness_score || 1.0,
-        new_clause_flag: false, // No longer "new" once approved
-        parent_clause_id: action === "add_variant" ? parent_clause_id : null,
-        variation_letter: action === "add_variant" ? variation_letter : "a",
-      })
+      .insert([insertPayload])
       .select()
       .single()
 

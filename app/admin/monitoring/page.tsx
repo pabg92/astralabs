@@ -108,12 +108,12 @@ async function fetchAlertsData() {
       .gte('created_at', oneHourAgo)
   ])
 
-  const alerts = []
+  const alerts: { alert_type: string; count: number; severity: 'critical' | 'warning' | 'high' }[] = []
 
   if ((stuckDocs.count || 0) > 0) {
     alerts.push({
       alert_type: 'stuck_documents',
-      count: stuckDocs.count,
+      count: Number(stuckDocs.count || 0),
       severity: 'critical'
     })
   }
@@ -121,7 +121,7 @@ async function fetchAlertsData() {
   if ((recentErrors.count || 0) > 10) {
     alerts.push({
       alert_type: 'high_error_rate',
-      count: recentErrors.count,
+      count: Number(recentErrors.count || 0),
       severity: 'warning'
     })
   }
@@ -129,7 +129,7 @@ async function fetchAlertsData() {
   if ((criticalReviews.count || 0) > 5) {
     alerts.push({
       alert_type: 'critical_reviews_backlog',
-      count: criticalReviews.count,
+      count: Number(criticalReviews.count || 0),
       severity: 'high'
     })
   }
@@ -137,7 +137,7 @@ async function fetchAlertsData() {
   if ((slowProcessing.count || 0) > 5) {
     alerts.push({
       alert_type: 'slow_processing',
-      count: slowProcessing.count,
+      count: Number(slowProcessing.count || 0),
       severity: 'warning'
     })
   }
@@ -180,7 +180,8 @@ async function fetchStuckDocuments() {
   })
 
   return stuckDocuments.map(doc => {
-    const ageMinutes = (Date.now() - new Date(doc.created_at).getTime()) / (60 * 1000)
+    const createdDate = doc.created_at ? new Date(doc.created_at) : new Date(0)
+    const ageMinutes = (Date.now() - createdDate.getTime()) / (60 * 1000)
     const logs = logsByDocument.get(doc.id)
 
     return {
@@ -189,7 +190,7 @@ async function fetchStuckDocuments() {
       original_filename: doc.original_filename,
       processing_status: doc.processing_status,
       error_message: doc.error_message,
-      created_at: doc.created_at,
+      created_at: doc.created_at ?? new Date().toISOString(),
       age_minutes: Math.round(ageMinutes * 100) / 100,
       edge_function_calls: logs ? logs.ids.size : 0,
       execution_history: logs ? Array.from(logs.history).join(', ') : null
