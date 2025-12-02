@@ -17,12 +17,14 @@ export type Database = {
       admin_review_queue: {
         Row: {
           clause_boundary_id: string | null
+          cluster_id: string | null
           confidence_score: number | null
           corrected_clause_type: string | null
           corrected_text: string | null
           correction_reason: string | null
           created_at: string | null
           document_id: string
+          factual_correctness_score: number | null
           flagged_at: string | null
           flagged_by: string | null
           id: string
@@ -31,23 +33,30 @@ export type Database = {
           original_clause_type: string | null
           original_text: string | null
           priority: string | null
+          resolution_action: string | null
+          resulting_clause_id: string | null
           review_data: Json | null
           review_notes: string | null
           review_type: string
           reviewed_at: string | null
           reviewer_id: string | null
           status: string | null
+          submitted_by: string[] | null
+          suggested_parent_clause_id: string | null
+          suggested_variation_letter: string | null
           tenant_id: string | null
           updated_at: string | null
         }
         Insert: {
           clause_boundary_id?: string | null
+          cluster_id?: string | null
           confidence_score?: number | null
           corrected_clause_type?: string | null
           corrected_text?: string | null
           correction_reason?: string | null
           created_at?: string | null
           document_id: string
+          factual_correctness_score?: number | null
           flagged_at?: string | null
           flagged_by?: string | null
           id?: string
@@ -56,23 +65,30 @@ export type Database = {
           original_clause_type?: string | null
           original_text?: string | null
           priority?: string | null
+          resolution_action?: string | null
+          resulting_clause_id?: string | null
           review_data?: Json | null
           review_notes?: string | null
           review_type: string
           reviewed_at?: string | null
           reviewer_id?: string | null
           status?: string | null
+          submitted_by?: string[] | null
+          suggested_parent_clause_id?: string | null
+          suggested_variation_letter?: string | null
           tenant_id?: string | null
           updated_at?: string | null
         }
         Update: {
           clause_boundary_id?: string | null
+          cluster_id?: string | null
           confidence_score?: number | null
           corrected_clause_type?: string | null
           corrected_text?: string | null
           correction_reason?: string | null
           created_at?: string | null
           document_id?: string
+          factual_correctness_score?: number | null
           flagged_at?: string | null
           flagged_by?: string | null
           id?: string
@@ -81,12 +97,17 @@ export type Database = {
           original_clause_type?: string | null
           original_text?: string | null
           priority?: string | null
+          resolution_action?: string | null
+          resulting_clause_id?: string | null
           review_data?: Json | null
           review_notes?: string | null
           review_type?: string
           reviewed_at?: string | null
           reviewer_id?: string | null
           status?: string | null
+          submitted_by?: string[] | null
+          suggested_parent_clause_id?: string | null
+          suggested_variation_letter?: string | null
           tenant_id?: string | null
           updated_at?: string | null
         }
@@ -109,10 +130,14 @@ export type Database = {
           content: string | null
           created_at: string | null
           document_id: string | null
+          embedding: string | null
+          end_char: number | null
           end_page: number | null
           id: string
           parsing_issues: Json | null
           parsing_quality: number | null
+          section_title: string | null
+          start_char: number | null
           start_page: number | null
           tenant_id: string | null
         }
@@ -124,10 +149,14 @@ export type Database = {
           content?: string | null
           created_at?: string | null
           document_id?: string | null
+          embedding?: string | null
+          end_char?: number | null
           end_page?: number | null
           id?: string
           parsing_issues?: Json | null
           parsing_quality?: number | null
+          section_title?: string | null
+          start_char?: number | null
           start_page?: number | null
           tenant_id?: string | null
         }
@@ -139,10 +168,14 @@ export type Database = {
           content?: string | null
           created_at?: string | null
           document_id?: string | null
+          embedding?: string | null
+          end_char?: number | null
           end_page?: number | null
           id?: string
           parsing_issues?: Json | null
           parsing_quality?: number | null
+          section_title?: string | null
+          start_char?: number | null
           start_page?: number | null
           tenant_id?: string | null
         }
@@ -163,6 +196,55 @@ export type Database = {
           },
           {
             foreignKeyName: "clause_boundaries_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      clause_comments: {
+        Row: {
+          author_id: string | null
+          clause_boundary_id: string
+          comment_text: string
+          created_at: string
+          id: string
+          tenant_id: string
+        }
+        Insert: {
+          author_id?: string | null
+          clause_boundary_id: string
+          comment_text: string
+          created_at?: string
+          id?: string
+          tenant_id: string
+        }
+        Update: {
+          author_id?: string | null
+          clause_boundary_id?: string
+          comment_text?: string
+          created_at?: string
+          id?: string
+          tenant_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "clause_comments_author_id_fkey"
+            columns: ["author_id"]
+            isOneToOne: false
+            referencedRelation: "user_profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "clause_comments_clause_boundary_id_fkey"
+            columns: ["clause_boundary_id"]
+            isOneToOne: false
+            referencedRelation: "clause_boundaries"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "clause_comments_tenant_id_fkey"
             columns: ["tenant_id"]
             isOneToOne: false
             referencedRelation: "tenants"
@@ -214,55 +296,6 @@ export type Database = {
             columns: ["library_clause_id"]
             isOneToOne: false
             referencedRelation: "v_new_clauses_pending_review"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      clause_comments: {
-        Row: {
-          author_id: string | null
-          clause_boundary_id: string
-          comment_text: string
-          created_at: string
-          id: string
-          tenant_id: string
-        }
-        Insert: {
-          author_id?: string | null
-          clause_boundary_id: string
-          comment_text: string
-          created_at?: string
-          id?: string
-          tenant_id: string
-        }
-        Update: {
-          author_id?: string | null
-          clause_boundary_id?: string
-          comment_text?: string
-          created_at?: string
-          id?: string
-          tenant_id?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "clause_comments_author_id_fkey"
-            columns: ["author_id"]
-            isOneToOne: false
-            referencedRelation: "user_profiles"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "clause_comments_clause_boundary_id_fkey"
-            columns: ["clause_boundary_id"]
-            isOneToOne: false
-            referencedRelation: "clause_boundaries"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "clause_comments_tenant_id_fkey"
-            columns: ["tenant_id"]
-            isOneToOne: false
-            referencedRelation: "tenants"
             referencedColumns: ["id"]
           },
         ]
@@ -483,70 +516,6 @@ export type Database = {
           },
         ]
       }
-      clause_reviews: {
-        Row: {
-          clause_boundary_id: string
-          comments: string | null
-          created_at: string
-          decision: string
-          document_id: string
-          id: string
-          reviewer_email: string | null
-          reviewer_id: string
-          reviewer_name: string | null
-          suggested_changes: string | null
-          updated_at: string
-        }
-        Insert: {
-          clause_boundary_id: string
-          comments?: string | null
-          created_at?: string
-          decision: string
-          document_id: string
-          id?: string
-          reviewer_email?: string | null
-          reviewer_id: string
-          reviewer_name?: string | null
-          suggested_changes?: string | null
-          updated_at?: string
-        }
-        Update: {
-          clause_boundary_id?: string
-          comments?: string | null
-          created_at?: string
-          decision?: string
-          document_id?: string
-          id?: string
-          reviewer_email?: string | null
-          reviewer_id?: string
-          reviewer_name?: string | null
-          suggested_changes?: string | null
-          updated_at?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "clause_reviews_clause_boundary_id_fkey"
-            columns: ["clause_boundary_id"]
-            isOneToOne: false
-            referencedRelation: "clause_boundaries"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "clause_reviews_document_id_fkey"
-            columns: ["document_id"]
-            isOneToOne: false
-            referencedRelation: "document_repository"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "clause_reviews_document_id_fkey"
-            columns: ["document_id"]
-            isOneToOne: false
-            referencedRelation: "v_pii_summary"
-            referencedColumns: ["document_id"]
-          },
-        ]
-      }
       clause_redlines: {
         Row: {
           author_id: string | null
@@ -598,6 +567,86 @@ export type Database = {
           },
           {
             foreignKeyName: "clause_redlines_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      clause_reviews: {
+        Row: {
+          approved_at: string | null
+          clause_boundary_id: string
+          comments: string | null
+          created_at: string
+          decision: string
+          document_id: string
+          id: string
+          reviewer_email: string | null
+          reviewer_id: string
+          reviewer_name: string | null
+          risk_accepted: boolean | null
+          suggested_changes: string | null
+          tenant_id: string | null
+          updated_at: string
+        }
+        Insert: {
+          approved_at?: string | null
+          clause_boundary_id: string
+          comments?: string | null
+          created_at?: string
+          decision: string
+          document_id: string
+          id?: string
+          reviewer_email?: string | null
+          reviewer_id: string
+          reviewer_name?: string | null
+          risk_accepted?: boolean | null
+          suggested_changes?: string | null
+          tenant_id?: string | null
+          updated_at?: string
+        }
+        Update: {
+          approved_at?: string | null
+          clause_boundary_id?: string
+          comments?: string | null
+          created_at?: string
+          decision?: string
+          document_id?: string
+          id?: string
+          reviewer_email?: string | null
+          reviewer_id?: string
+          reviewer_name?: string | null
+          risk_accepted?: boolean | null
+          suggested_changes?: string | null
+          tenant_id?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "clause_reviews_clause_boundary_id_fkey"
+            columns: ["clause_boundary_id"]
+            isOneToOne: false
+            referencedRelation: "clause_boundaries"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "clause_reviews_document_id_fkey"
+            columns: ["document_id"]
+            isOneToOne: false
+            referencedRelation: "document_repository"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "clause_reviews_document_id_fkey"
+            columns: ["document_id"]
+            isOneToOne: false
+            referencedRelation: "v_pii_summary"
+            referencedColumns: ["document_id"]
+          },
+          {
+            foreignKeyName: "clause_reviews_tenant_id_fkey"
             columns: ["tenant_id"]
             isOneToOne: false
             referencedRelation: "tenants"
@@ -980,6 +1029,7 @@ export type Database = {
           created_by: string | null
           deal_id: string | null
           error_message: string | null
+          extracted_text: string | null
           id: string
           metadata: Json | null
           mime_type: string
@@ -1002,6 +1052,7 @@ export type Database = {
           created_by?: string | null
           deal_id?: string | null
           error_message?: string | null
+          extracted_text?: string | null
           id?: string
           metadata?: Json | null
           mime_type: string
@@ -1024,6 +1075,7 @@ export type Database = {
           created_by?: string | null
           deal_id?: string | null
           error_message?: string | null
+          extracted_text?: string | null
           id?: string
           metadata?: Json | null
           mime_type?: string
@@ -1056,6 +1108,13 @@ export type Database = {
             referencedColumns: ["id"]
           },
           {
+            foreignKeyName: "document_repository_deal_id_fkey"
+            columns: ["deal_id"]
+            isOneToOne: false
+            referencedRelation: "deals"
+            referencedColumns: ["id"]
+          },
+          {
             foreignKeyName: "document_repository_tenant_id_fkey"
             columns: ["tenant_id"]
             isOneToOne: false
@@ -1064,11 +1123,146 @@ export type Database = {
           },
         ]
       }
+      edge_function_logs: {
+        Row: {
+          clause_count: number | null
+          created_at: string | null
+          document_id: string | null
+          error_message: string | null
+          execution_time_ms: number | null
+          id: string
+          raw_payload: Json | null
+          stage: string
+          status: string
+        }
+        Insert: {
+          clause_count?: number | null
+          created_at?: string | null
+          document_id?: string | null
+          error_message?: string | null
+          execution_time_ms?: number | null
+          id?: string
+          raw_payload?: Json | null
+          stage: string
+          status: string
+        }
+        Update: {
+          clause_count?: number | null
+          created_at?: string | null
+          document_id?: string | null
+          error_message?: string | null
+          execution_time_ms?: number | null
+          id?: string
+          raw_payload?: Json | null
+          stage?: string
+          status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "edge_function_logs_document_id_fkey"
+            columns: ["document_id"]
+            isOneToOne: false
+            referencedRelation: "document_repository"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "edge_function_logs_document_id_fkey"
+            columns: ["document_id"]
+            isOneToOne: false
+            referencedRelation: "v_pii_summary"
+            referencedColumns: ["document_id"]
+          },
+        ]
+      }
+      extraction_comparisons: {
+        Row: {
+          avg_clause_length: number | null
+          clause_count: number | null
+          created_at: string
+          document_id: string
+          extraction_mode: string
+          id: string
+          input_chars: number | null
+          mega_clause_count: number | null
+          mega_clause_rate: number | null
+          model: string
+          processing_time_ms: number | null
+          quality_action: string | null
+          quality_passed: boolean | null
+          quality_warnings: string[] | null
+          raw_metrics: Json | null
+          tenant_id: string
+          tokens_in_estimate: number | null
+          tokens_out_estimate: number | null
+          under_min_count: number | null
+        }
+        Insert: {
+          avg_clause_length?: number | null
+          clause_count?: number | null
+          created_at?: string
+          document_id: string
+          extraction_mode?: string
+          id?: string
+          input_chars?: number | null
+          mega_clause_count?: number | null
+          mega_clause_rate?: number | null
+          model: string
+          processing_time_ms?: number | null
+          quality_action?: string | null
+          quality_passed?: boolean | null
+          quality_warnings?: string[] | null
+          raw_metrics?: Json | null
+          tenant_id: string
+          tokens_in_estimate?: number | null
+          tokens_out_estimate?: number | null
+          under_min_count?: number | null
+        }
+        Update: {
+          avg_clause_length?: number | null
+          clause_count?: number | null
+          created_at?: string
+          document_id?: string
+          extraction_mode?: string
+          id?: string
+          input_chars?: number | null
+          mega_clause_count?: number | null
+          mega_clause_rate?: number | null
+          model?: string
+          processing_time_ms?: number | null
+          quality_action?: string | null
+          quality_passed?: boolean | null
+          quality_warnings?: string[] | null
+          raw_metrics?: Json | null
+          tenant_id?: string
+          tokens_in_estimate?: number | null
+          tokens_out_estimate?: number | null
+          under_min_count?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "extraction_comparisons_document_id_fkey"
+            columns: ["document_id"]
+            isOneToOne: false
+            referencedRelation: "document_repository"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "extraction_comparisons_document_id_fkey"
+            columns: ["document_id"]
+            isOneToOne: false
+            referencedRelation: "v_pii_summary"
+            referencedColumns: ["document_id"]
+          },
+        ]
+      }
       legal_clause_library: {
         Row: {
           active: boolean | null
+          approved_at: string | null
+          approved_by: string | null
           category: Database["public"]["Enums"]["clause_category"]
           clause_id: string
+          clause_text_redacted: string | null
           clause_type: string
           created_at: string | null
           created_by: string | null
@@ -1077,17 +1271,25 @@ export type Database = {
           id: string
           is_required: boolean | null
           metadata: Json | null
+          needs_review: boolean | null
           new_clause_flag: boolean
+          parent_clause_id: string | null
+          plain_english_summary: string | null
           risk_level: Database["public"]["Enums"]["risk_level"]
           standard_text: string
+          submitted_by: string | null
           tags: string[] | null
           updated_at: string | null
+          variation_letter: string | null
           version: number | null
         }
         Insert: {
           active?: boolean | null
+          approved_at?: string | null
+          approved_by?: string | null
           category: Database["public"]["Enums"]["clause_category"]
           clause_id: string
+          clause_text_redacted?: string | null
           clause_type: string
           created_at?: string | null
           created_by?: string | null
@@ -1096,17 +1298,25 @@ export type Database = {
           id?: string
           is_required?: boolean | null
           metadata?: Json | null
+          needs_review?: boolean | null
           new_clause_flag?: boolean
+          parent_clause_id?: string | null
+          plain_english_summary?: string | null
           risk_level?: Database["public"]["Enums"]["risk_level"]
           standard_text: string
+          submitted_by?: string | null
           tags?: string[] | null
           updated_at?: string | null
+          variation_letter?: string | null
           version?: number | null
         }
         Update: {
           active?: boolean | null
+          approved_at?: string | null
+          approved_by?: string | null
           category?: Database["public"]["Enums"]["clause_category"]
           clause_id?: string
+          clause_text_redacted?: string | null
           clause_type?: string
           created_at?: string | null
           created_by?: string | null
@@ -1115,14 +1325,118 @@ export type Database = {
           id?: string
           is_required?: boolean | null
           metadata?: Json | null
+          needs_review?: boolean | null
           new_clause_flag?: boolean
+          parent_clause_id?: string | null
+          plain_english_summary?: string | null
           risk_level?: Database["public"]["Enums"]["risk_level"]
           standard_text?: string
+          submitted_by?: string | null
           tags?: string[] | null
           updated_at?: string | null
+          variation_letter?: string | null
           version?: number | null
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "legal_clause_library_approved_by_fkey"
+            columns: ["approved_by"]
+            isOneToOne: false
+            referencedRelation: "user_profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "legal_clause_library_submitted_by_fkey"
+            columns: ["submitted_by"]
+            isOneToOne: false
+            referencedRelation: "user_profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      legal_clause_standardisation: {
+        Row: {
+          ai_notes: Json | null
+          clause_synonyms: string[] | null
+          created_at: string | null
+          created_by: string | null
+          id: string
+          lcl_clause_id: string | null
+          plain_english_summary: string | null
+          risk_level: string | null
+          standardisation_id: string
+          standardised_clause: string
+          tenant_id: string | null
+          updated_at: string | null
+          variation_tolerance: number | null
+        }
+        Insert: {
+          ai_notes?: Json | null
+          clause_synonyms?: string[] | null
+          created_at?: string | null
+          created_by?: string | null
+          id?: string
+          lcl_clause_id?: string | null
+          plain_english_summary?: string | null
+          risk_level?: string | null
+          standardisation_id: string
+          standardised_clause: string
+          tenant_id?: string | null
+          updated_at?: string | null
+          variation_tolerance?: number | null
+        }
+        Update: {
+          ai_notes?: Json | null
+          clause_synonyms?: string[] | null
+          created_at?: string | null
+          created_by?: string | null
+          id?: string
+          lcl_clause_id?: string | null
+          plain_english_summary?: string | null
+          risk_level?: string | null
+          standardisation_id?: string
+          standardised_clause?: string
+          tenant_id?: string | null
+          updated_at?: string | null
+          variation_tolerance?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "legal_clause_standardisation_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "user_profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "legal_clause_standardisation_lcl_clause_id_fkey"
+            columns: ["lcl_clause_id"]
+            isOneToOne: false
+            referencedRelation: "legal_clause_library"
+            referencedColumns: ["clause_id"]
+          },
+          {
+            foreignKeyName: "legal_clause_standardisation_lcl_clause_id_fkey"
+            columns: ["lcl_clause_id"]
+            isOneToOne: false
+            referencedRelation: "v_dedup_review_queue"
+            referencedColumns: ["primary_clause_id"]
+          },
+          {
+            foreignKeyName: "legal_clause_standardisation_lcl_clause_id_fkey"
+            columns: ["lcl_clause_id"]
+            isOneToOne: false
+            referencedRelation: "v_new_clauses_pending_review"
+            referencedColumns: ["clause_id"]
+          },
+          {
+            foreignKeyName: "legal_clause_standardisation_tenant_id_fkey"
+            columns: ["tenant_id"]
+            isOneToOne: false
+            referencedRelation: "tenants"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       legal_clause_standardization: {
         Row: {
@@ -1742,8 +2056,20 @@ export type Database = {
       }
     }
     Functions: {
+      accept_clause_to_lcl: {
+        Args: {
+          p_admin_user_id: string
+          p_clause_id: string
+          p_review_queue_id: string
+        }
+        Returns: string
+      }
+      archive_queue_message: {
+        Args: { p_msg_id: number; p_queue_name: string }
+        Returns: boolean
+      }
       auto_merge_duplicates: {
-        Args: never
+        Args: Record<PropertyKey, never>
         Returns: {
           cluster_id: string
           merged_count: number
@@ -1751,7 +2077,7 @@ export type Database = {
         }[]
       }
       batch_generate_embeddings: {
-        Args: never
+        Args: Record<PropertyKey, never>
         Returns: {
           clause_id: string
           needs_embedding: boolean
@@ -1768,7 +2094,20 @@ export type Database = {
           total_clauses: number
         }[]
       }
-      cleanup_expired_webhook_events: { Args: never; Returns: number }
+      check_clause_duplicates: {
+        Args: {
+          p_clause_text: string
+          p_clause_type: string
+          p_embedding: string
+        }
+        Returns: {
+          cluster_id: string
+          match_type: string
+          matched_clause_id: string
+          similarity: number
+        }[]
+      }
+      cleanup_expired_webhook_events: { Args: Record<PropertyKey, never>; Returns: number }
       create_comment_from_template: {
         Args: {
           p_clause_boundary_id?: string
@@ -1800,12 +2139,19 @@ export type Database = {
           tenant_id: string | null
           updated_at: string
         }
-        SetofOptions: {
-          from: "*"
-          to: "user_profiles"
-          isOneToOne: true
-          isSetofReturn: false
-        }
+      }
+      delete_queue_message: {
+        Args: { p_msg_id: number; p_queue_name: string }
+        Returns: boolean
+      }
+      dequeue_document_processing: {
+        Args: { batch_size?: number }
+        Returns: {
+          enqueued_at: string
+          message: Json
+          msg_id: number
+          vt: string
+        }[]
       }
       find_duplicate_clusters: {
         Args: { batch_size?: number; min_similarity?: number }
@@ -1846,7 +2192,7 @@ export type Database = {
               similarity: number
             }[]
           }
-      generate_cluster_id: { Args: never; Returns: string }
+      generate_cluster_id: { Args: Record<PropertyKey, never>; Returns: string }
       get_comment_stats: {
         Args: { p_document_id: string }
         Returns: {
@@ -1860,6 +2206,18 @@ export type Database = {
         }[]
       }
       get_dashboard_stats: { Args: { user_id?: string }; Returns: Json }
+      get_dedup_stats: {
+        Args: Record<PropertyKey, never>
+        Returns: {
+          auto_merged: number
+          high_priority: number
+          low_priority: number
+          medium_priority: number
+          pending_review: number
+          reviewed_separate: number
+          total_clusters: number
+        }[]
+      }
       get_document_review_stats: {
         Args: { p_document_id: string }
         Returns: Json
@@ -1897,15 +2255,9 @@ export type Database = {
           tenant_id: string | null
           updated_at: string
         }
-        SetofOptions: {
-          from: "*"
-          to: "user_profiles"
-          isOneToOne: true
-          isSetofReturn: false
-        }
       }
-      get_user_tenant_id: { Args: never; Returns: string }
-      is_tenant_admin: { Args: never; Returns: boolean }
+      get_user_tenant_id: { Args: Record<PropertyKey, never>; Returns: string }
+      is_tenant_admin: { Args: Record<PropertyKey, never>; Returns: boolean }
       match_clause_to_standardization: {
         Args: {
           p_clause_embedding: string
@@ -1928,7 +2280,7 @@ export type Database = {
         }
         Returns: boolean
       }
-      show_limit: { Args: never; Returns: number }
+      show_limit: { Args: Record<PropertyKey, never>; Returns: number }
       show_trgm: { Args: { "": string }; Returns: string[] }
     }
     Enums: {
@@ -1942,6 +2294,11 @@ export type Database = {
         | "confidentiality"
         | "liability"
         | "indemnification"
+        | "general"
+        | "information_protection"
+        | "relationship"
+        | "contract_lifecycle"
+        | "dispute_resolution"
       clause_source_type: "deal" | "contract" | "document"
       contract_status: "draft" | "active" | "expired" | "terminated"
       deal_status: "draft" | "in_review" | "signed" | "cancelled"
@@ -2094,6 +2451,11 @@ export const Constants = {
         "confidentiality",
         "liability",
         "indemnification",
+        "general",
+        "information_protection",
+        "relationship",
+        "contract_lifecycle",
+        "dispute_resolution",
       ],
       clause_source_type: ["deal", "contract", "document"],
       contract_status: ["draft", "active", "expired", "terminated"],
@@ -2107,6 +2469,8 @@ export const Constants = {
       ],
       document_status: ["pending", "processing", "completed", "failed"],
       rag_status: ["green", "amber", "red", "blue"],
+      redline_change_type: ["add", "delete", "modify"],
+      redline_status: ["draft", "resolved"],
       risk_level: ["low", "medium", "high", "critical"],
       user_role: ["talent_manager", "admin"],
     },

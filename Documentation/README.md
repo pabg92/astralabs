@@ -12,7 +12,8 @@
 1. **[1-ARCHITECTURE.md](./1-ARCHITECTURE.md)** - System design and key decisions
 2. **[2-DATABASE-SCHEMA.md](./2-DATABASE-SCHEMA.md)** - Database structure and migrations
 3. **[3-IMPLEMENTATION-GUIDE.md](./3-IMPLEMENTATION-GUIDE.md)** - How to build features
-4. **[CHANGELOG.md](./CHANGELOG.md)** - What changed and when
+4. **[4-LCL-CLAUSE-ID-SCHEMA.md](./4-LCL-CLAUSE-ID-SCHEMA.md)** - Clause ID naming & extraction standards
+5. **[CHANGELOG.md](./CHANGELOG.md)** - What changed and when
 
 ### **Project Files**
 

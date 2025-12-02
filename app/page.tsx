@@ -19,15 +19,48 @@ import {
   Award,
   Activity,
   PlayCircle,
+  Loader2,
+  AlertCircle,
 } from "lucide-react"
 import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
+import { useUser } from "@clerk/nextjs"
+
+interface RecentDeal {
+  id: string
+  title: string
+  client_name: string
+  talent_name: string
+  status: "draft" | "in_review" | "signed" | "cancelled"
+  progress: number
+  is_urgent: boolean
+  updated_at: string | null
+}
+
+interface DashboardStats {
+  contracts_reconciled: number
+  contracts_reconciled_change: number
+  contracts_signed: number
+  contracts_signed_change: number
+  clauses_reviewed: number
+  clauses_reviewed_change: number
+  hours_saved: number
+  hours_saved_change: number
+  avg_risk_reduction: number
+  avg_risk_reduction_change: number
+  recent_deals: RecentDeal[]
+}
 
 export default function HomePage() {
   const [currentTime, setCurrentTime] = useState("")
-  const [uploadedFile, setUploadedFile] = useState<File | null>(null)
-  const [isDragging, setIsDragging] = useState(false)
+  const [stats, setStats] = useState<DashboardStats | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const router = useRouter()
+  const { user, isLoaded: userLoaded } = useUser()
+
+  // Get user's first name for greeting
+  const firstName = user?.firstName || "there"
 
   useEffect(() => {
     const hour = new Date().getHours()
@@ -36,101 +69,98 @@ export default function HomePage() {
     else setCurrentTime("evening")
   }, [])
 
-  const handleFileUpload = (file: File) => {
-    setUploadedFile(file)
-    setTimeout(() => {
-      router.push("/reconciliation")
-    }, 1000)
-  }
+  useEffect(() => {
+    const fetchStats = async () => {
+      try {
+        setLoading(true)
+        setError(null)
+        const response = await fetch("/api/dashboard/stats")
+        const result = await response.json()
 
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault()
-    setIsDragging(true)
-  }
-
-  const handleDragLeave = () => {
-    setIsDragging(false)
-  }
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault()
-    setIsDragging(false)
-    const file = e.dataTransfer.files[0]
-    if (file && (file.type === "application/pdf" || file.name.endsWith(".docx"))) {
-      handleFileUpload(file)
+        if (result.success) {
+          setStats(result.data)
+        } else {
+          setError(result.error || "Failed to load dashboard data")
+          // Use fallback data from error response if available
+          if (result.data) {
+            setStats(result.data)
+          }
+        }
+      } catch (err) {
+        console.error("Error fetching dashboard stats:", err)
+        setError("Failed to connect to server")
+        // Set empty stats as fallback
+        setStats({
+          contracts_reconciled: 0,
+          contracts_reconciled_change: 0,
+          contracts_signed: 0,
+          contracts_signed_change: 0,
+          clauses_reviewed: 0,
+          clauses_reviewed_change: 0,
+          hours_saved: 0,
+          hours_saved_change: 0,
+          avg_risk_reduction: 0,
+          avg_risk_reduction_change: 0,
+          recent_deals: [],
+        })
+      } finally {
+        setLoading(false)
+      }
     }
+
+    fetchStats()
+  }, [])
+
+  const handleReconcileDeal = (dealId: string) => {
+    router.push(`/reconciliation?dealId=${dealId}`)
   }
 
-  const handleReconcileDeal = (dealName: string) => {
-    router.push("/reconciliation")
-  }
-
+  // Build KPIs from stats
   const kpis = [
     {
       label: "Contracts Reconciled",
-      value: "24",
-      change: "+8 this month",
+      value: stats?.contracts_reconciled ?? 0,
+      change: `+${stats?.contracts_reconciled_change ?? 0} this month`,
       icon: FileText,
       color: "blue",
       trend: "up",
     },
     {
       label: "Contracts Signed",
-      value: "18",
-      change: "+5 this month",
+      value: stats?.contracts_signed ?? 0,
+      change: `+${stats?.contracts_signed_change ?? 0} this month`,
       icon: CheckCircle2,
       color: "emerald",
       trend: "up",
     },
     {
       label: "Clauses Reviewed",
-      value: "342",
-      change: "+127 this month",
+      value: stats?.clauses_reviewed ?? 0,
+      change: `+${stats?.clauses_reviewed_change ?? 0} this month`,
       icon: Activity,
       color: "purple",
       trend: "up",
     },
     {
       label: "Hours Saved",
-      value: "156",
-      change: "+42 this month",
+      value: stats?.hours_saved ?? 0,
+      change: `+${stats?.hours_saved_change ?? 0} this month`,
       icon: Clock,
       color: "amber",
       trend: "up",
     },
     {
       label: "Avg Risk Reduction",
-      value: "34%",
-      change: "+12% improvement",
+      value: `${stats?.avg_risk_reduction ?? 0}%`,
+      change: `${stats?.avg_risk_reduction_change ?? 0}% green matches`,
       icon: Shield,
       color: "rose",
       trend: "up",
     },
   ]
 
-  const recentDeals = [
-    {
-      name: "Adidas x Sarah Kim Campaign",
-      status: "In Review",
-      progress: 65,
-      urgency: "medium",
-      needsReconciliation: true,
-    },
-    {
-      name: "Nike x Lisa Wang Partnership",
-      status: "Pending",
-      progress: 30,
-      urgency: "high",
-      needsReconciliation: true,
-    },
-    {
-      name: "Gucci x Abby Smith Collaboration",
-      status: "Signed",
-      progress: 100,
-      urgency: "low",
-      needsReconciliation: false,
-    },
-  ]
+  // Map recent deals from stats
+  const recentDeals = stats?.recent_deals ?? []
 
   const quickActions = [
     {
@@ -159,6 +189,12 @@ export default function HomePage() {
     },
   ]
 
+  // Check if this is a new user (no data yet)
+  const isNewUser = stats &&
+    stats.contracts_reconciled === 0 &&
+    stats.contracts_signed === 0 &&
+    stats.clauses_reviewed === 0
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50/30 to-slate-100">
       <div className="container mx-auto px-6 py-8">
@@ -177,11 +213,23 @@ export default function HomePage() {
                       : "Good Evening"}
                 </Badge>
               </div>
-              <h1 className="text-4xl font-bold mb-3">Welcome back, Alex!</h1>
-              <p className="text-xl text-blue-50 mb-6">
-                You've saved <span className="font-bold text-white">156 hours</span> this month. That's incredible
-                progress! 🎉
-              </p>
+              <h1 className="text-4xl font-bold mb-3">
+                Welcome back, {userLoaded ? firstName : "..."}!
+              </h1>
+              {loading ? (
+                <p className="text-xl text-blue-50 mb-6">
+                  Loading your stats...
+                </p>
+              ) : isNewUser ? (
+                <p className="text-xl text-blue-50 mb-6">
+                  Ready to get started? Upload your first contract to begin saving time!
+                </p>
+              ) : (
+                <p className="text-xl text-blue-50 mb-6">
+                  You've saved <span className="font-bold text-white">{stats?.hours_saved ?? 0} hours</span> this month.
+                  {(stats?.hours_saved ?? 0) > 0 ? " That's incredible progress!" : " Let's get started!"}
+                </p>
+              )}
               <div className="flex gap-4">
                 <Link href="/deals">
                   <Button size="lg" className="bg-white text-blue-600 hover:bg-blue-50 rounded-lg shadow-lg">
@@ -203,6 +251,13 @@ export default function HomePage() {
             </div>
           </Card>
         </div>
+
+        {error && (
+          <div className="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-lg flex items-center gap-2 text-amber-800">
+            <AlertCircle className="w-5 h-5" />
+            <span>{error} - Showing cached data</span>
+          </div>
+        )}
 
         <div className="mb-8">
           <div className="flex items-center gap-2 mb-4">
@@ -241,11 +296,23 @@ export default function HomePage() {
                   >
                     <kpi.icon className="w-5 h-5" />
                   </div>
-                  <TrendingUp className="w-4 h-4 text-emerald-500" />
+                  {loading ? (
+                    <Loader2 className="w-4 h-4 text-slate-400 animate-spin" />
+                  ) : (
+                    <TrendingUp className="w-4 h-4 text-emerald-500" />
+                  )}
                 </div>
-                <div className="text-3xl font-bold text-slate-900 mb-1">{kpi.value}</div>
+                <div className="text-3xl font-bold text-slate-900 mb-1">
+                  {loading ? (
+                    <span className="text-slate-400">--</span>
+                  ) : (
+                    kpi.value
+                  )}
+                </div>
                 <div className="text-xs font-medium text-slate-600 mb-2">{kpi.label}</div>
-                <div className="text-xs text-emerald-600 font-medium">{kpi.change}</div>
+                <div className="text-xs text-emerald-600 font-medium">
+                  {loading ? "Loading..." : kpi.change}
+                </div>
               </Card>
             ))}
           </div>
@@ -265,65 +332,93 @@ export default function HomePage() {
                 </Button>
               </Link>
             </div>
-            <div className="space-y-3">
-              {recentDeals.map((deal, index) => (
-                <div
-                  key={index}
-                  className="p-4 rounded-lg border border-slate-200 hover:border-blue-300 hover:bg-blue-50/50 transition-all"
-                >
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="flex items-center gap-3 flex-1">
-                      <div className="w-10 h-10 rounded-lg bg-blue-100 flex items-center justify-center">
-                        <FileText className="w-5 h-5 text-blue-600" />
+            {loading ? (
+              <div className="flex items-center justify-center py-12">
+                <Loader2 className="w-8 h-8 text-blue-500 animate-spin" />
+              </div>
+            ) : recentDeals.length === 0 ? (
+              <div className="text-center py-12">
+                <FileText className="w-12 h-12 text-slate-300 mx-auto mb-4" />
+                <h4 className="text-lg font-medium text-slate-700 mb-2">No deals yet</h4>
+                <p className="text-slate-500 mb-4">Create your first deal to get started</p>
+                <Link href="/deals/new">
+                  <Button className="bg-blue-600 hover:bg-blue-700">
+                    <PlayCircle className="w-4 h-4 mr-2" />
+                    Create First Deal
+                  </Button>
+                </Link>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {recentDeals.map((deal) => (
+                  <div
+                    key={deal.id}
+                    className="p-4 rounded-lg border border-slate-200 hover:border-blue-300 hover:bg-blue-50/50 transition-all"
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-3 flex-1">
+                        <div className="w-10 h-10 rounded-lg bg-blue-100 flex items-center justify-center">
+                          <FileText className="w-5 h-5 text-blue-600" />
+                        </div>
+                        <div className="flex-1">
+                          <div className="font-semibold text-slate-900">{deal.title}</div>
+                          <div className="text-sm text-slate-600">
+                            {deal.client_name} x {deal.talent_name}
+                          </div>
+                        </div>
                       </div>
-                      <div className="flex-1">
-                        <div className="font-semibold text-slate-900">{deal.name}</div>
-                        <div className="text-sm text-slate-600">{deal.status}</div>
+                      <div className="flex items-center gap-2">
+                        <Badge
+                          variant="outline"
+                          className={
+                            deal.is_urgent
+                              ? "bg-red-100 text-red-700 border-red-300"
+                              : deal.status === "in_review"
+                                ? "bg-amber-100 text-amber-700 border-amber-300"
+                                : deal.status === "signed"
+                                  ? "bg-emerald-100 text-emerald-700 border-emerald-300"
+                                  : "bg-slate-100 text-slate-700 border-slate-300"
+                          }
+                        >
+                          {deal.is_urgent
+                            ? "Urgent"
+                            : deal.status === "in_review"
+                              ? "In Progress"
+                              : deal.status === "signed"
+                                ? "Complete"
+                                : "Draft"}
+                        </Badge>
+                        {deal.status !== "signed" && (
+                          <Button
+                            size="sm"
+                            onClick={() => handleReconcileDeal(deal.id)}
+                            className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg"
+                          >
+                            <PlayCircle className="w-4 h-4 mr-1" />
+                            Reconcile
+                          </Button>
+                        )}
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
-                      <Badge
-                        variant="outline"
-                        className={
-                          deal.urgency === "high"
-                            ? "bg-red-100 text-red-700 border-red-300"
-                            : deal.urgency === "medium"
-                              ? "bg-amber-100 text-amber-700 border-amber-300"
-                              : "bg-emerald-100 text-emerald-700 border-emerald-300"
-                        }
-                      >
-                        {deal.urgency === "high" ? "Urgent" : deal.urgency === "medium" ? "In Progress" : "Complete"}
-                      </Badge>
-                      {deal.needsReconciliation && (
-                        <Button
-                          size="sm"
-                          onClick={() => handleReconcileDeal(deal.name)}
-                          className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg"
-                        >
-                          <PlayCircle className="w-4 h-4 mr-1" />
-                          Reconcile
-                        </Button>
-                      )}
+                      <div className="flex-1 h-2 bg-slate-200 rounded-full overflow-hidden">
+                        <div
+                          className={`h-full rounded-full transition-all ${
+                            deal.progress === 100
+                              ? "bg-emerald-500"
+                              : deal.progress >= 50
+                                ? "bg-blue-500"
+                                : "bg-amber-500"
+                          }`}
+                          style={{ width: `${deal.progress}%` }}
+                        />
+                      </div>
+                      <span className="text-xs font-medium text-slate-600">{deal.progress}%</span>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <div className="flex-1 h-2 bg-slate-200 rounded-full overflow-hidden">
-                      <div
-                        className={`h-full rounded-full transition-all ${
-                          deal.progress === 100
-                            ? "bg-emerald-500"
-                            : deal.progress >= 50
-                              ? "bg-blue-500"
-                              : "bg-amber-500"
-                        }`}
-                        style={{ width: `${deal.progress}%` }}
-                      />
-                    </div>
-                    <span className="text-xs font-medium text-slate-600">{deal.progress}%</span>
-                  </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </Card>
 
           <Card className="p-6 shadow-lg rounded-xl border-slate-200">
@@ -382,11 +477,20 @@ export default function HomePage() {
         <Card className="p-6 shadow-lg rounded-xl border-slate-200 bg-gradient-to-br from-slate-50 to-white text-center">
           <div className="flex items-center justify-center gap-2 mb-3">
             <Sparkles className="w-5 h-5 text-blue-500" />
-            <h3 className="text-lg font-semibold text-slate-800">Keep Up the Great Work!</h3>
+            <h3 className="text-lg font-semibold text-slate-800">
+              {isNewUser ? "Ready to Get Started!" : "Keep Up the Great Work!"}
+            </h3>
           </div>
           <p className="text-slate-600 max-w-2xl mx-auto">
-            You're making excellent progress on your contract reconciliation journey. Your efficiency has improved by
-            34% this month, helping you close deals faster and reduce risk.
+            {isNewUser ? (
+              "Upload your first contract to start saving time on contract reconciliation. Our AI-powered system will help you review clauses faster and reduce risk."
+            ) : (
+              `You're making excellent progress on your contract reconciliation journey. ${
+                (stats?.avg_risk_reduction ?? 0) > 0
+                  ? `Your risk reduction is at ${stats?.avg_risk_reduction}%, helping you close deals faster and reduce risk.`
+                  : "Keep reviewing clauses to improve your risk reduction metrics."
+              }`
+            )}
           </p>
         </Card>
       </div>
