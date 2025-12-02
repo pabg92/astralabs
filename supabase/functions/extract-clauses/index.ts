@@ -29,8 +29,8 @@ const MODEL_CONTEXT_LIMITS: Record<AllowedModel, number> = {
   "gpt-5.1-codex-mini": 400_000
 }
 
-// Timeout budget for GPT-5.1 (Supabase Edge default 60s, max 150s)
-const GPT51_TIMEOUT_MS = 90_000 // 90 seconds
+// Timeout budget for extraction (Supabase Edge default 60s, max 150s)
+const EXTRACTION_TIMEOUT_MS = 90_000 // 90 seconds
 
 function getExtractionModel(): { model: AllowedModel; isValid: boolean } {
   const configuredModel = Deno.env.get("EXTRACTION_MODEL") || "gpt-5.1"
@@ -40,8 +40,8 @@ function getExtractionModel(): { model: AllowedModel; isValid: boolean } {
   }
 
   console.error(`Invalid EXTRACTION_MODEL: "${configuredModel}". Allowed: ${ALLOWED_MODELS.join(", ")}`)
-  console.warn(`Falling back to gpt-4o chunked extraction`)
-  return { model: "gpt-4o", isValid: false }
+  console.warn(`Falling back to gpt-5.1 extraction`)
+  return { model: "gpt-5.1", isValid: false }
 }
 
 const { model: EXTRACTION_MODEL, isValid: modelConfigValid } = getExtractionModel()
@@ -80,9 +80,8 @@ function decideExtractionPath(
     }
   }
 
-  // Context overflow - fall back to chunked extraction
-  // Use same model family for consistency (chunked 5.1 if configured, else 4o)
-  const fallbackModel = preferredModel.startsWith("gpt-5") ? preferredModel : "gpt-4o"
+  // Context overflow - fall back to chunked extraction with gpt-4o
+  const fallbackModel: AllowedModel = "gpt-4o"
   console.warn(`Context overflow: ${estimatedTokens} tokens exceeds ${safeInputLimit} safe limit for ${preferredModel}`)
 
   return {
@@ -95,6 +94,92 @@ function decideExtractionPath(
 }
 
 // ============ HELPER FUNCTIONS ============
+
+/**
+ * Monotonic search for clause offset in extracted text.
+ * Searches starting from lastEnd to prevent duplicate misplacement.
+ * Falls back to fuzzy whitespace-normalized matching if exact match fails.
+ */
+function findClauseOffset(
+  fullText: string,
+  clauseContent: string,
+  searchFrom: number
+): { start: number; end: number } | null {
+  if (!clauseContent || !fullText) return null
+
+  // First try: exact match from searchFrom position
+  const exactIdx = fullText.indexOf(clauseContent, searchFrom)
+  if (exactIdx >= 0) {
+    return { start: exactIdx, end: exactIdx + clauseContent.length }
+  }
+
+  // Fallback: whitespace-normalized fuzzy search
+  const normalizeWs = (s: string) => s.replace(/\s+/g, ' ').trim()
+  const normalizedClause = normalizeWs(clauseContent)
+
+  if (normalizedClause.length < 20) {
+    // Too short for reliable fuzzy matching
+    return null
+  }
+
+  // Search in a window from searchFrom
+  const searchWindow = fullText.slice(searchFrom)
+  const normalizedWindow = normalizeWs(searchWindow)
+  const fuzzyIdx = normalizedWindow.indexOf(normalizedClause)
+
+  if (fuzzyIdx >= 0) {
+    // Map back to original positions (approximate)
+    // Walk through original text counting normalized chars
+    let normalizedCount = 0
+    let originalStart = searchFrom
+    let inWhitespace = false
+
+    for (let i = 0; i < searchWindow.length && normalizedCount < fuzzyIdx; i++) {
+      const isWs = /\s/.test(searchWindow[i])
+      if (!isWs) {
+        normalizedCount++
+        inWhitespace = false
+      } else if (!inWhitespace) {
+        normalizedCount++ // Count first whitespace as single space
+        inWhitespace = true
+      }
+      originalStart = searchFrom + i + 1
+    }
+
+    // Find where the clause ends in original text
+    const endSearchStart = originalStart
+    let endNormalizedCount = 0
+    let originalEnd = originalStart
+    inWhitespace = false
+
+    for (let i = 0; i < fullText.length - endSearchStart && endNormalizedCount < normalizedClause.length; i++) {
+      const char = fullText[endSearchStart + i]
+      const isWs = /\s/.test(char)
+      if (!isWs) {
+        endNormalizedCount++
+        inWhitespace = false
+      } else if (!inWhitespace) {
+        endNormalizedCount++
+        inWhitespace = true
+      }
+      originalEnd = endSearchStart + i + 1
+    }
+
+    // Validate span length to avoid truncated highlights on fuzzy matches
+    const spanLength = originalEnd - originalStart
+    const expectedLength = clauseContent.length
+    const lengthDiff = Math.abs(spanLength - expectedLength)
+
+    if (lengthDiff > expectedLength * 0.2 || lengthDiff > 50) {
+      return null // Better to skip highlight than render wrong span
+    }
+
+    return { start: originalStart, end: originalEnd }
+  }
+
+  // Not found - return null rather than wrong offset
+  return null
+}
 
 function validateRagStatus(status: any): "green" | "amber" | "red" {
   const normalized = String(status || "amber").toLowerCase()
@@ -155,9 +240,9 @@ function extractClausesArray(parsed: any): any[] {
   return []
 }
 
-// ============ GPT-5.1 SINGLE-PASS EXTRACTION ============
+// ============ SINGLE-PASS EXTRACTION ============
 
-async function extractClausesGPT51(
+async function extractClausesSinglePass(
   contractText: string,
   apiKey: string,
   model: AllowedModel = "gpt-5.1"
@@ -167,7 +252,7 @@ async function extractClausesGPT51(
 
   // Create abort controller for timeout
   const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), GPT51_TIMEOUT_MS)
+  const timeoutId = setTimeout(() => controller.abort(), EXTRACTION_TIMEOUT_MS)
 
   try {
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -187,6 +272,10 @@ async function extractClausesGPT51(
             content: `You are "ContractBuddy Clause Extractor" - a precision legal document parser.
 
 YOUR PRIMARY OBJECTIVE: Decompose this contract into ATOMIC, SINGLE-OBLIGATION clauses.
+
+OUTPUT MUST BE JSON:
+- Return ONLY a single JSON object (no prose, no markdown).
+- The word "json" here is intentional to satisfy response_format requirements.
 
 WHAT IS AN ATOMIC CLAUSE?
 - ONE obligation, requirement, right, or definition
@@ -265,9 +354,9 @@ ${contractText}`
     }))
   } catch (err: any) {
     if (err.name === "AbortError") {
-      console.warn(`${model} extraction timed out after ${GPT51_TIMEOUT_MS / 1000}s`)
+      console.warn(`${model} extraction timed out after ${EXTRACTION_TIMEOUT_MS / 1000}s`)
       // Don't retry here - let caller decide (may fall back to chunked)
-      throw new Error(`${model} extraction timed out after ${GPT51_TIMEOUT_MS / 1000}s - consider chunked fallback`)
+      throw new Error(`${model} extraction timed out after ${EXTRACTION_TIMEOUT_MS / 1000}s - consider chunked fallback`)
     }
     throw err
   } finally {
@@ -290,7 +379,7 @@ async function extractWithTimeoutFallback(
   }
 
   try {
-    const clauses = await extractClausesGPT51(contractText, apiKey, pathDecision.model)
+    const clauses = await extractClausesSinglePass(contractText, apiKey, pathDecision.model)
     return { clauses, usedFallback: false }
   } catch (err: any) {
     if (err.message.includes("timed out")) {
@@ -1965,21 +2054,40 @@ Deno.serve(async (req) => {
     console.log(`Inserting ${extractedClauses.length} clauses into clause_boundaries`)
 
     try {
-      // Prepare clause records for insertion
-      const clauseRecords = extractedClauses.map((clause) => ({
-        document_id,
-        tenant_id,
-        content: clause.content,
-        clause_type: clause.clause_type,
-        confidence: clause.confidence,
-        start_page: clause.start_page,
-        end_page: clause.end_page,
-        parsing_quality: clause.parsing_quality || clause.confidence,
-        section_title: clause.section_title || null,
-        parsing_issues: clause.confidence < 0.7
-          ? [{ issue: "low_confidence", score: clause.confidence }]
-          : [],
-      }))
+      // Calculate character offsets using monotonic search
+      let lastEnd = 0
+      let offsetHits = 0
+      let offsetMisses = 0
+      const clauseRecords = extractedClauses.map((clause) => {
+        const offset = findClauseOffset(extractedText, clause.content, lastEnd)
+
+        if (offset) {
+          lastEnd = offset.end // Advance search position for next clause
+          offsetHits++
+        } else {
+          // SAFETY: Advance lastEnd even on miss to prevent duplicate matching
+          // Use clause content length as minimum advancement
+          lastEnd = Math.min(lastEnd + clause.content.length, extractedText.length)
+          offsetMisses++
+        }
+
+        return {
+          document_id,
+          tenant_id,
+          content: clause.content,
+          clause_type: clause.clause_type,
+          confidence: clause.confidence,
+          start_page: clause.start_page,
+          end_page: clause.end_page,
+          parsing_quality: clause.parsing_quality || clause.confidence,
+          section_title: clause.section_title || null,
+          start_char: offset?.start ?? null,
+          end_char: offset?.end ?? null,
+          parsing_issues: clause.confidence < 0.7
+            ? [{ issue: "low_confidence", score: clause.confidence }]
+            : [],
+        }
+      })
 
       // Insert clauses into clause_boundaries
       const { data: insertedClauses, error: insertError } = await supabase
@@ -1992,6 +2100,9 @@ Deno.serve(async (req) => {
       }
 
       console.log(`✅ Inserted ${insertedClauses?.length || 0} clauses`)
+
+      // Log offset calculation stats (no raw text for security)
+      console.log(`📍 Offset mapping: ${offsetHits} hits, ${offsetMisses} misses (${((offsetHits / (offsetHits + offsetMisses)) * 100).toFixed(1)}% coverage)`)
 
       // Identify low-confidence clauses for admin review queue
       const lowConfidenceClauses = extractedClauses.filter(
@@ -2042,11 +2153,12 @@ Deno.serve(async (req) => {
         }
       }
 
-      // Update document status to clauses_extracted
+      // Update document status to clauses_extracted and save extracted text
       const { error: statusUpdateError } = await supabase
         .from("document_repository")
         .update({
           processing_status: "clauses_extracted",
+          extracted_text: extractedText, // Store raw extracted text for full document view
           error_message: null, // Clear any previous errors
         })
         .eq("id", document_id)

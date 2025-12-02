@@ -25,6 +25,7 @@ interface ClauseBoundaryWithMatch extends ClauseBoundary {
 
 interface DocumentWithClauses extends Document {
   clause_boundaries: ClauseBoundaryWithMatch[]
+  has_pdf?: boolean
 }
 
 interface ReconciliationData extends Deal {
@@ -168,7 +169,8 @@ export async function GET(
       }
 
       // Create a map of reviews by clause_boundary_id
-      const reviewsMap = new Map<string, typeof clauseReviews extends (infer T)[] ? T : never>()
+      type ClauseReviewRow = Database["public"]["Tables"]["clause_reviews"]["Row"]
+      const reviewsMap = new Map<string, ClauseReviewRow>()
       if (clauseReviews) {
         clauseReviews.forEach((review) => {
           reviewsMap.set(review.clause_boundary_id, review)
@@ -254,9 +256,37 @@ export async function GET(
         stats.completion_percentage = 100 // All clauses have been processed
       }
 
+      // Fallback reconstruction for legacy docs without extracted_text
+      // Sort deterministically: start_char > start_page > created_at > id
+      const reconstructedText = !document.extracted_text
+        ? [...clausesWithMatches]
+            .sort((a, b) => {
+              // Primary: start_char (if available)
+              if (a.start_char != null && b.start_char != null) {
+                return a.start_char - b.start_char
+              }
+              if (a.start_char != null) return -1
+              if (b.start_char != null) return 1
+              // Secondary: start_page
+              const pageA = a.start_page ?? 0
+              const pageB = b.start_page ?? 0
+              if (pageA !== pageB) return pageA - pageB
+              // Tertiary: created_at
+              const dateA = a.created_at ? new Date(a.created_at).getTime() : 0
+              const dateB = b.created_at ? new Date(b.created_at).getTime() : 0
+              if (dateA !== dateB) return dateA - dateB
+              // Final: id for absolute determinism
+              return (a.id ?? '').localeCompare(b.id ?? '')
+            })
+            .map(c => `${c.section_title ? `\n${c.section_title}\n` : ''}${c.content || ''}`)
+            .join('\n\n')
+        : null
+
       documentWithClauses = {
         ...document,
         clause_boundaries: clausesWithMatches,
+        // Full document text for highlighting - use stored or reconstructed
+        extracted_text: document.extracted_text ?? reconstructedText,
         // Phase 9: Include PDF metadata for viewer (plan-pdf.md §2)
         object_path: document.object_path,
         mime_type: document.mime_type,

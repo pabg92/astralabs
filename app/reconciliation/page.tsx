@@ -47,6 +47,7 @@ import { useRouter, useSearchParams } from "next/navigation"
 import { useToast } from "@/hooks/use-toast"
 import { RedlineEditor } from "@/components/redlines/redline-editor"
 import { CommentThread } from "@/components/redlines/comment-thread"
+import { ProcessingThoughts } from "@/components/processing-thoughts"
 import type { Database } from "@/types/database"
 
 // Phase 9: Lazy-load PDF viewer to avoid SSR bloat (plan-pdf.md §4)
@@ -276,164 +277,29 @@ const calculateClausePosition = (sectionHeader: string, clauseText: string) => {
   return { start, end }
 }
 
-const mockClauses: Clause[] = [
-  {
-    id: 1,
-    text: "The Contractor shall provide software development, consulting, and technical advisory services as detailed in the Statement of Work attached hereto as Exhibit A. The Contractor shall complete all work within 90 days of contract execution, with milestone deliverables due at 30-day intervals. All work shall be performed in accordance with industry best practices and applicable professional standards.",
-    status: "review",
-    summary: "Defines Contractor responsibilities, deliverables, and 90-day timeline. Industry standard.",
-    confidence: 96,
-    position: calculateClausePosition("1. SCOPE OF WORK", "applicable professional standards."),
-    clauseType: "Scope of Work",
-  },
-  {
-    id: 2,
-    text: "Client agrees to pay Contractor a total fee of $250,000 for the services rendered under this Agreement. Payment shall be made in three installments: (i) $83,333 upon execution of this Agreement; (ii) $83,333 upon completion of Phase 1 deliverables; and (iii) $83,334 upon final delivery and acceptance. Payment terms are Net 45 days from invoice date. Late payments shall accrue interest at a rate of 1.5% per month or the maximum rate permitted by law, whichever is less.",
-    status: "review",
-    summary: "Three-installment payment schedule with Net 45 terms and standard late payment clause.",
-    confidence: 93,
-    position: calculateClausePosition("2. PAYMENT TERMS", "whichever is less."),
-    clauseType: "Payment Terms",
-  },
-  {
-    id: 3,
-    text: "The Contractor agrees to deliver all specified work products in accordance with the project timeline and quality standards outlined in Exhibit A. Client shall have 15 business days to review and accept or reject deliverables. Acceptance shall not be unreasonably withheld. Any rejected deliverables must be accompanied by specific written feedback, and Contractor shall have 10 business days to cure any deficiencies.",
-    status: "review",
-    summary: "Acceptance and rejection terms reasonable but may need clearer objective acceptance criteria.",
-    confidence: 81,
-    position: calculateClausePosition("3. DELIVERABLES AND ACCEPTANCE", "cure any deficiencies."),
-    clauseType: "Deliverables",
-  },
-  {
-    id: 4,
-    text: 'All work product, including but not limited to software code, documentation, designs, and related materials created by Contractor in the performance of services under this Agreement shall be considered "work made for hire" under U.S. copyright law. To the extent any work product does not qualify as work made for hire, Contractor hereby assigns all right, title, and interest in such work product to Client. Contractor retains ownership of any pre-existing intellectual property and grants Client a perpetual, worldwide, non-exclusive license to use such pre-existing materials as incorporated into the deliverables.',
-    status: "review",
-    summary: "Client owns work product; Contractor retains pre-existing IP under perpetual license.",
-    confidence: 95,
-    position: calculateClausePosition("4. INTELLECTUAL PROPERTY RIGHTS", "incorporated into the deliverables."),
-    clauseType: "Intellectual Property",
-  },
-  {
-    id: 5,
-    text: 'Both parties agree to maintain confidentiality of all proprietary information shared during the course of this engagement. "Confidential Information" includes, but is not limited to, trade secrets, business plans, technical data, customer lists, and financial information. Each party shall protect Confidential Information with the same degree of care it uses to protect its own confidential information, but in no event less than reasonable care. This obligation shall survive termination of this Agreement for a period of five years.',
-    status: "review",
-    summary: "Five-year confidentiality obligation; mutual protection and reasonable care standard.",
-    confidence: 97,
-    position: calculateClausePosition("5. CONFIDENTIALITY", "for a period of five years."),
-    clauseType: "Confidentiality",
-  },
-  {
-    id: 6,
-    text: "Contractor warrants that: (i) it has the right and authority to enter into this Agreement; (ii) the services will be performed in a professional and workmanlike manner; (iii) the deliverables will be free from material defects for a period of 90 days following acceptance; and (iv) the deliverables will not infringe upon any third-party intellectual property rights. Client warrants that it has the authority to enter into this Agreement and will provide timely feedback and necessary resources for Contractor to perform the services.",
-    status: "review",
-    summary: "Good coverage but 90-day warranty window may be too short; consider expansion to 180 days.",
-    confidence: 79,
-    position: calculateClausePosition("6. WARRANTIES AND REPRESENTATIONS", "Contractor to perform the services."),
-    clauseType: "Warranties",
-  },
-  {
-    id: 7,
-    text: "Except for breaches of confidentiality or intellectual property provisions, neither party shall be liable for any indirect, incidental, consequential, or punitive damages arising out of this Agreement. Contractor's total liability under this Agreement is capped at 50% of the total fees paid or payable under this Agreement. This limitation shall not apply to damages arising from gross negligence or willful misconduct.",
-    status: "issue",
-    summary: "Liability cap (50%) may be too low for project value; review and renegotiate upward.",
-    confidence: 68,
-    position: calculateClausePosition("7. LIMITATION OF LIABILITY", "gross negligence or willful misconduct."),
-    clauseType: "Liability Cap",
-  },
-  {
-    id: 8,
-    text: "Each party agrees to indemnify, defend, and hold harmless the other party from and against any claims, damages, losses, and expenses (including reasonable attorneys' fees) arising out of: (i) breach of this Agreement; (ii) negligence or willful misconduct; or (iii) violation of applicable laws. Contractor shall indemnify Client against any third-party claims alleging that the deliverables infringe intellectual property rights.",
-    status: "issue",
-    summary: "Mutual indemnification with IP indemnity from Contractor; balanced and standard.",
-    confidence: 95,
-    position: calculateClausePosition("8. INDEMNIFICATION", "infringe intellectual property rights."),
-    clauseType: "Indemnification",
-  },
-  {
-    id: 9,
-    text: "This Agreement shall commence on the Effective Date and continue until completion of all services, unless earlier terminated as provided herein. Either party may terminate this Agreement with 30 days written notice. Client may terminate immediately for cause upon written notice if Contractor materially breaches this Agreement and fails to cure within 15 days. Upon termination, Client shall pay Contractor for all services performed and expenses incurred through the termination date.",
-    status: "issue",
-    summary: "30-day notice termination with cure window; includes pro-rata payment clause.",
-    confidence: 92,
-    position: calculateClausePosition("9. TERM AND TERMINATION", "through the termination date."),
-    clauseType: "Termination",
-  },
-  {
-    id: 10,
-    text: "Any disputes arising under this Agreement shall first be subject to good faith negotiation between the parties' senior executives. If not resolved within 30 days, the dispute shall be submitted to binding arbitration in accordance with the Commercial Arbitration Rules of the American Arbitration Association. The arbitration shall be conducted in San Francisco, California. The prevailing party shall be entitled to recover reasonable attorneys' fees and costs.",
-    status: "review", // Changed from "improve" to "review" as per new types
-    summary: "Arbitration clause in San Francisco; consider mediation or flexible venue options.",
-    confidence: 83,
-    position: calculateClausePosition("10. DISPUTE RESOLUTION", "reasonable attorneys' fees and costs."),
-    clauseType: "Dispute Resolution",
-  },
-  {
-    id: 11,
-    text: "This Agreement shall be governed by and construed in accordance with the laws of the State of Delaware, without regard to its conflict of laws principles. This Agreement constitutes the entire agreement between the parties and supersedes all prior agreements and understandings. No modification shall be effective unless in writing and signed by both parties. If any provision is found unenforceable, the remaining provisions shall remain in full force and effect. Neither party may assign this Agreement without the prior written consent of the other party.",
-    status: "review", // Changed from "info" to "review" as per new types
-    summary: "Standard boilerplate (Delaware law, entire agreement, assignment, severability).",
-    confidence: 99,
-    position: calculateClausePosition("11. GENERAL PROVISIONS", "written consent of the other party."),
-    clauseType: "General Provisions",
-  },
-]
-
-const preAgreedTermsSample: PreAgreedTerm[] = [
-  {
-    id: "pat-1",
-    clauseType: "Scope of Work",
-    expectedTerm:
-      "Contractor to provide software development, consulting, and technical advisory services as detailed in Exhibit A. Work to be completed within 90 days, with milestone deliverables due at 30-day intervals. All work performed in accordance with industry best practices and applicable professional standards.",
-    notes: "Ensure specific deliverables and timelines are detailed in Exhibit A.",
-  },
-  {
-    id: "pat-2",
-    clauseType: "Payment Terms",
-    expectedTerm:
-      "Total fee of $250,000, payable in three installments: upon execution, completion of Phase 1, and upon final delivery and acceptance. Payment terms are Net 45 days from invoice date. Late payments accrue interest at 1.5% per month.",
-    notes: "Confirm specific amounts for each installment and the final acceptance criteria.",
-  },
-  {
-    id: "pat-3",
-    clauseType: "Deliverables",
-    expectedTerm:
-      "Client has 15 business days to review and accept/reject deliverables, providing specific written feedback for rejections. Contractor has 10 business days to cure deficiencies.",
-    notes: "Consider objective criteria for acceptance to avoid disputes.",
-  },
-  {
-    id: "pat-4",
-    clauseType: "Intellectual Property",
-    expectedTerm:
-      "All work product created by Contractor is considered 'work made for hire' and owned by Client. Contractor retains ownership of pre-existing IP and grants Client a perpetual, non-exclusive license.",
-    notes: "Clarify what constitutes 'pre-existing intellectual property'.",
-  },
-  {
-    id: "pat-5",
-    clauseType: "Confidentiality",
-    expectedTerm:
-      "Mutual confidentiality obligation for proprietary information for five years post-termination, with both parties using reasonable care to protect information.",
-    notes: "Define 'proprietary information' broadly.",
-  },
-]
-
 function ReconciliationContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const dealId = searchParams.get("dealId")
   const { toast } = useToast()
 
-  // State for clauses loaded from API or fallback to mock
-  const [clauses, setClauses] = useState<Clause[]>(mockClauses)
+  // State for clauses loaded from API
+  const [clauses, setClauses] = useState<Clause[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
+  const [documentProcessing, setDocumentProcessing] = useState(false) // Document still being processed by worker
   const [exportingText, setExportingText] = useState(false)
   const [exportingJSON, setExportingJSON] = useState(false)
   const [hasPdf, setHasPdf] = useState(false) // Phase 9: Track PDF availability
+  const [extractedText, setExtractedText] = useState<string | null>(null) // Full document text for inline highlighting
+  const [clauseOffsets, setClauseOffsets] = useState<Array<{ id: number; clauseBoundaryId: string; start_char: number | null; end_char: number | null; status: ClauseStatus }>>([]) // Clause character positions
+  const [showFullDocument, setShowFullDocument] = useState(false) // Lazy load large documents
+  const LARGE_DOC_THRESHOLD = 100_000 // 100KB threshold for lazy loading
 
   const [selectedClause, setSelectedClause] = useState<Clause | null>(null)
   const [activeFilter, setActiveFilter] = useState<ClauseStatus | "all">("all")
   const [showHighlights, setShowHighlights] = useState(true)
-  const [activeTab, setActiveTab] = useState<"overview" | "pdf">("overview") // Changed initial state to "overview"
+  const [activeTab, setActiveTab] = useState<"cards" | "document" | "pdf">("document") // Three-tab UI: Cards (blocks), Document (full text), PDF
   const [rightTab, setRightTab] = useState<"review" | "comments" | "library" | "terms">("review")
   const [pdfZoom, setPdfZoom] = useState<"fit" | "page" | 50 | 75 | 100 | 125 | 150 | 200>("fit") // Phase 9: Shared zoom state
   const [clauseStatuses, setClauseStatuses] = useState<Record<number, ClauseStatus>>({})
@@ -444,7 +310,7 @@ function ReconciliationContent() {
   const [riskAcceptedClauses, setRiskAcceptedClauses] = useState<Set<number>>(new Set()) // Track risk accepted clauses
 
   // State for pre-agreed terms and contract file name
-  const [preAgreedTerms, setPreAgreedTerms] = useState<PreAgreedTerm[]>(preAgreedTermsSample)
+  const [preAgreedTerms, setPreAgreedTerms] = useState<PreAgreedTerm[]>([])
   const [contractFileName, setContractFileName] = useState<string>("")
 
   const [chatBuddyVisible, setChatBuddyVisible] = useState(true)
@@ -470,23 +336,26 @@ function ReconciliationContent() {
   const [redlineModalClause, setRedlineModalClause] = useState<Clause | null>(null)
   const chatWindowRef = useRef<HTMLDivElement>(null)
 
-  const autoSaveTimeoutRef = useRef<NodeJS.Timeout>()
+  const autoSaveTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined)
 
-  // Fetch reconciliation data from API
+  // Fetch reconciliation data from API with polling for processing documents
   useEffect(() => {
-    const fetchReconciliationData = async () => {
-      // If no dealId, use mock data
+    let pollInterval: NodeJS.Timeout | null = null
+    let mounted = true
+
+    const fetchReconciliationData = async (isPolling = false) => {
+      // If no dealId, show error
       if (!dealId) {
-        console.log("No dealId provided, using mock data")
-        setClauses(mockClauses)
-        setSelectedClause(mockClauses[0])
+        setLoadError("No deal ID provided. Please select a deal to review.")
         setLoading(false)
         return
       }
 
       try {
-        setLoading(true)
-        setLoadError(null)
+        if (!isPolling) {
+          setLoading(true)
+          setLoadError(null)
+        }
 
         const response = await fetch(`/api/reconciliation/${dealId}`)
 
@@ -552,10 +421,18 @@ function ReconciliationContent() {
             }
           }) || []
 
+        // Check if document is still processing
+        const docStatus = apiData.document?.processing_status
+        const isProcessing = docStatus === 'pending' || docStatus === 'processing'
+        const hasNoClauses = apiClauses.length === 0
+
+        if (!mounted) return
+
         // Set clauses and select first one
         if (apiClauses.length > 0) {
           setClauses(apiClauses)
           setSelectedClause(apiClauses[0])
+          setDocumentProcessing(false)
 
           // Initialize clause statuses and risk-accepted from loaded data
           const initialStatuses: Record<number, ClauseStatus> = {}
@@ -568,11 +445,24 @@ function ReconciliationContent() {
           })
           setClauseStatuses(initialStatuses)
           setRiskAcceptedClauses(initialRiskAccepted)
-        } else {
-          // No clauses found, fallback to mock
-          console.warn("No clauses found in API response, using mock data")
-          setClauses(mockClauses)
-          setSelectedClause(mockClauses[0])
+
+          // Stop polling if we were polling
+          if (pollInterval) {
+            clearInterval(pollInterval)
+            pollInterval = null
+          }
+        } else if (isProcessing || hasNoClauses) {
+          // Document is still processing or has no clauses yet
+          setDocumentProcessing(true)
+          setClauses([])
+
+          // Start polling if not already polling
+          if (!pollInterval && !isPolling) {
+            console.log("Document still processing, starting poll...")
+            pollInterval = setInterval(() => {
+              fetchReconciliationData(true)
+            }, 5000) // Poll every 5 seconds
+          }
         }
 
         // Set pre-agreed terms
@@ -596,24 +486,58 @@ function ReconciliationContent() {
           setHasPdf(true)
         }
 
+        // Store extracted text for full document view
+        if (apiData.document?.extracted_text) {
+          setExtractedText(apiData.document.extracted_text)
+        }
+
+        // Store clause offsets for full document highlighting
+        if (apiData.document?.clause_boundaries) {
+          const offsets = apiData.document.clause_boundaries.map((boundary: any, index: number) => {
+            const matchResult = boundary.match_result || {}
+            const review = boundary.review
+            let effectiveStatus: ClauseStatus = mapRAGStatusToClauseStatus(matchResult.rag_status)
+            if (review?.decision === "approved") {
+              effectiveStatus = "match"
+            } else if (review?.decision === "rejected" || review?.decision === "flagged") {
+              effectiveStatus = "issue"
+            }
+            return {
+              id: index + 1,
+              clauseBoundaryId: boundary.id,
+              start_char: boundary.start_char ?? null,
+              end_char: boundary.end_char ?? null,
+              status: effectiveStatus,
+            }
+          })
+          setClauseOffsets(offsets)
+        }
+
         // Phase 11: Store tenant_id for redlines/comments
-        if (apiData.deal?.tenant_id) {
-          setTenantId(apiData.deal.tenant_id)
+        // tenant_id is at root level of response (spread from deal)
+        if (apiData.tenant_id) {
+          setTenantId(apiData.tenant_id)
         }
 
         setLoading(false)
       } catch (error) {
+        if (!mounted) return
         console.error("Error loading reconciliation data:", error)
         setLoadError(error instanceof Error ? error.message : "Failed to load data")
-
-        // Fallback to mock data on error
-        setClauses(mockClauses)
-        setSelectedClause(mockClauses[0])
+        setDocumentProcessing(false)
         setLoading(false)
       }
     }
 
     fetchReconciliationData()
+
+    // Cleanup polling on unmount
+    return () => {
+      mounted = false
+      if (pollInterval) {
+        clearInterval(pollInterval)
+      }
+    }
   }, [dealId])
 
   // Phase 11: Fetch redlines and comments
@@ -880,9 +804,9 @@ function ReconciliationContent() {
   }
 
   const handleCompleteReview = () => {
-    // Save current state to localStorage before navigating
-    localStorage.setItem("clauseStatuses", JSON.stringify(clauseStatuses))
-    localStorage.setItem("clauseNotes", JSON.stringify(clauseNotes)) // Also save notes
+    // Note: clauseStatuses are now persisted to database via clause_reviews table
+    // Only save notes to localStorage (consider migrating to database comments in future)
+    localStorage.setItem("clauseNotes", JSON.stringify(clauseNotes))
     router.push("/reconciliation/complete")
   }
 
@@ -991,13 +915,15 @@ function ReconciliationContent() {
   }
 
   // PDF Zoom handlers (Phase 9: Wire toolbar to PDF viewer)
+  type ZoomLevel = "fit" | "page" | 50 | 75 | 100 | 125 | 150 | 200
   const handlePdfZoomIn = () => {
     if (pdfZoom === "fit" || pdfZoom === "page") {
       setPdfZoom(100)
     } else if (pdfZoom < 200) {
-      const levels: (number | "fit")[] = [50, 75, 100, 125, 150, 200]
-      const currentIndex = levels.indexOf(pdfZoom as number)
-      setPdfZoom(levels[currentIndex + 1] as number)
+      const levels: ZoomLevel[] = [50, 75, 100, 125, 150, 200]
+      const currentIndex = levels.indexOf(pdfZoom)
+      const nextLevel = levels[currentIndex + 1]
+      if (nextLevel !== undefined) setPdfZoom(nextLevel)
     }
   }
 
@@ -1005,9 +931,10 @@ function ReconciliationContent() {
     if (pdfZoom === "fit" || pdfZoom === "page") {
       setPdfZoom(50)
     } else if (pdfZoom > 50) {
-      const levels: (number | "fit")[] = [50, 75, 100, 125, 150, 200]
-      const currentIndex = levels.indexOf(pdfZoom as number)
-      setPdfZoom(levels[currentIndex - 1] as number)
+      const levels: ZoomLevel[] = [50, 75, 100, 125, 150, 200]
+      const currentIndex = levels.indexOf(pdfZoom)
+      const prevLevel = levels[currentIndex - 1]
+      if (prevLevel !== undefined) setPdfZoom(prevLevel)
     }
   }
 
@@ -1025,11 +952,17 @@ function ReconciliationContent() {
     if (!clause.clauseBoundaryId || !dealId) return
 
     try {
-      await fetch(`/api/reconciliation/${dealId}/clauses/${clause.clauseBoundaryId}`, {
+      const response = await fetch(`/api/reconciliation/${dealId}/clauses/${clause.clauseBoundaryId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ decision, risk_accepted: riskAccepted, comments }),
       })
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}))
+        console.error("Failed to save clause review:", response.status, errorData)
+        // TODO: Show toast notification for user feedback
+      }
     } catch (error) {
       console.error("Failed to save clause review:", error)
     }
@@ -1055,27 +988,14 @@ function ReconciliationContent() {
     }, 300)
   }
 
+  // Load non-persisted state from localStorage (notes only)
+  // Note: clauseStatuses and riskAcceptedClauses are now loaded from database via clause_reviews
   useEffect(() => {
-    const savedTerms = localStorage.getItem("preAgreedTerms")
     const savedFileName = localStorage.getItem("contractFileName")
-    const savedStatuses = localStorage.getItem("clauseStatuses")
     const savedNotes = localStorage.getItem("clauseNotes")
-    const savedRiskAccepted = localStorage.getItem("riskAcceptedClauses")
-
-    if (savedTerms) {
-      setPreAgreedTerms(JSON.parse(savedTerms))
-    } else {
-      // If no saved terms, load sample terms
-      setPreAgreedTerms(preAgreedTermsSample)
-      localStorage.setItem("preAgreedTerms", JSON.stringify(preAgreedTermsSample))
-    }
 
     if (savedFileName) {
       setContractFileName(savedFileName)
-    }
-
-    if (savedStatuses) {
-      setClauseStatuses(JSON.parse(savedStatuses))
     }
 
     if (savedNotes) {
@@ -1084,10 +1004,6 @@ function ReconciliationContent() {
       if (selectedClause && JSON.parse(savedNotes)[selectedClause.id]) {
         setCurrentNote(JSON.parse(savedNotes)[selectedClause.id])
       }
-    }
-
-    if (savedRiskAccepted) {
-      setRiskAcceptedClauses(new Set(JSON.parse(savedRiskAccepted)))
     }
   }, [selectedClause]) // Depend on selectedClause to update currentNote when it changes
 
@@ -1141,11 +1057,13 @@ function ReconciliationContent() {
   const handleReset = () => {
     setClauseStatuses({})
     setActiveFilter("all")
-    setClauses(mockClauses)
-    setSelectedClause(mockClauses[0])
+    // Reset to first clause if available, otherwise trigger reload
+    if (clauses.length > 0) {
+      setSelectedClause(clauses[0])
+    }
     setShowHighlights(true)
     // Removed showNotes reset
-    setActiveTab("overview")
+    setActiveTab("document")
     setRightTab("review")
     setClauseNotes({})
     setCurrentNote("")
@@ -1189,20 +1107,30 @@ function ReconciliationContent() {
   }, [selectedClause])
 
   useEffect(() => {
-    if (activeTab !== "overview" || !selectedClause) return
-    const highlightEl = document.querySelector<HTMLElement>(`[data-clause-highlight-id='${selectedClause.id}']`)
-    if (!highlightEl) return
+    if (!selectedClause) return
 
-    highlightEl.scrollIntoView({ behavior: "smooth", block: "center" })
-    highlightEl.classList.add("ring-2", "ring-slate-400")
+    let selector: string | null = null
+    if (activeTab === "cards") {
+      selector = `[data-clause-highlight-id='${selectedClause.id}']`
+    } else if (activeTab === "document" && selectedClause.clauseBoundaryId) {
+      selector = `[data-clause-id='${selectedClause.clauseBoundaryId}']`
+    }
+
+    if (!selector) return
+
+    const targetEl = document.querySelector<HTMLElement>(selector)
+    if (!targetEl) return
+
+    targetEl.scrollIntoView({ behavior: "smooth", block: "center" })
+    targetEl.classList.add("ring-2", "ring-slate-400")
 
     const timeoutId = window.setTimeout(() => {
-      highlightEl.classList.remove("ring-2", "ring-slate-400")
+      targetEl.classList.remove("ring-2", "ring-slate-400")
     }, 1200)
 
     return () => {
       window.clearTimeout(timeoutId)
-      highlightEl.classList.remove("ring-2", "ring-slate-400")
+      targetEl.classList.remove("ring-2", "ring-slate-400")
     }
   }, [selectedClause, activeTab])
 
@@ -1439,6 +1367,184 @@ function ReconciliationContent() {
     )
   }
 
+  // Render full document text with inline clause highlighting using start_char/end_char offsets
+  const renderFullDocumentText = () => {
+    // Loading state
+    if (loading) {
+      return (
+        <div className="max-w-3xl mx-auto">
+          <Card className="p-8 shadow-sm rounded-2xl border-slate-200">
+            <div className="animate-pulse space-y-4">
+              <div className="h-4 bg-slate-200 rounded w-3/4"></div>
+              <div className="h-4 bg-slate-200 rounded"></div>
+              <div className="h-4 bg-slate-200 rounded w-5/6"></div>
+              <div className="h-4 bg-slate-200 rounded"></div>
+              <div className="h-4 bg-slate-200 rounded w-2/3"></div>
+            </div>
+          </Card>
+        </div>
+      )
+    }
+
+    // No extracted text available
+    if (!extractedText) {
+      return (
+        <div className="max-w-3xl mx-auto">
+          <Card className="p-12 shadow-sm rounded-2xl border-slate-200 text-center">
+            <div className="w-16 h-16 bg-slate-100 rounded-full flex items-center justify-center mx-auto mb-4">
+              <FileText className="w-8 h-8 text-slate-400" />
+            </div>
+            <h3 className="text-lg font-semibold text-slate-700 mb-2">Full Document Text Not Available</h3>
+            <p className="text-sm text-slate-500 mb-4">
+              The full document text has not been extracted for this contract.
+            </p>
+            <p className="text-xs text-slate-400">
+              Try re-processing the document or use the Cards view instead.
+            </p>
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-4"
+              onClick={() => setActiveTab("cards")}
+            >
+              Switch to Cards View
+            </Button>
+          </Card>
+        </div>
+      )
+    }
+
+    // Lazy loading for large documents
+    const isLargeDocument = extractedText.length > LARGE_DOC_THRESHOLD
+    if (isLargeDocument && !showFullDocument) {
+      return (
+        <div className="max-w-3xl mx-auto">
+          <Card className="p-12 shadow-sm rounded-2xl border-slate-200 text-center">
+            <div className="w-16 h-16 bg-blue-50 rounded-full flex items-center justify-center mx-auto mb-4">
+              <FileText className="w-8 h-8 text-blue-500" />
+            </div>
+            <h3 className="text-lg font-semibold text-slate-700 mb-2">Large Document</h3>
+            <p className="text-sm text-slate-500 mb-4">
+              This document is {(extractedText.length / 1000).toFixed(0)}KB. Loading the full text may take a moment.
+            </p>
+            <Button
+              variant="default"
+              size="sm"
+              onClick={() => setShowFullDocument(true)}
+            >
+              Load Full Document
+            </Button>
+            <p className="text-xs text-slate-400 mt-3">
+              Or use the Cards view for faster navigation.
+            </p>
+          </Card>
+        </div>
+      )
+    }
+
+    // Sort clauses by start_char for sequential rendering
+    const sortedOffsets = [...clauseOffsets]
+      .filter(c => c.start_char != null && c.end_char != null)
+      .sort((a, b) => (a.start_char ?? 0) - (b.start_char ?? 0))
+
+    // Count clauses without valid offsets for user info
+    const missingOffsetCount = clauseOffsets.length - sortedOffsets.length
+
+    // If no offsets, just render the plain text
+    if (sortedOffsets.length === 0 || !showHighlights) {
+      return (
+        <div className="max-w-3xl mx-auto">
+          <Card className="p-8 shadow-sm rounded-2xl border-slate-200">
+            {missingOffsetCount > 0 && clauseOffsets.length > 0 && (
+              <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-700">
+                {missingOffsetCount} of {clauseOffsets.length} clauses could not be mapped to document positions and are not highlighted.
+              </div>
+            )}
+            <div className="prose prose-slate max-w-none">
+              <div className="text-slate-800 leading-relaxed whitespace-pre-wrap font-serif">
+                {extractedText}
+              </div>
+            </div>
+          </Card>
+        </div>
+      )
+    }
+
+    // Render with inline highlights
+    const parts: JSX.Element[] = []
+    let lastEnd = 0
+
+    sortedOffsets.forEach((offset, idx) => {
+      // Text before this clause
+      if (offset.start_char! > lastEnd) {
+        const beforeText = extractedText.slice(lastEnd, offset.start_char!)
+        if (beforeText) {
+          parts.push(<span key={`gap-${idx}`}>{beforeText}</span>)
+        }
+      }
+
+      // The clause itself with highlighting
+      const clauseText = extractedText.slice(offset.start_char!, offset.end_char!)
+      const currentStatus = offset.status
+      const isSelected = selectedClause?.id === offset.id
+      const isRiskAccepted = riskAcceptedClauses.has(offset.id)
+
+      const backgroundColor = isSelected
+        ? "rgba(148, 163, 184, 0.3)"
+        : currentStatus === "match"
+          ? isRiskAccepted
+            ? "rgba(253, 230, 138, 0.6)" // Yellowish for risk accepted
+            : "rgba(200, 250, 204, 0.6)" // Green for match
+          : currentStatus === "review"
+            ? "rgba(252, 239, 195, 0.6)" // Amber for review
+            : "rgba(248, 196, 196, 0.6)" // Red for issue
+
+      const matchingClause = clauses.find(c => c.id === offset.id)
+
+      parts.push(
+        <span
+          key={`clause-${offset.id}`}
+          className={`cursor-pointer rounded px-0.5 transition-all ${
+            isSelected ? "ring-2 ring-slate-400" : "hover:brightness-95"
+          }`}
+          style={{ backgroundColor }}
+          onClick={() => {
+            if (matchingClause) {
+              handleClauseSelect(matchingClause)
+            }
+          }}
+          data-clause-id={offset.clauseBoundaryId}
+        >
+          {clauseText}
+        </span>
+      )
+
+      lastEnd = offset.end_char!
+    })
+
+    // Remaining text after last clause
+    if (lastEnd < extractedText.length) {
+      parts.push(<span key="remainder">{extractedText.slice(lastEnd)}</span>)
+    }
+
+    return (
+      <div className="max-w-3xl mx-auto">
+        <Card className="p-8 shadow-sm rounded-2xl border-slate-200">
+          {missingOffsetCount > 0 && (
+            <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-700">
+              {missingOffsetCount} of {clauseOffsets.length} clauses could not be mapped to document positions and are not highlighted.
+            </div>
+          )}
+          <div className="prose prose-slate max-w-none">
+            <div className="text-slate-800 leading-relaxed whitespace-pre-wrap font-serif">
+              {parts}
+            </div>
+          </div>
+        </Card>
+      </div>
+    )
+  }
+
   const handleApprove = () => {
     if (!selectedClause) return
 
@@ -1537,6 +1643,66 @@ function ReconciliationContent() {
     setChatWindowOpen(!chatWindowOpen)
   }
 
+  // Show loading state
+  if (loading && !documentProcessing) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-16 h-16 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin" />
+          <p className="text-slate-600">Loading reconciliation data...</p>
+        </div>
+      </div>
+    )
+  }
+
+  // Show processing state with animated thoughts
+  if (documentProcessing) {
+    return (
+      <div className="min-h-screen bg-slate-50">
+        <ProcessingThoughts
+          isActuallyProcessing={true}
+          onComplete={() => {
+            // Animation finished but we're still polling - just let it continue
+          }}
+        />
+      </div>
+    )
+  }
+
+  // Show error state
+  if (loadError) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <div className="flex flex-col items-center gap-4 max-w-md text-center p-8">
+          <AlertCircle className="w-16 h-16 text-red-500" />
+          <h2 className="text-xl font-semibold text-slate-800">Failed to Load Contract</h2>
+          <p className="text-slate-600">{loadError}</p>
+          <Button onClick={() => window.location.reload()}>
+            Try Again
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
+  // Show empty state if no clauses and not processing
+  if (clauses.length === 0) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <div className="flex flex-col items-center gap-4 max-w-md text-center p-8">
+          <FileText className="w-16 h-16 text-slate-400" />
+          <h2 className="text-xl font-semibold text-slate-800">No Contract Data</h2>
+          <p className="text-slate-600">
+            This deal doesn&apos;t have any contract clauses yet. Upload a contract document to begin reconciliation.
+          </p>
+          <Button onClick={() => router.push(`/deals/new?dealId=${dealId}`)}>
+            Upload Contract
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="min-h-screen bg-slate-50">
       <Dialog
@@ -1548,117 +1714,103 @@ function ReconciliationContent() {
           }
         }}
       >
-        <DialogContent className="max-w-3xl">
+        <DialogContent className="max-w-xl">
           <DialogHeader>
-            <DialogTitle>Suggest change</DialogTitle>
-            <DialogDescription>
-              Propose edits or add comments for this clause. Saved redlines are stored in Supabase and will flag the clause for review.
-            </DialogDescription>
+            <DialogTitle className="text-base">Suggest change</DialogTitle>
           </DialogHeader>
 
           {redlineModalClause ? (
-            <div className="space-y-4">
-              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                <div className="flex items-center justify-between mb-2">
-                  <Badge variant="outline" className="text-xs">
+            <div className="space-y-3">
+              {/* Compact clause preview */}
+              <div className="rounded-md border border-slate-200 bg-slate-50 p-2.5 max-h-32 overflow-y-auto">
+                <div className="flex items-center gap-2 mb-1.5">
+                  <Badge variant="outline" className="text-[10px] px-1.5 py-0">
                     {redlineModalClause.clauseType}
                   </Badge>
-                  <span className="text-xs text-slate-500">
-                    Pages {redlineModalClause.position.start}-{redlineModalClause.position.end}
+                  <span className="text-[10px] text-slate-400">
+                    p.{redlineModalClause.position.start}
                   </span>
                 </div>
-                <p className="text-sm text-slate-800 whitespace-pre-wrap leading-relaxed">
+                <p className="text-xs text-slate-700 leading-relaxed line-clamp-4">
                   {redlineModalClause.text}
                 </p>
               </div>
 
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                <div className="space-y-3">
-                  <h4 className="text-sm font-semibold text-slate-700">Comments</h4>
-                  <CommentThread comments={modalComments} />
-                  <div className="space-y-2">
-                    <label className="text-xs font-medium text-slate-700">Add Comment</label>
-                    <textarea
-                      className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring focus:border-blue-500"
-                      rows={3}
-                      value={modalCommentDraft}
-                      onChange={(e) => {
-                        if (!modalClauseKey) return
-                        const value = e.target.value
-                        setCommentDrafts((prev) => ({
-                          ...prev,
-                          [modalClauseKey]: value,
-                        }))
-                      }}
-                      placeholder="Leave a comment without proposing a text change..."
-                      disabled={!modalClauseKey || !dealId}
-                    />
-                    <div className="flex justify-end">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => modalClauseKey && handleAddComment(modalClauseKey)}
-                        disabled={!modalClauseKey || !dealId || !modalCommentDraft.trim()}
-                      >
-                        <Send className="w-4 h-4 mr-2" />
-                        Post Comment
-                      </Button>
-                    </div>
-                  </div>
+              {/* Redline editor - primary action */}
+              {dealId && tenantId ? (
+                <RedlineEditor
+                  clauseBoundaryId={modalClauseKey!}
+                  dealId={dealId}
+                  tenantId={tenantId}
+                  existingRedline={modalRedlines[0] || null}
+                  onSave={handleRedlineSave}
+                  onError={handleRedlineError}
+                />
+              ) : (
+                <div className="rounded-md border border-dashed border-slate-200 p-3 text-xs text-slate-500 text-center">
+                  Loading deal data...
                 </div>
+              )}
 
-                <div className="space-y-3">
-                  <h4 className="text-sm font-semibold text-slate-700">Redline</h4>
-                  {dealId && tenantId ? (
-                    <RedlineEditor
-                      clauseBoundaryId={modalClauseKey!}
-                      dealId={dealId}
-                      tenantId={tenantId}
-                      existingRedline={modalRedlines[0] || null}
-                      onSave={handleRedlineSave}
-                      onError={handleRedlineError}
-                    />
-                  ) : (
-                    <div className="rounded-md border border-dashed border-slate-200 bg-white p-3 text-xs text-slate-600">
-                      Connect to a real deal to enable redlines and comments.
-                    </div>
-                  )}
-
-                  {modalRedlines && modalRedlines.length > 0 && (
-                    <div className="border-t pt-3 space-y-2">
-                      <h5 className="text-[11px] font-semibold text-slate-700">
-                        Existing Redlines ({modalRedlines.length})
-                      </h5>
-                      {modalRedlines.map((redline) => (
-                        <div key={redline.id} className="bg-slate-50 rounded-lg p-2 border border-slate-200">
-                          <div className="flex items-center justify-between mb-1">
-                            <Badge variant="outline" className="text-[11px]">
-                              {redline.change_type}
-                            </Badge>
-                            <Badge
-                              className={
-                                redline.status === "resolved"
-                                  ? "bg-emerald-100 text-emerald-700"
-                                  : "bg-amber-100 text-amber-700"
-                              }
-                            >
-                              {redline.status}
-                            </Badge>
-                          </div>
-                          <p className="text-[11px] text-slate-700 leading-relaxed">{redline.proposed_text}</p>
+              {/* Existing redlines - collapsed */}
+              {modalRedlines && modalRedlines.length > 0 && (
+                <details className="text-xs">
+                  <summary className="cursor-pointer text-slate-500 hover:text-slate-700">
+                    {modalRedlines.length} existing redline{modalRedlines.length > 1 ? 's' : ''}
+                  </summary>
+                  <div className="mt-2 space-y-1.5">
+                    {modalRedlines.map((redline) => (
+                      <div key={redline.id} className="bg-slate-50 rounded p-2 border border-slate-200">
+                        <div className="flex items-center gap-2 mb-1">
+                          <Badge variant="outline" className="text-[10px]">{redline.change_type}</Badge>
+                          <Badge className={redline.status === "resolved" ? "bg-emerald-100 text-emerald-700 text-[10px]" : "bg-amber-100 text-amber-700 text-[10px]"}>
+                            {redline.status}
+                          </Badge>
                         </div>
-                      ))}
-                    </div>
-                  )}
+                        <p className="text-[11px] text-slate-600 line-clamp-2">{redline.proposed_text}</p>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
+
+              {/* Comment section - collapsed */}
+              <details className="text-xs border-t pt-3">
+                <summary className="cursor-pointer text-slate-500 hover:text-slate-700">
+                  Add comment {modalComments.length > 0 && `(${modalComments.length})`}
+                </summary>
+                <div className="mt-2 space-y-2">
+                  {modalComments.length > 0 && <CommentThread comments={modalComments} />}
+                  <textarea
+                    className="w-full rounded-md border border-slate-200 px-2.5 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    rows={2}
+                    value={modalCommentDraft}
+                    onChange={(e) => {
+                      if (!modalClauseKey) return
+                      setCommentDrafts((prev) => ({ ...prev, [modalClauseKey]: e.target.value }))
+                    }}
+                    placeholder="Leave a comment..."
+                    disabled={!modalClauseKey || !dealId}
+                  />
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 text-xs"
+                    onClick={() => modalClauseKey && handleAddComment(modalClauseKey)}
+                    disabled={!modalClauseKey || !dealId || !modalCommentDraft.trim()}
+                  >
+                    <Send className="w-3 h-3 mr-1.5" />
+                    Post
+                  </Button>
                 </div>
-              </div>
+              </details>
             </div>
           ) : (
-            <p className="text-sm text-slate-600">Select a clause to propose changes.</p>
+            <p className="text-sm text-slate-500">Select a clause to propose changes.</p>
           )}
 
           <DialogFooter>
-            <Button variant="outline" onClick={() => setRedlineModalOpen(false)}>
+            <Button variant="outline" size="sm" onClick={() => setRedlineModalOpen(false)}>
               Close
             </Button>
           </DialogFooter>
@@ -1870,15 +2022,23 @@ function ReconciliationContent() {
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-1">
                 <Button
-                  variant={activeTab === "overview" ? "default" : "ghost"}
+                  variant={activeTab === "cards" ? "default" : "ghost"}
                   size="sm"
-                  onClick={() => setActiveTab("overview")}
+                  onClick={() => setActiveTab("cards")}
                   className="rounded-lg"
                 >
-                  Overview
+                  Cards
                 </Button>
                 <Button
-                  variant={activeTab === "pdf" ? "default" : "ghost"} // Changed to "pdf"
+                  variant={activeTab === "document" ? "default" : "ghost"}
+                  size="sm"
+                  onClick={() => setActiveTab("document")}
+                  className="rounded-lg"
+                >
+                  Document
+                </Button>
+                <Button
+                  variant={activeTab === "pdf" ? "default" : "ghost"}
                   size="sm"
                   onClick={() => setActiveTab("pdf")}
                   className="rounded-lg"
@@ -1932,7 +2092,7 @@ function ReconciliationContent() {
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => setActiveTab("overview")}
+                    onClick={() => setActiveTab("document")}
                     className="rounded-lg bg-transparent"
                   >
                     <FileText className="w-4 h-4 mr-1" />
@@ -1960,8 +2120,8 @@ function ReconciliationContent() {
 
           {/* Document Content */}
           <div className="flex-1 overflow-y-auto p-8">
-            {/* Overview tab */}
-            <div className={activeTab === "overview" ? "block" : "hidden"}>
+            {/* Cards tab - Clause blocks with badges and borders */}
+            <div className={activeTab === "cards" ? "block" : "hidden"}>
               <div className="max-w-3xl mx-auto">
                 <Card className="p-8 shadow-sm rounded-2xl border-slate-200">
                   <div className="prose prose-slate max-w-none">
@@ -1971,6 +2131,11 @@ function ReconciliationContent() {
                   </div>
                 </Card>
               </div>
+            </div>
+
+            {/* Document tab - Full document text with inline highlighting */}
+            <div className={activeTab === "document" ? "block" : "hidden"}>
+              {renderFullDocumentText()}
             </div>
 
             {/* PDF tab (kept mounted so zoom/page state persists) */}
@@ -2322,8 +2487,8 @@ function ReconciliationContent() {
                       </div>
                       <RedlineEditor
                         clauseBoundaryId={selectedClause.clauseBoundaryId}
-                        dealId={dealId}
-                        tenantId={tenantId}
+                        dealId={dealId ?? ""}
+                        tenantId={tenantId ?? ""}
                         existingRedline={existingRedlineForSelected}
                         onSave={handleRedlineSave}
                         onError={handleRedlineError}
@@ -2571,7 +2736,7 @@ function ReconciliationContent() {
                         <span className="text-xs font-semibold text-amber-600 transition-all duration-300">
                           {
                             preAgreedTerms.filter((term) => {
-                              const matchingClause = mockClauses.find(
+                              const matchingClause = clauses.find(
                                 (c) => c.clauseType.toLowerCase() === term.clauseType.toLowerCase(),
                               )
                               return matchingClause && getClauseStatus(matchingClause) === "review"
@@ -2584,7 +2749,7 @@ function ReconciliationContent() {
                         <span className="text-xs font-semibold text-red-600">
                           {
                             preAgreedTerms.filter((term) => {
-                              const matchingClause = mockClauses.find(
+                              const matchingClause = clauses.find(
                                 (c) => c.clauseType.toLowerCase() === term.clauseType.toLowerCase(),
                               )
                               return matchingClause && getClauseStatus(matchingClause) === "issue"
@@ -2598,7 +2763,7 @@ function ReconciliationContent() {
                           {
                             preAgreedTerms.filter(
                               (term) =>
-                                !mockClauses.find((c) => c.clauseType.toLowerCase() === term.clauseType.toLowerCase()),
+                                !clauses.find((c) => c.clauseType.toLowerCase() === term.clauseType.toLowerCase()),
                             ).length
                           }
                         </span>

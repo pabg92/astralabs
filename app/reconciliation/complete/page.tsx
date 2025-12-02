@@ -50,6 +50,7 @@ export default function ResolutionPage() {
   const [clauses, setClauses] = useState<Clause[]>([])
   const [preAgreedTerms, setPreAgreedTerms] = useState<PreAgreedTerm[]>([])
   const [contractFileName, setContractFileName] = useState<string>("")
+  const [dealName, setDealName] = useState<string>("")
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -74,7 +75,8 @@ export default function ResolutionPage() {
 
         const data = result.data
 
-        // Set contract filename
+        // Set deal info
+        setDealName(data.deal_name || data.talent_name || "Contract")
         setContractFileName(data.document?.original_filename || "Contract Document")
 
         // Map pre-agreed terms using correct database field names

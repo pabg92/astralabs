@@ -260,6 +260,12 @@ export async function POST(
       )
     }
 
+    // Resolve author for demo: prefer provided author_id, fall back to DEMO_AUTHOR_ID or seeded demo user
+    const resolvedAuthorId =
+      author_id ??
+      process.env.DEMO_AUTHOR_ID ??
+      "00000000-0000-0000-0000-000000000002"
+
     // Insert redline
     let redline: ClauseRedline | null = null
     if (hasRedlinePayload) {
@@ -268,7 +274,7 @@ export async function POST(
         change_type: change_type as "add" | "delete" | "modify",
         proposed_text,
         status: status as "draft" | "resolved",
-        author_id: author_id || null,
+        author_id: resolvedAuthorId,
         tenant_id: deal.tenant_id,
         resolved_at: status === "resolved" ? new Date().toISOString() : null,
       }
@@ -296,7 +302,7 @@ export async function POST(
       const commentInsert: ClauseCommentInsert = {
         clause_boundary_id,
         comment_text,
-        author_id: author_id || null,
+        author_id: resolvedAuthorId,
         tenant_id: deal.tenant_id,
       }
 

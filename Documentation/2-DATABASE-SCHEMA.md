@@ -55,6 +55,8 @@
 - Vector embeddings (1024 dimensions)
 - **NEW:** `factual_correctness_score` (0-1)
 - **NEW:** `new_clause_flag` (AI-drafted marker)
+- **NEW:** `parent_clause_id` + `variation_letter` for variant system
+- See [4-LCL-CLAUSE-ID-SCHEMA.md](./4-LCL-CLAUSE-ID-SCHEMA.md) for ID naming conventions
 
 **`legal_clause_standardization` (LCSTX - Tier 2)**
 - Canonical clause definitions
@@ -296,4 +298,5 @@ Added to `clause_reviews`:
 **See Also:**
 - [1-ARCHITECTURE.md](./1-ARCHITECTURE.md) - System design
 - [3-IMPLEMENTATION-GUIDE.md](./3-IMPLEMENTATION-GUIDE.md) - Build instructions
+- [4-LCL-CLAUSE-ID-SCHEMA.md](./4-LCL-CLAUSE-ID-SCHEMA.md) - Clause ID naming & extraction standards
 - [CHANGELOG.md](./CHANGELOG.md) - Change history

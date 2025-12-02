@@ -9,13 +9,17 @@
     "start": "next start",
     "worker": "cd worker && npm start",
     "worker:legacy": "tsx scripts/worker.ts",
-    "test:e2e": "npx playwright test",
-    "test:e2e:debug": "npx playwright test --debug",
-    "test:e2e:ui": "npx playwright test --ui",
+    "test:e2e": "E2E_TESTING=true PLAYWRIGHT_TEST=true npx playwright test",
+    "test:e2e:full-flow": "E2E_TESTING=true PLAYWRIGHT_TEST=true npx playwright test full-deal-flow",
+    "test:e2e:deals": "E2E_TESTING=true PLAYWRIGHT_TEST=true npx playwright test deals",
+    "test:e2e:debug": "E2E_TESTING=true PLAYWRIGHT_TEST=true npx playwright test --debug",
+    "test:e2e:ui": "E2E_TESTING=true PLAYWRIGHT_TEST=true npx playwright test --ui",
     "test:e2e:report": "npx playwright show-report e2e/reports/html",
+    "test:e2e:headed": "E2E_TESTING=true PLAYWRIGHT_TEST=true npx playwright test --headed",
     "test:pdf-tab": "tsx scripts/test-pdf-tab.ts"
   },
   "dependencies": {
+    "@clerk/nextjs": "^6.35.5",
     "@hookform/resolvers": "^3.10.0",
     "@radix-ui/react-accordion": "1.2.2",
     "@radix-ui/react-alert-dialog": "1.1.4",
@@ -74,6 +78,7 @@
   "devDependencies": {
     "@playwright/test": "^1.56.1",
     "@tailwindcss/postcss": "^4.1.9",
+    "@types/canvas-confetti": "^1.9.0",
     "@types/node": "^22",
     "@types/react": "^19",
     "@types/react-dom": "^19",
