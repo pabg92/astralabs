@@ -47,6 +47,7 @@ import { useRouter, useSearchParams } from "next/navigation"
 import { useToast } from "@/hooks/use-toast"
 import { RedlineEditor } from "@/components/redlines/redline-editor"
 import { CommentThread } from "@/components/redlines/comment-thread"
+import { ProcessingThoughts } from "@/components/processing-thoughts"
 import type { Database } from "@/types/database"
 
 // Phase 9: Lazy-load PDF viewer to avoid SSR bloat (plan-pdf.md §4)
@@ -276,156 +277,17 @@ const calculateClausePosition = (sectionHeader: string, clauseText: string) => {
   return { start, end }
 }
 
-const mockClauses: Clause[] = [
-  {
-    id: 1,
-    text: "The Contractor shall provide software development, consulting, and technical advisory services as detailed in the Statement of Work attached hereto as Exhibit A. The Contractor shall complete all work within 90 days of contract execution, with milestone deliverables due at 30-day intervals. All work shall be performed in accordance with industry best practices and applicable professional standards.",
-    status: "review",
-    summary: "Defines Contractor responsibilities, deliverables, and 90-day timeline. Industry standard.",
-    confidence: 96,
-    position: calculateClausePosition("1. SCOPE OF WORK", "applicable professional standards."),
-    clauseType: "Scope of Work",
-  },
-  {
-    id: 2,
-    text: "Client agrees to pay Contractor a total fee of $250,000 for the services rendered under this Agreement. Payment shall be made in three installments: (i) $83,333 upon execution of this Agreement; (ii) $83,333 upon completion of Phase 1 deliverables; and (iii) $83,334 upon final delivery and acceptance. Payment terms are Net 45 days from invoice date. Late payments shall accrue interest at a rate of 1.5% per month or the maximum rate permitted by law, whichever is less.",
-    status: "review",
-    summary: "Three-installment payment schedule with Net 45 terms and standard late payment clause.",
-    confidence: 93,
-    position: calculateClausePosition("2. PAYMENT TERMS", "whichever is less."),
-    clauseType: "Payment Terms",
-  },
-  {
-    id: 3,
-    text: "The Contractor agrees to deliver all specified work products in accordance with the project timeline and quality standards outlined in Exhibit A. Client shall have 15 business days to review and accept or reject deliverables. Acceptance shall not be unreasonably withheld. Any rejected deliverables must be accompanied by specific written feedback, and Contractor shall have 10 business days to cure any deficiencies.",
-    status: "review",
-    summary: "Acceptance and rejection terms reasonable but may need clearer objective acceptance criteria.",
-    confidence: 81,
-    position: calculateClausePosition("3. DELIVERABLES AND ACCEPTANCE", "cure any deficiencies."),
-    clauseType: "Deliverables",
-  },
-  {
-    id: 4,
-    text: 'All work product, including but not limited to software code, documentation, designs, and related materials created by Contractor in the performance of services under this Agreement shall be considered "work made for hire" under U.S. copyright law. To the extent any work product does not qualify as work made for hire, Contractor hereby assigns all right, title, and interest in such work product to Client. Contractor retains ownership of any pre-existing intellectual property and grants Client a perpetual, worldwide, non-exclusive license to use such pre-existing materials as incorporated into the deliverables.',
-    status: "review",
-    summary: "Client owns work product; Contractor retains pre-existing IP under perpetual license.",
-    confidence: 95,
-    position: calculateClausePosition("4. INTELLECTUAL PROPERTY RIGHTS", "incorporated into the deliverables."),
-    clauseType: "Intellectual Property",
-  },
-  {
-    id: 5,
-    text: 'Both parties agree to maintain confidentiality of all proprietary information shared during the course of this engagement. "Confidential Information" includes, but is not limited to, trade secrets, business plans, technical data, customer lists, and financial information. Each party shall protect Confidential Information with the same degree of care it uses to protect its own confidential information, but in no event less than reasonable care. This obligation shall survive termination of this Agreement for a period of five years.',
-    status: "review",
-    summary: "Five-year confidentiality obligation; mutual protection and reasonable care standard.",
-    confidence: 97,
-    position: calculateClausePosition("5. CONFIDENTIALITY", "for a period of five years."),
-    clauseType: "Confidentiality",
-  },
-  {
-    id: 6,
-    text: "Contractor warrants that: (i) it has the right and authority to enter into this Agreement; (ii) the services will be performed in a professional and workmanlike manner; (iii) the deliverables will be free from material defects for a period of 90 days following acceptance; and (iv) the deliverables will not infringe upon any third-party intellectual property rights. Client warrants that it has the authority to enter into this Agreement and will provide timely feedback and necessary resources for Contractor to perform the services.",
-    status: "review",
-    summary: "Good coverage but 90-day warranty window may be too short; consider expansion to 180 days.",
-    confidence: 79,
-    position: calculateClausePosition("6. WARRANTIES AND REPRESENTATIONS", "Contractor to perform the services."),
-    clauseType: "Warranties",
-  },
-  {
-    id: 7,
-    text: "Except for breaches of confidentiality or intellectual property provisions, neither party shall be liable for any indirect, incidental, consequential, or punitive damages arising out of this Agreement. Contractor's total liability under this Agreement is capped at 50% of the total fees paid or payable under this Agreement. This limitation shall not apply to damages arising from gross negligence or willful misconduct.",
-    status: "issue",
-    summary: "Liability cap (50%) may be too low for project value; review and renegotiate upward.",
-    confidence: 68,
-    position: calculateClausePosition("7. LIMITATION OF LIABILITY", "gross negligence or willful misconduct."),
-    clauseType: "Liability Cap",
-  },
-  {
-    id: 8,
-    text: "Each party agrees to indemnify, defend, and hold harmless the other party from and against any claims, damages, losses, and expenses (including reasonable attorneys' fees) arising out of: (i) breach of this Agreement; (ii) negligence or willful misconduct; or (iii) violation of applicable laws. Contractor shall indemnify Client against any third-party claims alleging that the deliverables infringe intellectual property rights.",
-    status: "issue",
-    summary: "Mutual indemnification with IP indemnity from Contractor; balanced and standard.",
-    confidence: 95,
-    position: calculateClausePosition("8. INDEMNIFICATION", "infringe intellectual property rights."),
-    clauseType: "Indemnification",
-  },
-  {
-    id: 9,
-    text: "This Agreement shall commence on the Effective Date and continue until completion of all services, unless earlier terminated as provided herein. Either party may terminate this Agreement with 30 days written notice. Client may terminate immediately for cause upon written notice if Contractor materially breaches this Agreement and fails to cure within 15 days. Upon termination, Client shall pay Contractor for all services performed and expenses incurred through the termination date.",
-    status: "issue",
-    summary: "30-day notice termination with cure window; includes pro-rata payment clause.",
-    confidence: 92,
-    position: calculateClausePosition("9. TERM AND TERMINATION", "through the termination date."),
-    clauseType: "Termination",
-  },
-  {
-    id: 10,
-    text: "Any disputes arising under this Agreement shall first be subject to good faith negotiation between the parties' senior executives. If not resolved within 30 days, the dispute shall be submitted to binding arbitration in accordance with the Commercial Arbitration Rules of the American Arbitration Association. The arbitration shall be conducted in San Francisco, California. The prevailing party shall be entitled to recover reasonable attorneys' fees and costs.",
-    status: "review", // Changed from "improve" to "review" as per new types
-    summary: "Arbitration clause in San Francisco; consider mediation or flexible venue options.",
-    confidence: 83,
-    position: calculateClausePosition("10. DISPUTE RESOLUTION", "reasonable attorneys' fees and costs."),
-    clauseType: "Dispute Resolution",
-  },
-  {
-    id: 11,
-    text: "This Agreement shall be governed by and construed in accordance with the laws of the State of Delaware, without regard to its conflict of laws principles. This Agreement constitutes the entire agreement between the parties and supersedes all prior agreements and understandings. No modification shall be effective unless in writing and signed by both parties. If any provision is found unenforceable, the remaining provisions shall remain in full force and effect. Neither party may assign this Agreement without the prior written consent of the other party.",
-    status: "review", // Changed from "info" to "review" as per new types
-    summary: "Standard boilerplate (Delaware law, entire agreement, assignment, severability).",
-    confidence: 99,
-    position: calculateClausePosition("11. GENERAL PROVISIONS", "written consent of the other party."),
-    clauseType: "General Provisions",
-  },
-]
-
-const preAgreedTermsSample: PreAgreedTerm[] = [
-  {
-    id: "pat-1",
-    clauseType: "Scope of Work",
-    expectedTerm:
-      "Contractor to provide software development, consulting, and technical advisory services as detailed in Exhibit A. Work to be completed within 90 days, with milestone deliverables due at 30-day intervals. All work performed in accordance with industry best practices and applicable professional standards.",
-    notes: "Ensure specific deliverables and timelines are detailed in Exhibit A.",
-  },
-  {
-    id: "pat-2",
-    clauseType: "Payment Terms",
-    expectedTerm:
-      "Total fee of $250,000, payable in three installments: upon execution, completion of Phase 1, and upon final delivery and acceptance. Payment terms are Net 45 days from invoice date. Late payments accrue interest at 1.5% per month.",
-    notes: "Confirm specific amounts for each installment and the final acceptance criteria.",
-  },
-  {
-    id: "pat-3",
-    clauseType: "Deliverables",
-    expectedTerm:
-      "Client has 15 business days to review and accept/reject deliverables, providing specific written feedback for rejections. Contractor has 10 business days to cure deficiencies.",
-    notes: "Consider objective criteria for acceptance to avoid disputes.",
-  },
-  {
-    id: "pat-4",
-    clauseType: "Intellectual Property",
-    expectedTerm:
-      "All work product created by Contractor is considered 'work made for hire' and owned by Client. Contractor retains ownership of pre-existing IP and grants Client a perpetual, non-exclusive license.",
-    notes: "Clarify what constitutes 'pre-existing intellectual property'.",
-  },
-  {
-    id: "pat-5",
-    clauseType: "Confidentiality",
-    expectedTerm:
-      "Mutual confidentiality obligation for proprietary information for five years post-termination, with both parties using reasonable care to protect information.",
-    notes: "Define 'proprietary information' broadly.",
-  },
-]
-
 function ReconciliationContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const dealId = searchParams.get("dealId")
   const { toast } = useToast()
 
-  // State for clauses loaded from API or fallback to mock
-  const [clauses, setClauses] = useState<Clause[]>(mockClauses)
+  // State for clauses loaded from API
+  const [clauses, setClauses] = useState<Clause[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
+  const [documentProcessing, setDocumentProcessing] = useState(false) // Document still being processed by worker
   const [exportingText, setExportingText] = useState(false)
   const [exportingJSON, setExportingJSON] = useState(false)
   const [hasPdf, setHasPdf] = useState(false) // Phase 9: Track PDF availability
@@ -448,7 +310,7 @@ function ReconciliationContent() {
   const [riskAcceptedClauses, setRiskAcceptedClauses] = useState<Set<number>>(new Set()) // Track risk accepted clauses
 
   // State for pre-agreed terms and contract file name
-  const [preAgreedTerms, setPreAgreedTerms] = useState<PreAgreedTerm[]>(preAgreedTermsSample)
+  const [preAgreedTerms, setPreAgreedTerms] = useState<PreAgreedTerm[]>([])
   const [contractFileName, setContractFileName] = useState<string>("")
 
   const [chatBuddyVisible, setChatBuddyVisible] = useState(true)
@@ -476,21 +338,24 @@ function ReconciliationContent() {
 
   const autoSaveTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined)
 
-  // Fetch reconciliation data from API
+  // Fetch reconciliation data from API with polling for processing documents
   useEffect(() => {
-    const fetchReconciliationData = async () => {
-      // If no dealId, use mock data
+    let pollInterval: NodeJS.Timeout | null = null
+    let mounted = true
+
+    const fetchReconciliationData = async (isPolling = false) => {
+      // If no dealId, show error
       if (!dealId) {
-        console.log("No dealId provided, using mock data")
-        setClauses(mockClauses)
-        setSelectedClause(mockClauses[0])
+        setLoadError("No deal ID provided. Please select a deal to review.")
         setLoading(false)
         return
       }
 
       try {
-        setLoading(true)
-        setLoadError(null)
+        if (!isPolling) {
+          setLoading(true)
+          setLoadError(null)
+        }
 
         const response = await fetch(`/api/reconciliation/${dealId}`)
 
@@ -556,10 +421,18 @@ function ReconciliationContent() {
             }
           }) || []
 
+        // Check if document is still processing
+        const docStatus = apiData.document?.processing_status
+        const isProcessing = docStatus === 'pending' || docStatus === 'processing'
+        const hasNoClauses = apiClauses.length === 0
+
+        if (!mounted) return
+
         // Set clauses and select first one
         if (apiClauses.length > 0) {
           setClauses(apiClauses)
           setSelectedClause(apiClauses[0])
+          setDocumentProcessing(false)
 
           // Initialize clause statuses and risk-accepted from loaded data
           const initialStatuses: Record<number, ClauseStatus> = {}
@@ -572,11 +445,24 @@ function ReconciliationContent() {
           })
           setClauseStatuses(initialStatuses)
           setRiskAcceptedClauses(initialRiskAccepted)
-        } else {
-          // No clauses found, fallback to mock
-          console.warn("No clauses found in API response, using mock data")
-          setClauses(mockClauses)
-          setSelectedClause(mockClauses[0])
+
+          // Stop polling if we were polling
+          if (pollInterval) {
+            clearInterval(pollInterval)
+            pollInterval = null
+          }
+        } else if (isProcessing || hasNoClauses) {
+          // Document is still processing or has no clauses yet
+          setDocumentProcessing(true)
+          setClauses([])
+
+          // Start polling if not already polling
+          if (!pollInterval && !isPolling) {
+            console.log("Document still processing, starting poll...")
+            pollInterval = setInterval(() => {
+              fetchReconciliationData(true)
+            }, 5000) // Poll every 5 seconds
+          }
         }
 
         // Set pre-agreed terms
@@ -634,17 +520,23 @@ function ReconciliationContent() {
 
         setLoading(false)
       } catch (error) {
+        if (!mounted) return
         console.error("Error loading reconciliation data:", error)
         setLoadError(error instanceof Error ? error.message : "Failed to load data")
-
-        // Fallback to mock data on error
-        setClauses(mockClauses)
-        setSelectedClause(mockClauses[0])
+        setDocumentProcessing(false)
         setLoading(false)
       }
     }
 
     fetchReconciliationData()
+
+    // Cleanup polling on unmount
+    return () => {
+      mounted = false
+      if (pollInterval) {
+        clearInterval(pollInterval)
+      }
+    }
   }, [dealId])
 
   // Phase 11: Fetch redlines and comments
@@ -1098,11 +990,8 @@ function ReconciliationContent() {
 
     if (savedTerms) {
       setPreAgreedTerms(JSON.parse(savedTerms))
-    } else {
-      // If no saved terms, load sample terms
-      setPreAgreedTerms(preAgreedTermsSample)
-      localStorage.setItem("preAgreedTerms", JSON.stringify(preAgreedTermsSample))
     }
+    // Pre-agreed terms now come from API, no sample fallback needed
 
     if (savedFileName) {
       setContractFileName(savedFileName)
@@ -1175,8 +1064,10 @@ function ReconciliationContent() {
   const handleReset = () => {
     setClauseStatuses({})
     setActiveFilter("all")
-    setClauses(mockClauses)
-    setSelectedClause(mockClauses[0])
+    // Reset to first clause if available, otherwise trigger reload
+    if (clauses.length > 0) {
+      setSelectedClause(clauses[0])
+    }
     setShowHighlights(true)
     // Removed showNotes reset
     setActiveTab("document")
@@ -1757,6 +1648,66 @@ function ReconciliationContent() {
 
   const handleToggleChatWindow = () => {
     setChatWindowOpen(!chatWindowOpen)
+  }
+
+  // Show loading state
+  if (loading && !documentProcessing) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-16 h-16 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin" />
+          <p className="text-slate-600">Loading reconciliation data...</p>
+        </div>
+      </div>
+    )
+  }
+
+  // Show processing state with animated thoughts
+  if (documentProcessing) {
+    return (
+      <div className="min-h-screen bg-slate-50">
+        <ProcessingThoughts
+          isActuallyProcessing={true}
+          onComplete={() => {
+            // Animation finished but we're still polling - just let it continue
+          }}
+        />
+      </div>
+    )
+  }
+
+  // Show error state
+  if (loadError) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <div className="flex flex-col items-center gap-4 max-w-md text-center p-8">
+          <AlertCircle className="w-16 h-16 text-red-500" />
+          <h2 className="text-xl font-semibold text-slate-800">Failed to Load Contract</h2>
+          <p className="text-slate-600">{loadError}</p>
+          <Button onClick={() => window.location.reload()}>
+            Try Again
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
+  // Show empty state if no clauses and not processing
+  if (clauses.length === 0) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <div className="flex flex-col items-center gap-4 max-w-md text-center p-8">
+          <FileText className="w-16 h-16 text-slate-400" />
+          <h2 className="text-xl font-semibold text-slate-800">No Contract Data</h2>
+          <p className="text-slate-600">
+            This deal doesn&apos;t have any contract clauses yet. Upload a contract document to begin reconciliation.
+          </p>
+          <Button onClick={() => router.push(`/deals/new?dealId=${dealId}`)}>
+            Upload Contract
+          </Button>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -2806,7 +2757,7 @@ function ReconciliationContent() {
                         <span className="text-xs font-semibold text-amber-600 transition-all duration-300">
                           {
                             preAgreedTerms.filter((term) => {
-                              const matchingClause = mockClauses.find(
+                              const matchingClause = clauses.find(
                                 (c) => c.clauseType.toLowerCase() === term.clauseType.toLowerCase(),
                               )
                               return matchingClause && getClauseStatus(matchingClause) === "review"
@@ -2819,7 +2770,7 @@ function ReconciliationContent() {
                         <span className="text-xs font-semibold text-red-600">
                           {
                             preAgreedTerms.filter((term) => {
-                              const matchingClause = mockClauses.find(
+                              const matchingClause = clauses.find(
                                 (c) => c.clauseType.toLowerCase() === term.clauseType.toLowerCase(),
                               )
                               return matchingClause && getClauseStatus(matchingClause) === "issue"
@@ -2833,7 +2784,7 @@ function ReconciliationContent() {
                           {
                             preAgreedTerms.filter(
                               (term) =>
-                                !mockClauses.find((c) => c.clauseType.toLowerCase() === term.clauseType.toLowerCase()),
+                                !clauses.find((c) => c.clauseType.toLowerCase() === term.clauseType.toLowerCase()),
                             ).length
                           }
                         </span>
