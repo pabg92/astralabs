@@ -514,8 +514,9 @@ function ReconciliationContent() {
         }
 
         // Phase 11: Store tenant_id for redlines/comments
-        if (apiData.deal?.tenant_id) {
-          setTenantId(apiData.deal.tenant_id)
+        // tenant_id is at root level of response (spread from deal)
+        if (apiData.tenant_id) {
+          setTenantId(apiData.tenant_id)
         }
 
         setLoading(false)
@@ -803,9 +804,9 @@ function ReconciliationContent() {
   }
 
   const handleCompleteReview = () => {
-    // Save current state to localStorage before navigating
-    localStorage.setItem("clauseStatuses", JSON.stringify(clauseStatuses))
-    localStorage.setItem("clauseNotes", JSON.stringify(clauseNotes)) // Also save notes
+    // Note: clauseStatuses are now persisted to database via clause_reviews table
+    // Only save notes to localStorage (consider migrating to database comments in future)
+    localStorage.setItem("clauseNotes", JSON.stringify(clauseNotes))
     router.push("/reconciliation/complete")
   }
 
@@ -951,11 +952,17 @@ function ReconciliationContent() {
     if (!clause.clauseBoundaryId || !dealId) return
 
     try {
-      await fetch(`/api/reconciliation/${dealId}/clauses/${clause.clauseBoundaryId}`, {
+      const response = await fetch(`/api/reconciliation/${dealId}/clauses/${clause.clauseBoundaryId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ decision, risk_accepted: riskAccepted, comments }),
       })
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}))
+        console.error("Failed to save clause review:", response.status, errorData)
+        // TODO: Show toast notification for user feedback
+      }
     } catch (error) {
       console.error("Failed to save clause review:", error)
     }
@@ -981,24 +988,14 @@ function ReconciliationContent() {
     }, 300)
   }
 
+  // Load non-persisted state from localStorage (notes only)
+  // Note: clauseStatuses and riskAcceptedClauses are now loaded from database via clause_reviews
   useEffect(() => {
-    const savedTerms = localStorage.getItem("preAgreedTerms")
     const savedFileName = localStorage.getItem("contractFileName")
-    const savedStatuses = localStorage.getItem("clauseStatuses")
     const savedNotes = localStorage.getItem("clauseNotes")
-    const savedRiskAccepted = localStorage.getItem("riskAcceptedClauses")
-
-    if (savedTerms) {
-      setPreAgreedTerms(JSON.parse(savedTerms))
-    }
-    // Pre-agreed terms now come from API, no sample fallback needed
 
     if (savedFileName) {
       setContractFileName(savedFileName)
-    }
-
-    if (savedStatuses) {
-      setClauseStatuses(JSON.parse(savedStatuses))
     }
 
     if (savedNotes) {
@@ -1007,10 +1004,6 @@ function ReconciliationContent() {
       if (selectedClause && JSON.parse(savedNotes)[selectedClause.id]) {
         setCurrentNote(JSON.parse(savedNotes)[selectedClause.id])
       }
-    }
-
-    if (savedRiskAccepted) {
-      setRiskAcceptedClauses(new Set(JSON.parse(savedRiskAccepted)))
     }
   }, [selectedClause]) // Depend on selectedClause to update currentNote when it changes
 
@@ -1721,117 +1714,103 @@ function ReconciliationContent() {
           }
         }}
       >
-        <DialogContent className="max-w-3xl">
+        <DialogContent className="max-w-xl">
           <DialogHeader>
-            <DialogTitle>Suggest change</DialogTitle>
-            <DialogDescription>
-              Propose edits or add comments for this clause. Saved redlines are stored in Supabase and will flag the clause for review.
-            </DialogDescription>
+            <DialogTitle className="text-base">Suggest change</DialogTitle>
           </DialogHeader>
 
           {redlineModalClause ? (
-            <div className="space-y-4">
-              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                <div className="flex items-center justify-between mb-2">
-                  <Badge variant="outline" className="text-xs">
+            <div className="space-y-3">
+              {/* Compact clause preview */}
+              <div className="rounded-md border border-slate-200 bg-slate-50 p-2.5 max-h-32 overflow-y-auto">
+                <div className="flex items-center gap-2 mb-1.5">
+                  <Badge variant="outline" className="text-[10px] px-1.5 py-0">
                     {redlineModalClause.clauseType}
                   </Badge>
-                  <span className="text-xs text-slate-500">
-                    Pages {redlineModalClause.position.start}-{redlineModalClause.position.end}
+                  <span className="text-[10px] text-slate-400">
+                    p.{redlineModalClause.position.start}
                   </span>
                 </div>
-                <p className="text-sm text-slate-800 whitespace-pre-wrap leading-relaxed">
+                <p className="text-xs text-slate-700 leading-relaxed line-clamp-4">
                   {redlineModalClause.text}
                 </p>
               </div>
 
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                <div className="space-y-3">
-                  <h4 className="text-sm font-semibold text-slate-700">Comments</h4>
-                  <CommentThread comments={modalComments} />
-                  <div className="space-y-2">
-                    <label className="text-xs font-medium text-slate-700">Add Comment</label>
-                    <textarea
-                      className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring focus:border-blue-500"
-                      rows={3}
-                      value={modalCommentDraft}
-                      onChange={(e) => {
-                        if (!modalClauseKey) return
-                        const value = e.target.value
-                        setCommentDrafts((prev) => ({
-                          ...prev,
-                          [modalClauseKey]: value,
-                        }))
-                      }}
-                      placeholder="Leave a comment without proposing a text change..."
-                      disabled={!modalClauseKey || !dealId}
-                    />
-                    <div className="flex justify-end">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => modalClauseKey && handleAddComment(modalClauseKey)}
-                        disabled={!modalClauseKey || !dealId || !modalCommentDraft.trim()}
-                      >
-                        <Send className="w-4 h-4 mr-2" />
-                        Post Comment
-                      </Button>
-                    </div>
-                  </div>
+              {/* Redline editor - primary action */}
+              {dealId && tenantId ? (
+                <RedlineEditor
+                  clauseBoundaryId={modalClauseKey!}
+                  dealId={dealId}
+                  tenantId={tenantId}
+                  existingRedline={modalRedlines[0] || null}
+                  onSave={handleRedlineSave}
+                  onError={handleRedlineError}
+                />
+              ) : (
+                <div className="rounded-md border border-dashed border-slate-200 p-3 text-xs text-slate-500 text-center">
+                  Loading deal data...
                 </div>
+              )}
 
-                <div className="space-y-3">
-                  <h4 className="text-sm font-semibold text-slate-700">Redline</h4>
-                  {dealId && tenantId ? (
-                    <RedlineEditor
-                      clauseBoundaryId={modalClauseKey!}
-                      dealId={dealId}
-                      tenantId={tenantId}
-                      existingRedline={modalRedlines[0] || null}
-                      onSave={handleRedlineSave}
-                      onError={handleRedlineError}
-                    />
-                  ) : (
-                    <div className="rounded-md border border-dashed border-slate-200 bg-white p-3 text-xs text-slate-600">
-                      Connect to a real deal to enable redlines and comments.
-                    </div>
-                  )}
-
-                  {modalRedlines && modalRedlines.length > 0 && (
-                    <div className="border-t pt-3 space-y-2">
-                      <h5 className="text-[11px] font-semibold text-slate-700">
-                        Existing Redlines ({modalRedlines.length})
-                      </h5>
-                      {modalRedlines.map((redline) => (
-                        <div key={redline.id} className="bg-slate-50 rounded-lg p-2 border border-slate-200">
-                          <div className="flex items-center justify-between mb-1">
-                            <Badge variant="outline" className="text-[11px]">
-                              {redline.change_type}
-                            </Badge>
-                            <Badge
-                              className={
-                                redline.status === "resolved"
-                                  ? "bg-emerald-100 text-emerald-700"
-                                  : "bg-amber-100 text-amber-700"
-                              }
-                            >
-                              {redline.status}
-                            </Badge>
-                          </div>
-                          <p className="text-[11px] text-slate-700 leading-relaxed">{redline.proposed_text}</p>
+              {/* Existing redlines - collapsed */}
+              {modalRedlines && modalRedlines.length > 0 && (
+                <details className="text-xs">
+                  <summary className="cursor-pointer text-slate-500 hover:text-slate-700">
+                    {modalRedlines.length} existing redline{modalRedlines.length > 1 ? 's' : ''}
+                  </summary>
+                  <div className="mt-2 space-y-1.5">
+                    {modalRedlines.map((redline) => (
+                      <div key={redline.id} className="bg-slate-50 rounded p-2 border border-slate-200">
+                        <div className="flex items-center gap-2 mb-1">
+                          <Badge variant="outline" className="text-[10px]">{redline.change_type}</Badge>
+                          <Badge className={redline.status === "resolved" ? "bg-emerald-100 text-emerald-700 text-[10px]" : "bg-amber-100 text-amber-700 text-[10px]"}>
+                            {redline.status}
+                          </Badge>
                         </div>
-                      ))}
-                    </div>
-                  )}
+                        <p className="text-[11px] text-slate-600 line-clamp-2">{redline.proposed_text}</p>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
+
+              {/* Comment section - collapsed */}
+              <details className="text-xs border-t pt-3">
+                <summary className="cursor-pointer text-slate-500 hover:text-slate-700">
+                  Add comment {modalComments.length > 0 && `(${modalComments.length})`}
+                </summary>
+                <div className="mt-2 space-y-2">
+                  {modalComments.length > 0 && <CommentThread comments={modalComments} />}
+                  <textarea
+                    className="w-full rounded-md border border-slate-200 px-2.5 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    rows={2}
+                    value={modalCommentDraft}
+                    onChange={(e) => {
+                      if (!modalClauseKey) return
+                      setCommentDrafts((prev) => ({ ...prev, [modalClauseKey]: e.target.value }))
+                    }}
+                    placeholder="Leave a comment..."
+                    disabled={!modalClauseKey || !dealId}
+                  />
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 text-xs"
+                    onClick={() => modalClauseKey && handleAddComment(modalClauseKey)}
+                    disabled={!modalClauseKey || !dealId || !modalCommentDraft.trim()}
+                  >
+                    <Send className="w-3 h-3 mr-1.5" />
+                    Post
+                  </Button>
                 </div>
-              </div>
+              </details>
             </div>
           ) : (
-            <p className="text-sm text-slate-600">Select a clause to propose changes.</p>
+            <p className="text-sm text-slate-500">Select a clause to propose changes.</p>
           )}
 
           <DialogFooter>
-            <Button variant="outline" onClick={() => setRedlineModalOpen(false)}>
+            <Button variant="outline" size="sm" onClick={() => setRedlineModalOpen(false)}>
               Close
             </Button>
           </DialogFooter>
