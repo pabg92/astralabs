@@ -37,9 +37,9 @@ interface Clause {
 
 interface PreAgreedTerm {
   id: string
-  clauseType: string
-  expectedTerm: string
-  notes: string
+  termCategory: string
+  termDescription: string
+  relatedClauseTypes: string[]
 }
 
 export default function ResolutionPage() {
@@ -79,26 +79,31 @@ export default function ResolutionPage() {
         setDealName(data.deal_name || data.talent_name || "Contract")
         setContractFileName(data.document?.original_filename || "Contract Document")
 
-        // Map pre-agreed terms
+        // Map pre-agreed terms using correct database field names
         if (data.pre_agreed_terms) {
-          setPreAgreedTerms(data.pre_agreed_terms.map((term: { id: string; clause_type: string; expected_term: string; notes: string }) => ({
+          setPreAgreedTerms(data.pre_agreed_terms.map((term: {
+            id: string
+            term_category: string
+            term_description: string
+            related_clause_types: string[] | null
+          }) => ({
             id: term.id,
-            clauseType: term.clause_type || "General",
-            expectedTerm: term.expected_term || "",
-            notes: term.notes || "",
+            termCategory: term.term_category || "General",
+            termDescription: term.term_description || "",
+            relatedClauseTypes: term.related_clause_types || [],
           })))
         }
 
-        // Map clause boundaries with their reviews to our Clause format
+        // Map clause boundaries with their reviews
         if (data.document?.clause_boundaries) {
           const mappedClauses: Clause[] = data.document.clause_boundaries.map((boundary: {
             id: string
-            clause_text: string
+            content: string
             clause_type: string
             match_result?: { similarity_score?: number; rag_status?: string; gpt_summary?: string } | null
             review?: { decision?: string } | null
           }) => {
-            // Determine status from RAG status or review decision
+            // Determine status from RAG status
             let status: ClauseStatus = "review"
             const ragStatus = boundary.match_result?.rag_status
 
@@ -107,12 +112,11 @@ export default function ResolutionPage() {
             else if (ragStatus === "red") status = "issue"
             else if (ragStatus === "blue") status = "info"
 
-            // Override with review decision if present
             const reviewDecision = boundary.review?.decision as "approved" | "rejected" | null
 
             return {
               id: boundary.id,
-              text: boundary.clause_text || "",
+              text: boundary.content || "",
               status,
               summary: boundary.match_result?.gpt_summary || boundary.clause_type || "No summary",
               confidence: Math.round((boundary.match_result?.similarity_score || 0) * 100),
@@ -136,11 +140,8 @@ export default function ResolutionPage() {
   }, [dealId])
 
   // Calculate statistics based on review decisions
-  // Accepted = clauses with "approved" review decision
   const acceptedClauses = clauses.filter((c) => c.reviewDecision === "approved")
-  // Rejected = clauses with "rejected" review decision
   const rejectedClauses = clauses.filter((c) => c.reviewDecision === "rejected")
-  // Pending = clauses without a review decision yet
   const pendingClauses = clauses.filter((c) => !c.reviewDecision)
 
   const totalClauses = clauses.length
@@ -161,10 +162,18 @@ export default function ResolutionPage() {
 
   const overallStatus = getOverallStatus()
 
-  // Calculate pre-agreed terms reconciliation
+  // Calculate pre-agreed terms reconciliation using related_clause_types
   const reconciledTerms = preAgreedTerms.filter((term) => {
-    const matchingClause = clauses.find((c) => c.clauseType.toLowerCase() === term.clauseType.toLowerCase())
-    return matchingClause && matchingClause.reviewDecision === "approved"
+    // Find any approved clause that matches one of the term's related clause types
+    const hasMatchingApprovedClause = clauses.some((clause) => {
+      const clauseTypeNormalized = clause.clauseType.toLowerCase()
+      // Check if any related clause type matches this clause's type
+      const matchesRelatedType = term.relatedClauseTypes.some(
+        (relatedType) => relatedType.toLowerCase() === clauseTypeNormalized
+      )
+      return matchesRelatedType && clause.reviewDecision === "approved"
+    })
+    return hasMatchingApprovedClause
   })
 
   const getStatusIcon = (status: ClauseStatus) => {
@@ -183,7 +192,6 @@ export default function ResolutionPage() {
   }
 
   const handleFinalize = () => {
-    // In real app, this would trigger export/finalization logic
     alert("Contract reconciliation finalized! Export functionality would be triggered here.")
   }
 
@@ -533,10 +541,14 @@ export default function ResolutionPage() {
 
             <div className="grid grid-cols-2 gap-4">
               {preAgreedTerms.map((term) => {
-                const matchingClause = clauses.find(
-                  (c) => c.clauseType.toLowerCase() === term.clauseType.toLowerCase(),
-                )
-                const isReconciled = matchingClause && matchingClause.reviewDecision === "approved"
+                // Check if any clause matching the related types is approved
+                const isReconciled = clauses.some((clause) => {
+                  const clauseTypeNormalized = clause.clauseType.toLowerCase()
+                  const matchesRelatedType = term.relatedClauseTypes.some(
+                    (relatedType) => relatedType.toLowerCase() === clauseTypeNormalized
+                  )
+                  return matchesRelatedType && clause.reviewDecision === "approved"
+                })
 
                 return (
                   <div
@@ -554,7 +566,7 @@ export default function ResolutionPage() {
                             : "bg-slate-100 text-slate-700"
                         }`}
                       >
-                        {term.clauseType}
+                        {term.termCategory}
                       </Badge>
                       {isReconciled ? (
                         <div className="flex items-center gap-1">
@@ -568,7 +580,16 @@ export default function ResolutionPage() {
                         </div>
                       )}
                     </div>
-                    <p className="text-xs text-slate-600 line-clamp-2">{term.expectedTerm}</p>
+                    <p className="text-xs text-slate-600 line-clamp-2">{term.termDescription}</p>
+                    {term.relatedClauseTypes.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        {term.relatedClauseTypes.map((type) => (
+                          <Badge key={type} variant="secondary" className="text-xs px-1.5 py-0">
+                            {type}
+                          </Badge>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )
               })}
