@@ -96,6 +96,13 @@ export async function PATCH(
       )
     }
 
+    if (!boundary.document_id) {
+      return NextResponse.json(
+        { error: "Clause boundary has no associated document" },
+        { status: 400 }
+      )
+    }
+
     // Upsert the review with proper user and tenant tracking
     const reviewData = {
       document_id: boundary.document_id,

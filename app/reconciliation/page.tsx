@@ -429,11 +429,15 @@ function ReconciliationContent() {
   const [exportingText, setExportingText] = useState(false)
   const [exportingJSON, setExportingJSON] = useState(false)
   const [hasPdf, setHasPdf] = useState(false) // Phase 9: Track PDF availability
+  const [extractedText, setExtractedText] = useState<string | null>(null) // Full document text for inline highlighting
+  const [clauseOffsets, setClauseOffsets] = useState<Array<{ id: number; clauseBoundaryId: string; start_char: number | null; end_char: number | null; status: ClauseStatus }>>([]) // Clause character positions
+  const [showFullDocument, setShowFullDocument] = useState(false) // Lazy load large documents
+  const LARGE_DOC_THRESHOLD = 100_000 // 100KB threshold for lazy loading
 
   const [selectedClause, setSelectedClause] = useState<Clause | null>(null)
   const [activeFilter, setActiveFilter] = useState<ClauseStatus | "all">("all")
   const [showHighlights, setShowHighlights] = useState(true)
-  const [activeTab, setActiveTab] = useState<"overview" | "pdf">("overview") // Changed initial state to "overview"
+  const [activeTab, setActiveTab] = useState<"cards" | "document" | "pdf">("document") // Three-tab UI: Cards (blocks), Document (full text), PDF
   const [rightTab, setRightTab] = useState<"review" | "comments" | "library" | "terms">("review")
   const [pdfZoom, setPdfZoom] = useState<"fit" | "page" | 50 | 75 | 100 | 125 | 150 | 200>("fit") // Phase 9: Shared zoom state
   const [clauseStatuses, setClauseStatuses] = useState<Record<number, ClauseStatus>>({})
@@ -470,7 +474,7 @@ function ReconciliationContent() {
   const [redlineModalClause, setRedlineModalClause] = useState<Clause | null>(null)
   const chatWindowRef = useRef<HTMLDivElement>(null)
 
-  const autoSaveTimeoutRef = useRef<NodeJS.Timeout>()
+  const autoSaveTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined)
 
   // Fetch reconciliation data from API
   useEffect(() => {
@@ -594,6 +598,33 @@ function ReconciliationContent() {
         // Phase 9: Check if PDF is available (plan-pdf.md §2)
         if (apiData.document?.has_pdf) {
           setHasPdf(true)
+        }
+
+        // Store extracted text for full document view
+        if (apiData.document?.extracted_text) {
+          setExtractedText(apiData.document.extracted_text)
+        }
+
+        // Store clause offsets for full document highlighting
+        if (apiData.document?.clause_boundaries) {
+          const offsets = apiData.document.clause_boundaries.map((boundary: any, index: number) => {
+            const matchResult = boundary.match_result || {}
+            const review = boundary.review
+            let effectiveStatus: ClauseStatus = mapRAGStatusToClauseStatus(matchResult.rag_status)
+            if (review?.decision === "approved") {
+              effectiveStatus = "match"
+            } else if (review?.decision === "rejected" || review?.decision === "flagged") {
+              effectiveStatus = "issue"
+            }
+            return {
+              id: index + 1,
+              clauseBoundaryId: boundary.id,
+              start_char: boundary.start_char ?? null,
+              end_char: boundary.end_char ?? null,
+              status: effectiveStatus,
+            }
+          })
+          setClauseOffsets(offsets)
         }
 
         // Phase 11: Store tenant_id for redlines/comments
@@ -991,13 +1022,15 @@ function ReconciliationContent() {
   }
 
   // PDF Zoom handlers (Phase 9: Wire toolbar to PDF viewer)
+  type ZoomLevel = "fit" | "page" | 50 | 75 | 100 | 125 | 150 | 200
   const handlePdfZoomIn = () => {
     if (pdfZoom === "fit" || pdfZoom === "page") {
       setPdfZoom(100)
     } else if (pdfZoom < 200) {
-      const levels: (number | "fit")[] = [50, 75, 100, 125, 150, 200]
-      const currentIndex = levels.indexOf(pdfZoom as number)
-      setPdfZoom(levels[currentIndex + 1] as number)
+      const levels: ZoomLevel[] = [50, 75, 100, 125, 150, 200]
+      const currentIndex = levels.indexOf(pdfZoom)
+      const nextLevel = levels[currentIndex + 1]
+      if (nextLevel !== undefined) setPdfZoom(nextLevel)
     }
   }
 
@@ -1005,9 +1038,10 @@ function ReconciliationContent() {
     if (pdfZoom === "fit" || pdfZoom === "page") {
       setPdfZoom(50)
     } else if (pdfZoom > 50) {
-      const levels: (number | "fit")[] = [50, 75, 100, 125, 150, 200]
-      const currentIndex = levels.indexOf(pdfZoom as number)
-      setPdfZoom(levels[currentIndex - 1] as number)
+      const levels: ZoomLevel[] = [50, 75, 100, 125, 150, 200]
+      const currentIndex = levels.indexOf(pdfZoom)
+      const prevLevel = levels[currentIndex - 1]
+      if (prevLevel !== undefined) setPdfZoom(prevLevel)
     }
   }
 
@@ -1145,7 +1179,7 @@ function ReconciliationContent() {
     setSelectedClause(mockClauses[0])
     setShowHighlights(true)
     // Removed showNotes reset
-    setActiveTab("overview")
+    setActiveTab("document")
     setRightTab("review")
     setClauseNotes({})
     setCurrentNote("")
@@ -1189,20 +1223,30 @@ function ReconciliationContent() {
   }, [selectedClause])
 
   useEffect(() => {
-    if (activeTab !== "overview" || !selectedClause) return
-    const highlightEl = document.querySelector<HTMLElement>(`[data-clause-highlight-id='${selectedClause.id}']`)
-    if (!highlightEl) return
+    if (!selectedClause) return
 
-    highlightEl.scrollIntoView({ behavior: "smooth", block: "center" })
-    highlightEl.classList.add("ring-2", "ring-slate-400")
+    let selector: string | null = null
+    if (activeTab === "cards") {
+      selector = `[data-clause-highlight-id='${selectedClause.id}']`
+    } else if (activeTab === "document" && selectedClause.clauseBoundaryId) {
+      selector = `[data-clause-id='${selectedClause.clauseBoundaryId}']`
+    }
+
+    if (!selector) return
+
+    const targetEl = document.querySelector<HTMLElement>(selector)
+    if (!targetEl) return
+
+    targetEl.scrollIntoView({ behavior: "smooth", block: "center" })
+    targetEl.classList.add("ring-2", "ring-slate-400")
 
     const timeoutId = window.setTimeout(() => {
-      highlightEl.classList.remove("ring-2", "ring-slate-400")
+      targetEl.classList.remove("ring-2", "ring-slate-400")
     }, 1200)
 
     return () => {
       window.clearTimeout(timeoutId)
-      highlightEl.classList.remove("ring-2", "ring-slate-400")
+      targetEl.classList.remove("ring-2", "ring-slate-400")
     }
   }, [selectedClause, activeTab])
 
@@ -1435,6 +1479,184 @@ function ReconciliationContent() {
             </div>
           )
         })}
+      </div>
+    )
+  }
+
+  // Render full document text with inline clause highlighting using start_char/end_char offsets
+  const renderFullDocumentText = () => {
+    // Loading state
+    if (loading) {
+      return (
+        <div className="max-w-3xl mx-auto">
+          <Card className="p-8 shadow-sm rounded-2xl border-slate-200">
+            <div className="animate-pulse space-y-4">
+              <div className="h-4 bg-slate-200 rounded w-3/4"></div>
+              <div className="h-4 bg-slate-200 rounded"></div>
+              <div className="h-4 bg-slate-200 rounded w-5/6"></div>
+              <div className="h-4 bg-slate-200 rounded"></div>
+              <div className="h-4 bg-slate-200 rounded w-2/3"></div>
+            </div>
+          </Card>
+        </div>
+      )
+    }
+
+    // No extracted text available
+    if (!extractedText) {
+      return (
+        <div className="max-w-3xl mx-auto">
+          <Card className="p-12 shadow-sm rounded-2xl border-slate-200 text-center">
+            <div className="w-16 h-16 bg-slate-100 rounded-full flex items-center justify-center mx-auto mb-4">
+              <FileText className="w-8 h-8 text-slate-400" />
+            </div>
+            <h3 className="text-lg font-semibold text-slate-700 mb-2">Full Document Text Not Available</h3>
+            <p className="text-sm text-slate-500 mb-4">
+              The full document text has not been extracted for this contract.
+            </p>
+            <p className="text-xs text-slate-400">
+              Try re-processing the document or use the Cards view instead.
+            </p>
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-4"
+              onClick={() => setActiveTab("cards")}
+            >
+              Switch to Cards View
+            </Button>
+          </Card>
+        </div>
+      )
+    }
+
+    // Lazy loading for large documents
+    const isLargeDocument = extractedText.length > LARGE_DOC_THRESHOLD
+    if (isLargeDocument && !showFullDocument) {
+      return (
+        <div className="max-w-3xl mx-auto">
+          <Card className="p-12 shadow-sm rounded-2xl border-slate-200 text-center">
+            <div className="w-16 h-16 bg-blue-50 rounded-full flex items-center justify-center mx-auto mb-4">
+              <FileText className="w-8 h-8 text-blue-500" />
+            </div>
+            <h3 className="text-lg font-semibold text-slate-700 mb-2">Large Document</h3>
+            <p className="text-sm text-slate-500 mb-4">
+              This document is {(extractedText.length / 1000).toFixed(0)}KB. Loading the full text may take a moment.
+            </p>
+            <Button
+              variant="default"
+              size="sm"
+              onClick={() => setShowFullDocument(true)}
+            >
+              Load Full Document
+            </Button>
+            <p className="text-xs text-slate-400 mt-3">
+              Or use the Cards view for faster navigation.
+            </p>
+          </Card>
+        </div>
+      )
+    }
+
+    // Sort clauses by start_char for sequential rendering
+    const sortedOffsets = [...clauseOffsets]
+      .filter(c => c.start_char != null && c.end_char != null)
+      .sort((a, b) => (a.start_char ?? 0) - (b.start_char ?? 0))
+
+    // Count clauses without valid offsets for user info
+    const missingOffsetCount = clauseOffsets.length - sortedOffsets.length
+
+    // If no offsets, just render the plain text
+    if (sortedOffsets.length === 0 || !showHighlights) {
+      return (
+        <div className="max-w-3xl mx-auto">
+          <Card className="p-8 shadow-sm rounded-2xl border-slate-200">
+            {missingOffsetCount > 0 && clauseOffsets.length > 0 && (
+              <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-700">
+                {missingOffsetCount} of {clauseOffsets.length} clauses could not be mapped to document positions and are not highlighted.
+              </div>
+            )}
+            <div className="prose prose-slate max-w-none">
+              <div className="text-slate-800 leading-relaxed whitespace-pre-wrap font-serif">
+                {extractedText}
+              </div>
+            </div>
+          </Card>
+        </div>
+      )
+    }
+
+    // Render with inline highlights
+    const parts: JSX.Element[] = []
+    let lastEnd = 0
+
+    sortedOffsets.forEach((offset, idx) => {
+      // Text before this clause
+      if (offset.start_char! > lastEnd) {
+        const beforeText = extractedText.slice(lastEnd, offset.start_char!)
+        if (beforeText) {
+          parts.push(<span key={`gap-${idx}`}>{beforeText}</span>)
+        }
+      }
+
+      // The clause itself with highlighting
+      const clauseText = extractedText.slice(offset.start_char!, offset.end_char!)
+      const currentStatus = offset.status
+      const isSelected = selectedClause?.id === offset.id
+      const isRiskAccepted = riskAcceptedClauses.has(offset.id)
+
+      const backgroundColor = isSelected
+        ? "rgba(148, 163, 184, 0.3)"
+        : currentStatus === "match"
+          ? isRiskAccepted
+            ? "rgba(253, 230, 138, 0.6)" // Yellowish for risk accepted
+            : "rgba(200, 250, 204, 0.6)" // Green for match
+          : currentStatus === "review"
+            ? "rgba(252, 239, 195, 0.6)" // Amber for review
+            : "rgba(248, 196, 196, 0.6)" // Red for issue
+
+      const matchingClause = clauses.find(c => c.id === offset.id)
+
+      parts.push(
+        <span
+          key={`clause-${offset.id}`}
+          className={`cursor-pointer rounded px-0.5 transition-all ${
+            isSelected ? "ring-2 ring-slate-400" : "hover:brightness-95"
+          }`}
+          style={{ backgroundColor }}
+          onClick={() => {
+            if (matchingClause) {
+              handleClauseSelect(matchingClause)
+            }
+          }}
+          data-clause-id={offset.clauseBoundaryId}
+        >
+          {clauseText}
+        </span>
+      )
+
+      lastEnd = offset.end_char!
+    })
+
+    // Remaining text after last clause
+    if (lastEnd < extractedText.length) {
+      parts.push(<span key="remainder">{extractedText.slice(lastEnd)}</span>)
+    }
+
+    return (
+      <div className="max-w-3xl mx-auto">
+        <Card className="p-8 shadow-sm rounded-2xl border-slate-200">
+          {missingOffsetCount > 0 && (
+            <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-700">
+              {missingOffsetCount} of {clauseOffsets.length} clauses could not be mapped to document positions and are not highlighted.
+            </div>
+          )}
+          <div className="prose prose-slate max-w-none">
+            <div className="text-slate-800 leading-relaxed whitespace-pre-wrap font-serif">
+              {parts}
+            </div>
+          </div>
+        </Card>
       </div>
     )
   }
@@ -1870,15 +2092,23 @@ function ReconciliationContent() {
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-1">
                 <Button
-                  variant={activeTab === "overview" ? "default" : "ghost"}
+                  variant={activeTab === "cards" ? "default" : "ghost"}
                   size="sm"
-                  onClick={() => setActiveTab("overview")}
+                  onClick={() => setActiveTab("cards")}
                   className="rounded-lg"
                 >
-                  Overview
+                  Cards
                 </Button>
                 <Button
-                  variant={activeTab === "pdf" ? "default" : "ghost"} // Changed to "pdf"
+                  variant={activeTab === "document" ? "default" : "ghost"}
+                  size="sm"
+                  onClick={() => setActiveTab("document")}
+                  className="rounded-lg"
+                >
+                  Document
+                </Button>
+                <Button
+                  variant={activeTab === "pdf" ? "default" : "ghost"}
                   size="sm"
                   onClick={() => setActiveTab("pdf")}
                   className="rounded-lg"
@@ -1932,7 +2162,7 @@ function ReconciliationContent() {
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => setActiveTab("overview")}
+                    onClick={() => setActiveTab("document")}
                     className="rounded-lg bg-transparent"
                   >
                     <FileText className="w-4 h-4 mr-1" />
@@ -1960,8 +2190,8 @@ function ReconciliationContent() {
 
           {/* Document Content */}
           <div className="flex-1 overflow-y-auto p-8">
-            {/* Overview tab */}
-            <div className={activeTab === "overview" ? "block" : "hidden"}>
+            {/* Cards tab - Clause blocks with badges and borders */}
+            <div className={activeTab === "cards" ? "block" : "hidden"}>
               <div className="max-w-3xl mx-auto">
                 <Card className="p-8 shadow-sm rounded-2xl border-slate-200">
                   <div className="prose prose-slate max-w-none">
@@ -1971,6 +2201,11 @@ function ReconciliationContent() {
                   </div>
                 </Card>
               </div>
+            </div>
+
+            {/* Document tab - Full document text with inline highlighting */}
+            <div className={activeTab === "document" ? "block" : "hidden"}>
+              {renderFullDocumentText()}
             </div>
 
             {/* PDF tab (kept mounted so zoom/page state persists) */}
@@ -2322,8 +2557,8 @@ function ReconciliationContent() {
                       </div>
                       <RedlineEditor
                         clauseBoundaryId={selectedClause.clauseBoundaryId}
-                        dealId={dealId}
-                        tenantId={tenantId}
+                        dealId={dealId ?? ""}
+                        tenantId={tenantId ?? ""}
                         existingRedline={existingRedlineForSelected}
                         onSave={handleRedlineSave}
                         onError={handleRedlineError}
