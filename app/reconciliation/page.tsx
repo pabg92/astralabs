@@ -8,6 +8,7 @@ import confetti from "canvas-confetti"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible"
 import { Progress } from "@/components/ui/progress"
 import {
   Dialog,
@@ -2018,8 +2019,12 @@ function ReconciliationContent() {
                               <span>
                                 Pages {selectedClause.position.start}-{selectedClause.position.end}
                               </span>
-                              <span>•</span>
-                              <span>{selectedClause.confidence}% confidence</span>
+                              {selectedClause.similarityScore !== null && selectedClause.similarityScore !== undefined && (
+                                <>
+                                  <span>•</span>
+                                  <span className="font-medium text-blue-600">{(selectedClause.similarityScore * 100).toFixed(0)}% library match</span>
+                                </>
+                              )}
                             </div>
                           </div>
                           <Button
@@ -2066,64 +2071,71 @@ function ReconciliationContent() {
                     )}
                   </div>
 
-                  {/* Phase 10 Task C: Display matched template and RAG assessment data */}
+                  {/* Action Buttons - Moved to top for better UX */}
+                  <div className="flex gap-2 mb-4">
+                    <Button
+                      size="sm"
+                      className="flex-1 bg-emerald-500 hover:bg-emerald-600 rounded-lg transition-all duration-200"
+                      onClick={handleApprove}
+                    >
+                      <ThumbsUp className="w-4 h-4 mr-1" />
+                      Approve
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="flex-1 rounded-lg bg-transparent hover:bg-red-50 hover:text-red-600 hover:border-red-300 transition-all duration-200"
+                      onClick={handleReject}
+                    >
+                      <ThumbsDown className="w-4 h-4 mr-1" />
+                      Reject
+                    </Button>
+                    <Button size="sm" variant="outline" className="flex-1 rounded-lg bg-transparent">
+                      <Flag className="w-4 h-4" />
+                    </Button>
+                  </div>
+
+                  {/* Phase 10 Task C: Display matched template and RAG assessment data - Now collapsible */}
                   {selectedClause.matchedTemplate && (
-                    <div className="bg-blue-50 rounded-xl border border-blue-200 p-4 mb-4">
-                      <div className="flex items-center gap-2 mb-3">
-                        <Info className="w-4 h-4 text-blue-600" />
-                        <h4 className="text-xs font-semibold text-blue-900">Template Match</h4>
-                      </div>
-                      <div className="space-y-2">
-                        <div>
-                          <p className="text-xs font-medium text-blue-700 mb-1">Library Clause:</p>
-                          <p className="text-xs text-blue-600">{selectedClause.matchedTemplate.clause_id} - {selectedClause.matchedTemplate.clause_type}</p>
-                        </div>
-                        {selectedClause.similarityScore !== null && selectedClause.similarityScore !== undefined && (
-                          <div>
-                            <p className="text-xs font-medium text-blue-700 mb-1">Similarity Score:</p>
-                            <div className="flex items-center gap-2">
-                              <div className="flex-1 bg-blue-100 rounded-full h-2">
-                                <div
-                                  className="bg-blue-600 h-2 rounded-full transition-all duration-300"
-                                  style={{ width: `${selectedClause.similarityScore * 100}%` }}
-                                />
+                    <Collapsible defaultOpen={false} className="mb-4">
+                      <div className="bg-blue-50 rounded-xl border border-blue-200">
+                        <CollapsibleTrigger className="w-full p-4 flex items-center justify-between hover:bg-blue-100/50 transition-colors rounded-xl">
+                          <div className="flex items-center gap-2">
+                            <Info className="w-4 h-4 text-blue-600" />
+                            <h4 className="text-xs font-semibold text-blue-900">📚 Library Match Details</h4>
+                          </div>
+                          <ChevronDown className="w-4 h-4 text-blue-600 transition-transform data-[state=open]:rotate-180" />
+                        </CollapsibleTrigger>
+                        <CollapsibleContent className="px-4 pb-4">
+                          <div className="space-y-2">
+                            <div>
+                              <p className="text-xs font-medium text-blue-700 mb-1">Library Clause:</p>
+                              <p className="text-xs text-blue-600">{selectedClause.matchedTemplate.clause_id} - {selectedClause.matchedTemplate.clause_type}</p>
+                            </div>
+                            {selectedClause.similarityScore !== null && selectedClause.similarityScore !== undefined && (
+                              <div>
+                                <p className="text-xs font-medium text-blue-700 mb-1">Similarity Score:</p>
+                                <div className="flex items-center gap-2">
+                                  <div className="flex-1 bg-blue-100 rounded-full h-2">
+                                    <div
+                                      className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                                      style={{ width: `${selectedClause.similarityScore * 100}%` }}
+                                    />
+                                  </div>
+                                  <span className="text-xs font-semibold text-blue-700">
+                                    {(selectedClause.similarityScore * 100).toFixed(1)}%
+                                  </span>
+                                </div>
                               </div>
-                              <span className="text-xs font-semibold text-blue-700">
-                                {(selectedClause.similarityScore * 100).toFixed(1)}%
-                              </span>
+                            )}
+                            <div>
+                              <p className="text-xs font-medium text-blue-700 mb-1">Standard Text:</p>
+                              <p className="text-xs text-blue-600 leading-relaxed">{selectedClause.matchedTemplate.standard_text}</p>
                             </div>
                           </div>
-                        )}
-                        <div>
-                          <p className="text-xs font-medium text-blue-700 mb-1">Standard Text:</p>
-                          <p className="text-xs text-blue-600 leading-relaxed">{selectedClause.matchedTemplate.standard_text}</p>
-                        </div>
+                        </CollapsibleContent>
                       </div>
-                    </div>
-                  )}
-
-                  {/* Phase 10 Task C: Display RAG parsing and risk assessment */}
-                  {(selectedClause.ragParsing || selectedClause.ragRisk) && (
-                    <div className="bg-purple-50 rounded-xl border border-purple-200 p-4 mb-4">
-                      <div className="flex items-center gap-2 mb-3">
-                        <Shield className="w-4 h-4 text-purple-600" />
-                        <h4 className="text-xs font-semibold text-purple-900">RAG Assessment</h4>
-                      </div>
-                      <div className="space-y-2">
-                        {selectedClause.ragParsing && (
-                          <div>
-                            <p className="text-xs font-medium text-purple-700 mb-1">Parsing Status:</p>
-                            <p className="text-xs text-purple-600">{selectedClause.ragParsing}</p>
-                          </div>
-                        )}
-                        {selectedClause.ragRisk && (
-                          <div>
-                            <p className="text-xs font-medium text-purple-700 mb-1">Risk Analysis:</p>
-                            <p className="text-xs text-purple-600 leading-relaxed">{selectedClause.ragRisk}</p>
-                          </div>
-                        )}
-                      </div>
-                    </div>
+                    </Collapsible>
                   )}
 
                   <div className="bg-amber-50 rounded-xl border border-amber-200 p-4 mb-4">
@@ -2173,132 +2185,67 @@ function ReconciliationContent() {
                     }
                     return null
                   })()}
-
-                  <div className="flex gap-2">
-                    <Button
-                      size="sm"
-                      className="flex-1 bg-emerald-500 hover:bg-emerald-600 rounded-lg transition-all duration-200"
-                      onClick={handleApprove}
-                    >
-                      <ThumbsUp className="w-4 h-4 mr-1" />
-                      Approve
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="flex-1 rounded-lg bg-transparent hover:bg-red-50 hover:text-red-600 hover:border-red-300 transition-all duration-200"
-                      onClick={handleReject}
-                    >
-                      <ThumbsDown className="w-4 h-4 mr-1" />
-                      Reject
-                    </Button>
-                    <Button size="sm" variant="outline" className="flex-1 rounded-lg bg-transparent">
-                      <Flag className="w-4 h-4" />
-                    </Button>
-                  </div>
                 </Card>
 
-                {/* Phase 11: Redline Editor and Comments */}
-                {selectedClause.clauseBoundaryId ? (
-                  <div className="space-y-4">
-                    {/* Comment Thread */}
-                    <Card className="p-5 shadow-sm rounded-2xl border-slate-200 space-y-4">
-                      <CommentThread comments={selectedClauseComments} />
-
-                      <div className="space-y-2">
-                        <label className="text-sm font-medium text-slate-700">Add Comment</label>
-                        <textarea
-                          className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring focus:border-blue-500"
-                          rows={3}
-                          value={selectedClause.clauseBoundaryId ? commentDrafts[selectedClause.clauseBoundaryId] || "" : ""}
-                          onChange={(e) => {
-                            if (!selectedClause.clauseBoundaryId) return
-                            const value = e.target.value
-                            setCommentDrafts((prev) => ({
-                              ...prev,
-                              [selectedClause.clauseBoundaryId!]: value,
-                            }))
-                          }}
-                          placeholder="Leave a comment without proposing a text change..."
-                        />
-                        <div className="flex justify-end">
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() =>
-                              selectedClause.clauseBoundaryId
-                                ? handleAddComment(selectedClause.clauseBoundaryId)
-                                : undefined
-                            }
-                            disabled={
-                              !selectedClause.clauseBoundaryId ||
-                              !(commentDrafts[selectedClause.clauseBoundaryId || ""] || "").trim()
-                            }
-                          >
-                            <Send className="w-4 h-4 mr-2" />
-                            Post Comment
-                          </Button>
+                {/* Phase 11: Redline Editor - Comments removed, now collapsible */}
+                {selectedClause.clauseBoundaryId && (
+                  <Collapsible defaultOpen={false}>
+                    <div className="rounded-2xl border border-slate-200 shadow-sm">
+                      <CollapsibleTrigger className="w-full p-4 flex items-center justify-between hover:bg-slate-50 transition-colors rounded-t-2xl">
+                        <div className="flex items-center gap-2">
+                          <Pencil className="w-4 h-4 text-slate-600" />
+                          <h3 className="font-semibold text-sm text-slate-700">📝 Suggest Redline</h3>
                         </div>
-                      </div>
-                    </Card>
-
-                    {/* Redline Editor */}
-                    <Card className="p-5 shadow-sm rounded-2xl border-slate-200">
-                      <div className="mb-4">
-                        <h3 className="font-semibold text-sm text-slate-700">Suggest Changes</h3>
-                        <p className="text-xs text-slate-500 mt-1">
+                        <ChevronDown className="w-4 h-4 text-slate-600 transition-transform data-[state=open]:rotate-180" />
+                      </CollapsibleTrigger>
+                      <CollapsibleContent className="px-5 pb-5">
+                        <p className="text-xs text-slate-500 mb-4">
                           Propose modifications to this clause and optionally add a comment explaining your reasoning.
                         </p>
-                      </div>
-                      <RedlineEditor
-                        clauseBoundaryId={selectedClause.clauseBoundaryId}
-                        dealId={dealId}
-                        tenantId={tenantId}
-                        existingRedline={existingRedlineForSelected}
-                        onSave={handleRedlineSave}
-                        onError={handleRedlineError}
-                      />
-                      {selectedClauseRedlines && selectedClauseRedlines.length > 0 && (
-                          <div className="mt-4 pt-4 border-t">
-                            <h4 className="text-xs font-semibold text-slate-700 mb-3">
-                              Existing Redlines ({selectedClauseRedlines.length})
-                            </h4>
-                            <div className="space-y-2">
-                              {selectedClauseRedlines.map((redline) => (
-                                <div key={redline.id} className="bg-slate-50 rounded-lg p-3 border border-slate-200">
-                                  <div className="flex items-center justify-between mb-2">
-                                    <Badge
-                                      variant="outline"
-                                      className="text-xs"
-                                    >
-                                      {redline.change_type}
-                                    </Badge>
-                                    <Badge
-                                      className={
-                                        redline.status === "resolved"
-                                          ? "bg-emerald-100 text-emerald-700"
-                                          : "bg-amber-100 text-amber-700"
-                                      }
-                                    >
-                                      {redline.status}
-                                    </Badge>
+                        <RedlineEditor
+                          clauseBoundaryId={selectedClause.clauseBoundaryId}
+                          dealId={dealId}
+                          tenantId={tenantId}
+                          existingRedline={existingRedlineForSelected}
+                          onSave={handleRedlineSave}
+                          onError={handleRedlineError}
+                        />
+                        {selectedClauseRedlines && selectedClauseRedlines.length > 0 && (
+                            <div className="mt-4 pt-4 border-t">
+                              <h4 className="text-xs font-semibold text-slate-700 mb-3">
+                                Existing Redlines ({selectedClauseRedlines.length})
+                              </h4>
+                              <div className="space-y-2">
+                                {selectedClauseRedlines.map((redline) => (
+                                  <div key={redline.id} className="bg-slate-50 rounded-lg p-3 border border-slate-200">
+                                    <div className="flex items-center justify-between mb-2">
+                                      <Badge
+                                        variant="outline"
+                                        className="text-xs"
+                                      >
+                                        {redline.change_type}
+                                      </Badge>
+                                      <Badge
+                                        className={
+                                          redline.status === "resolved"
+                                            ? "bg-emerald-100 text-emerald-700"
+                                            : "bg-amber-100 text-amber-700"
+                                        }
+                                      >
+                                        {redline.status}
+                                      </Badge>
+                                    </div>
+                                    <p className="text-xs text-slate-600 leading-relaxed">
+                                      {redline.proposed_text}
+                                    </p>
                                   </div>
-                                  <p className="text-xs text-slate-600 leading-relaxed">
-                                    {redline.proposed_text}
-                                  </p>
-                                </div>
-                              ))}
+                                ))}
+                              </div>
                             </div>
-                          </div>
-                        )}
-                    </Card>
-                  </div>
-                ) : (
-                  <Card className="p-5 shadow-sm rounded-2xl border-slate-200">
-                    <p className="text-sm text-slate-600">
-                      Select a clause with an ID to suggest changes or add comments.
-                    </p>
-                  </Card>
+                          )}
+                      </CollapsibleContent>
+                    </div>
+                  </Collapsible>
                 )}
 
                 {/* Upcoming Clauses Queue */}
