@@ -5,7 +5,6 @@ import { NextResponse } from 'next/server'
 const isPublicRoute = createRouteMatcher([
   '/sign-in(.*)',
   '/sign-up(.*)',
-  '/',
   '/api/webhooks(.*)',
 ])
 
@@ -24,7 +23,8 @@ export default clerkMiddleware(async (auth, req) => {
   }
 
   // For all other routes, require authentication
-  // The auth() function will redirect to sign-in if not authenticated
+  // Redirects to /sign-up if not authenticated (configured in ClerkProvider)
+  await auth.protect()
 })
 
 export const config = {
