@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, Suspense } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -42,7 +42,7 @@ interface PreAgreedTerm {
   relatedClauseTypes: string[]
 }
 
-export default function ResolutionPage() {
+function ResolutionPageContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const dealId = searchParams.get("dealId")
@@ -633,5 +633,22 @@ export default function ResolutionPage() {
         </Card>
       </div>
     </div>
+  )
+}
+
+export default function ResolutionPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+          <div className="text-center">
+            <Loader2 className="w-12 h-12 animate-spin text-blue-500 mx-auto mb-4" />
+            <p className="text-slate-600">Loading reconciliation summary...</p>
+          </div>
+        </div>
+      }
+    >
+      <ResolutionPageContent />
+    </Suspense>
   )
 }
