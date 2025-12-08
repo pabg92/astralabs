@@ -6,6 +6,7 @@ import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
+import confetti from "canvas-confetti"
 import {
   CheckCircle2,
   AlertCircle,
@@ -21,6 +22,7 @@ import {
   FileText,
   Send,
   Loader2,
+  Sparkles,
 } from "lucide-react"
 
 type ClauseStatus = "match" | "review" | "issue" | "info" | "improve"
@@ -42,6 +44,22 @@ interface PreAgreedTerm {
   relatedClauseTypes: string[]
 }
 
+// Fun loading messages for gamification
+const funLoadingMessages = [
+  "Summoning the legal gremlins...",
+  "Teaching AI to read lawyer...",
+  "Counting semicolons in the fine print...",
+  "Asking the contract nicely to cooperate...",
+  "Translating legalese to human...",
+  "Checking for hidden unicorn clauses...",
+  "Making sure no one signed in invisible ink...",
+  "Waking up the clause fairies...",
+  "Convincing the paperwork to behave...",
+  "Giving the fine print a magnifying glass...",
+  "Brewing a fresh pot of legal tea...",
+  "Politely asking the contract to reveal its secrets...",
+]
+
 function ResolutionPageContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -54,6 +72,44 @@ function ResolutionPageContent() {
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [isDownloading, setIsDownloading] = useState(false)
+  const [loadingMessageIndex, setLoadingMessageIndex] = useState(0)
+
+  // Fun loading message rotation
+  useEffect(() => {
+    if (isLoading) {
+      const interval = setInterval(() => {
+        setLoadingMessageIndex(prev => (prev + 1) % funLoadingMessages.length)
+      }, 2500)
+      return () => clearInterval(interval)
+    }
+  }, [isLoading])
+
+  // Green confetti bursts during loading
+  useEffect(() => {
+    if (isLoading) {
+      // Initial burst
+      confetti({
+        particleCount: 50,
+        spread: 70,
+        origin: { y: 0.6 },
+        colors: ['#22c55e', '#16a34a', '#15803d', '#86efac', '#4ade80'],
+      })
+
+      // Periodic bursts
+      const confettiInterval = setInterval(() => {
+        confetti({
+          particleCount: 30,
+          spread: 60,
+          origin: { y: 0.7 },
+          colors: ['#22c55e', '#16a34a', '#15803d', '#86efac', '#4ade80'],
+          gravity: 0.8,
+          scalar: 0.8,
+        })
+      }, 4000)
+
+      return () => clearInterval(confettiInterval)
+    }
+  }, [isLoading])
 
   useEffect(() => {
     async function fetchReconciliationData() {
@@ -292,13 +348,48 @@ function ResolutionPageContent() {
     router.push(`/reconciliation?dealId=${dealId}`)
   }
 
-  // Loading state
+  // Loading state with fun messages and confetti
   if (isLoading) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center">
-        <div className="text-center">
-          <Loader2 className="w-12 h-12 animate-spin text-blue-500 mx-auto mb-4" />
-          <p className="text-slate-600">Loading reconciliation summary...</p>
+        <div className="flex flex-col items-center gap-6 p-8 max-w-md">
+          {/* Animated icon */}
+          <div className="relative">
+            <div className="w-20 h-20 rounded-full bg-gradient-to-br from-emerald-400 to-emerald-600 flex items-center justify-center animate-pulse">
+              <FileText className="w-10 h-10 text-white" />
+            </div>
+            <div className="absolute -top-1 -right-1 w-6 h-6 bg-emerald-500 rounded-full animate-bounce flex items-center justify-center">
+              <Sparkles className="w-3 h-3 text-white" />
+            </div>
+          </div>
+
+          {/* Fun rotating message */}
+          <div className="text-center">
+            <p className="text-lg font-medium text-slate-700 transition-all duration-300">
+              {funLoadingMessages[loadingMessageIndex]}
+            </p>
+            <p className="text-sm text-slate-500 mt-2">
+              Hang tight, good things are loading...
+            </p>
+          </div>
+
+          {/* Progress dots */}
+          <div className="flex gap-2">
+            {[0, 1, 2].map((i) => (
+              <div
+                key={i}
+                className="w-3 h-3 rounded-full bg-emerald-500 animate-bounce"
+                style={{
+                  animationDelay: `${i * 0.2}s`,
+                }}
+              />
+            ))}
+          </div>
+
+          {/* Tagline */}
+          <p className="text-xs text-slate-400 italic mt-4">
+            Smart Contract Reviews. For People With Better Things To Do.
+          </p>
         </div>
       </div>
     )
