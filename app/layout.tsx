@@ -26,9 +26,9 @@ export default function RootLayout({
 }>) {
   return (
     <ClerkProvider
-      signInUrl="/sign-up"
+      signInUrl="/sign-in"
       signUpUrl="/sign-up"
-      afterSignOutUrl="/sign-up"
+      afterSignOutUrl="/sign-in"
     >
       <html lang="en">
         <body className={`font-sans antialiased`}>

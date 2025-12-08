@@ -42,6 +42,10 @@ import {
   Shield,
   Info,
   Pencil,
+  LayoutGrid,
+  AlignLeft,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react"
 import type { JSX } from "react/jsx-runtime"
 import { useRouter, useSearchParams } from "next/navigation"
@@ -94,6 +98,9 @@ interface Clause {
   position: { start: number; end: number }
   clauseType: string
   riskAccepted?: boolean // Added risk accepted flag
+  // Character positions for inline text view
+  startChar?: number | null
+  endChar?: number | null
   // Phase 10: Additional fields from API for Task C
   similarityScore?: number | null
   ragParsing?: string | null
@@ -293,6 +300,13 @@ function ReconciliationContent() {
   const [exportingJSON, setExportingJSON] = useState(false)
   const [hasPdf, setHasPdf] = useState(false) // Phase 9: Track PDF availability
 
+  // Inline text view state
+  const [overviewViewMode, setOverviewViewMode] = useState<"cards" | "inline">("cards")
+  const [extractedText, setExtractedText] = useState<string | null>(null)
+  const [hoveredClauseId, setHoveredClauseId] = useState<number | null>(null)
+  const [currentPage, setCurrentPage] = useState(1)
+  const [totalPages, setTotalPages] = useState(1)
+
   const [selectedClause, setSelectedClause] = useState<Clause | null>(null)
   const [activeFilter, setActiveFilter] = useState<ClauseStatus | "all">("all")
   const [showHighlights, setShowHighlights] = useState(true)
@@ -401,6 +415,9 @@ function ReconciliationContent() {
                 end: boundary.end_page || 0,
               },
               clauseType: boundary.clause_type || "Unknown",
+              // Character positions for inline text view
+              startChar: boundary.start_char ?? null,
+              endChar: boundary.end_char ?? null,
               similarityScore: matchResult.similarity_score || null,
               ragParsing: matchResult.rag_parsing || null,
               ragRisk: matchResult.rag_risk || null,
@@ -481,6 +498,11 @@ function ReconciliationContent() {
         // Phase 9: Check if PDF is available (plan-pdf.md §2)
         if (apiData.document?.has_pdf) {
           setHasPdf(true)
+        }
+
+        // Store extracted text for inline view
+        if (apiData.document?.extracted_text) {
+          setExtractedText(apiData.document.extracted_text)
         }
 
         // Phase 11: Store tenant_id for redlines/comments
@@ -935,20 +957,21 @@ function ReconciliationContent() {
     }
   }
 
-  const handleReject = () => {
-    if (!selectedClause) return
+  const handleReject = (clause?: Clause) => {
+    const targetClause = clause || selectedClause
+    if (!targetClause) return
 
     setClauseStatuses((prev) => ({
       ...prev,
-      [selectedClause.id]: "issue",
+      [targetClause.id]: "issue",
     }))
 
     // Persist to backend
-    saveClauseReview(selectedClause, "rejected")
+    saveClauseReview(targetClause, "rejected")
 
     // Automatically move to the next clause if available
     setTimeout(() => {
-      const currentIndex = filteredClauses.findIndex((c) => c.id === selectedClause?.id)
+      const currentIndex = filteredClauses.findIndex((c) => c.id === targetClause.id)
       if (currentIndex < filteredClauses.length - 1) {
         handleClauseSelect(filteredClauses[currentIndex + 1])
       }
@@ -1249,6 +1272,7 @@ function ReconciliationContent() {
               onClick={() => handleClauseSelect(clause)}
               style={{ backgroundColor }}
               data-clause-highlight-id={clause.id}
+              data-testid="clause-card"
               id={`clause-text-${clause.id}`}
             >
               <div className="flex items-start justify-between mb-2 gap-2">
@@ -1324,18 +1348,292 @@ function ReconciliationContent() {
     )
   }
 
-  const handleApprove = () => {
-    if (!selectedClause) return
+  // Calculate page boundaries from clause positions
+  const calculatePageBoundaries = () => {
+    // Group clauses by their start page
+    const pageGroups = new Map<number, Clause[]>()
 
-    const isRiskAccepted = riskAcceptedClauses.has(selectedClause.id)
+    clauses.forEach((clause) => {
+      const page = clause.position?.start || 1
+      if (!pageGroups.has(page)) pageGroups.set(page, [])
+      pageGroups.get(page)!.push(clause)
+    })
+
+    // For each page, find min startChar and max endChar
+    const boundaries: { page: number; startChar: number; endChar: number }[] = []
+
+    pageGroups.forEach((pageClauses, page) => {
+      const clausesWithChars = pageClauses.filter(
+        (c) => c.startChar != null && c.endChar != null
+      )
+      if (clausesWithChars.length === 0) return
+
+      const minStart = Math.min(...clausesWithChars.map((c) => c.startChar ?? Infinity))
+      const maxEnd = Math.max(...clausesWithChars.map((c) => c.endChar ?? 0))
+      boundaries.push({ page, startChar: minStart, endChar: maxEnd })
+    })
+
+    return boundaries.sort((a, b) => a.page - b.page)
+  }
+
+  // Render inline text view with highlighted clauses (page-by-page)
+  const renderInlineTextView = () => {
+    if (!extractedText) {
+      return (
+        <div className="text-center py-12 text-slate-500" data-testid="inline-text-container">
+          <p>Full document text not available for inline view.</p>
+          <p className="text-sm mt-2">Try switching to card view.</p>
+          <Button
+            variant="outline"
+            className="mt-4"
+            onClick={() => setOverviewViewMode("cards")}
+          >
+            Switch to Cards View
+          </Button>
+        </div>
+      )
+    }
+
+    // Sort clauses by startChar for proper rendering order
+    // Note: This assumes the API returns non-overlapping clause boundaries.
+    // If overlaps occur, earlier clauses take precedence and overlapping portions are skipped.
+    const sortedClauses = [...clauses]
+      .filter((c) => c.startChar != null && c.endChar != null)
+      .sort((a, b) => (a.startChar ?? 0) - (b.startChar ?? 0))
+
+    // Handle case where no clauses have character positions
+    if (sortedClauses.length === 0) {
+      return (
+        <div className="text-center py-8" data-testid="inline-text-container">
+          <p className="text-slate-500 mb-4">
+            Character positions not available for this document.
+          </p>
+          <Button variant="outline" onClick={() => setOverviewViewMode("cards")}>
+            Switch to Cards View
+          </Button>
+        </div>
+      )
+    }
+
+    // Calculate page boundaries
+    const pageBoundaries = calculatePageBoundaries()
+    const numPages = pageBoundaries.length
+
+    // Update total pages if changed
+    if (numPages !== totalPages) {
+      setTotalPages(Math.max(1, numPages))
+    }
+
+    // Get current page data
+    const currentPageData = pageBoundaries[currentPage - 1]
+
+    // If no data for current page, show message
+    if (!currentPageData) {
+      return (
+        <div className="text-center py-8" data-testid="inline-text-container">
+          <p className="text-slate-500 mb-4">No content for this page.</p>
+        </div>
+      )
+    }
+
+    // Get clauses for current page
+    const currentPageClauses = sortedClauses.filter((clause) => {
+      const clausePage = clause.position?.start || 1
+      return clausePage === currentPageData.page
+    })
+
+    // Calculate page text range with some padding
+    const pageStartChar = Math.max(0, currentPageData.startChar - 100)
+    const pageEndChar = Math.min(extractedText.length, currentPageData.endChar + 100)
+
+    // Build parts for current page only
+    let lastIndex = pageStartChar
+    const parts: JSX.Element[] = []
+
+    currentPageClauses.forEach((clause, idx) => {
+      const startChar = clause.startChar ?? 0
+      const endChar = clause.endChar ?? 0
+
+      // Skip if clause is outside current page range
+      if (startChar < pageStartChar || startChar > pageEndChar) return
+
+      // Skip if this clause overlaps with previously rendered content (handle overlaps gracefully)
+      if (startChar < lastIndex) {
+        console.warn(`Skipping overlapping clause ${clause.id}: startChar ${startChar} < lastIndex ${lastIndex}`)
+        return
+      }
+
+      // Add text before this clause (non-highlighted)
+      if (startChar > lastIndex) {
+        const beforeText = extractedText.slice(lastIndex, startChar)
+        if (beforeText) {
+          parts.push(
+            <span key={`before-${idx}`} className="text-slate-700">
+              {beforeText}
+            </span>
+          )
+        }
+      }
+
+      // Get clause status and colors
+      const currentStatus = getClauseStatus(clause)
+      const isSelected = selectedClause?.id === clause.id
+      const isHovered = hoveredClauseId === clause.id
+      const isRiskAccepted = riskAcceptedClauses.has(clause.id)
+
+      const backgroundColor = isSelected
+        ? "rgba(148, 163, 184, 0.3)"
+        : currentStatus === "match"
+          ? isRiskAccepted
+            ? "rgba(253, 230, 138, 0.6)"
+            : "rgba(200, 250, 204, 0.6)"
+          : currentStatus === "review"
+            ? "rgba(252, 239, 195, 0.6)"
+            : "rgba(248, 196, 196, 0.6)"
+
+      const clauseText = extractedText.slice(startChar, Math.min(endChar, pageEndChar))
+
+      // Render highlighted clause with hover actions
+      parts.push(
+        <span
+          key={`clause-${clause.id}`}
+          className={`relative cursor-pointer transition-all duration-200 rounded px-0.5 ${
+            isSelected ? "ring-2 ring-slate-400 ring-offset-1" : "hover:brightness-95"
+          }`}
+          style={{ backgroundColor }}
+          onClick={() => handleClauseSelect(clause)}
+          onMouseEnter={() => setHoveredClauseId(clause.id)}
+          onMouseLeave={() => setHoveredClauseId(null)}
+          data-testid={`clause-highlight-${clause.id}`}
+          data-clause-id={clause.id}
+        >
+          {clauseText}
+
+          {/* Hover Actions Popover */}
+          {isHovered && (
+            <span
+              className="absolute -top-10 left-1/2 -translate-x-1/2 z-50 flex items-center gap-1 bg-white shadow-lg rounded-lg border border-slate-200 px-2 py-1.5 whitespace-nowrap"
+              onClick={(e) => e.stopPropagation()}
+              data-testid="clause-hover-actions"
+            >
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 w-6 p-0 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  handleClauseSelect(clause)
+                  handleApprove(clause)
+                }}
+                title="Approve clause"
+                data-testid="hover-approve-btn"
+              >
+                <ThumbsUp className="w-3.5 h-3.5" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 w-6 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  handleClauseSelect(clause)
+                  handleReject(clause)
+                }}
+                title="Flag for review"
+                data-testid="hover-reject-btn"
+              >
+                <ThumbsDown className="w-3.5 h-3.5" />
+              </Button>
+              <span className="text-xs text-slate-500 ml-1 max-w-[100px] truncate">
+                {clause.clauseType}
+              </span>
+            </span>
+          )}
+        </span>
+      )
+
+      lastIndex = Math.min(endChar, pageEndChar)
+    })
+
+    // Add remaining text after last clause on this page
+    if (lastIndex < pageEndChar) {
+      const remainingText = extractedText.slice(lastIndex, pageEndChar)
+      if (remainingText) {
+        parts.push(
+          <span key="remaining" className="text-slate-700">
+            {remainingText}
+          </span>
+        )
+      }
+    }
+
+    return (
+      <div data-testid="inline-text-container" className="space-y-4">
+        {/* Pagination Controls */}
+        <div className="flex items-center justify-between p-3 bg-slate-50 rounded-lg border border-slate-200 sticky top-0 z-10">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={currentPage === 1}
+            onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+            data-testid="page-nav-prev"
+          >
+            <ChevronLeft className="w-4 h-4 mr-1" />
+            Previous
+          </Button>
+
+          <span className="text-sm font-medium text-slate-600" data-testid="page-indicator">
+            Page {currentPage} of {totalPages}
+          </span>
+
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={currentPage === totalPages}
+            onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+            data-testid="page-nav-next"
+          >
+            Next
+            <ChevronRight className="w-4 h-4 ml-1" />
+          </Button>
+        </div>
+
+        {/* Page Content */}
+        <div
+          className="p-6 bg-white rounded-lg border border-slate-200 shadow-sm"
+          style={{
+            fontFamily: 'Georgia, "Times New Roman", serif',
+            fontSize: '15px',
+            lineHeight: '1.9',
+            letterSpacing: '0.01em',
+          }}
+        >
+          <div className="whitespace-pre-wrap">
+            {parts}
+          </div>
+        </div>
+
+        {/* Page indicator at bottom */}
+        <div className="text-center text-xs text-slate-400">
+          Showing page {currentPage} of {totalPages} ({currentPageClauses.length} clauses on this page)
+        </div>
+      </div>
+    )
+  }
+
+  const handleApprove = (clause?: Clause) => {
+    const targetClause = clause || selectedClause
+    if (!targetClause) return
+
+    const isRiskAccepted = riskAcceptedClauses.has(targetClause.id)
 
     setClauseStatuses((prev) => ({
       ...prev,
-      [selectedClause.id]: "match",
+      [targetClause.id]: "match",
     }))
 
     // Persist to backend
-    saveClauseReview(selectedClause, "approved", isRiskAccepted)
+    saveClauseReview(targetClause, "approved", isRiskAccepted)
 
     confetti({
       particleCount: 100,
@@ -1346,7 +1644,7 @@ function ReconciliationContent() {
 
     // Automatically move to the next clause if available
     setTimeout(() => {
-      const currentIndex = filteredClauses.findIndex((c) => c.id === selectedClause?.id)
+      const currentIndex = filteredClauses.findIndex((c) => c.id === targetClause.id)
       if (currentIndex < filteredClauses.length - 1) {
         handleClauseSelect(filteredClauses[currentIndex + 1])
       } else {
@@ -1356,6 +1654,37 @@ function ReconciliationContent() {
       }
     }, 500)
   }
+
+  // Auto-scroll to selected clause in inline view with page navigation
+  useEffect(() => {
+    if (overviewViewMode === "inline" && selectedClause && activeTab === "overview") {
+      // First, navigate to the correct page if needed
+      const clausePage = selectedClause.position?.start || 1
+
+      // Calculate which index this page is in our boundaries
+      const pageBoundaries = calculatePageBoundaries()
+      const pageIndex = pageBoundaries.findIndex((p) => p.page === clausePage)
+
+      if (pageIndex !== -1 && pageIndex + 1 !== currentPage) {
+        // Navigate to the page containing this clause
+        setCurrentPage(pageIndex + 1)
+
+        // Wait for page to render then scroll
+        setTimeout(() => {
+          const element = document.querySelector(`[data-clause-id="${selectedClause.id}"]`)
+          if (element) {
+            element.scrollIntoView({ behavior: "smooth", block: "center" })
+          }
+        }, 100)
+      } else {
+        // Already on correct page, just scroll
+        const element = document.querySelector(`[data-clause-id="${selectedClause.id}"]`)
+        if (element) {
+          element.scrollIntoView({ behavior: "smooth", block: "center" })
+        }
+      }
+    }
+  }, [selectedClause?.id, overviewViewMode, activeTab])
 
   useEffect(() => {
     const savedChatPosition = localStorage.getItem("chatWindowPosition")
@@ -1809,13 +2138,41 @@ function ReconciliationContent() {
                   Overview
                 </Button>
                 <Button
-                  variant={activeTab === "pdf" ? "default" : "ghost"} // Changed to "pdf"
+                  variant={activeTab === "pdf" ? "default" : "ghost"}
                   size="sm"
                   onClick={() => setActiveTab("pdf")}
                   className="rounded-lg"
                 >
                   PDF
                 </Button>
+
+                {/* Cards/Inline toggle for Overview tab */}
+                {activeTab === "overview" && (
+                  <div className="flex items-center gap-1 ml-2 border-l border-slate-200 pl-2">
+                    <Button
+                      variant={overviewViewMode === "cards" ? "default" : "ghost"}
+                      size="sm"
+                      onClick={() => setOverviewViewMode("cards")}
+                      className="rounded-lg text-xs"
+                      data-testid="view-toggle-cards"
+                    >
+                      <LayoutGrid className="w-3 h-3 mr-1" />
+                      Cards
+                    </Button>
+                    <Button
+                      variant={overviewViewMode === "inline" ? "default" : "ghost"}
+                      size="sm"
+                      onClick={() => setOverviewViewMode("inline")}
+                      className="rounded-lg text-xs"
+                      disabled={!extractedText}
+                      title={!extractedText ? "Full document text not available" : "View as continuous document"}
+                      data-testid="view-toggle-inline"
+                    >
+                      <AlignLeft className="w-3 h-3 mr-1" />
+                      Inline
+                    </Button>
+                  </div>
+                )}
               </div>
 
               <div className="flex items-center gap-2">
@@ -1897,7 +2254,10 @@ function ReconciliationContent() {
                 <Card className="p-8 shadow-sm rounded-2xl border-slate-200">
                   <div className="prose prose-slate max-w-none">
                     <div className="text-slate-800 leading-relaxed whitespace-pre-wrap font-serif">
-                      {renderTextWithHighlights()}
+                      {overviewViewMode === "inline"
+                        ? renderInlineTextView()
+                        : renderTextWithHighlights()
+                      }
                     </div>
                   </div>
                 </Card>

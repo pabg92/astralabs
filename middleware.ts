@@ -23,8 +23,10 @@ export default clerkMiddleware(async (auth, req) => {
   }
 
   // For all other routes, require authentication
-  // Redirects to /sign-up if not authenticated (configured in ClerkProvider)
-  await auth.protect()
+  // Redirects to /sign-in if not authenticated
+  await auth.protect({
+    unauthenticatedUrl: '/sign-in',
+  })
 })
 
 export const config = {
