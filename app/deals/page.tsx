@@ -5,7 +5,7 @@ import type React from "react"
 import { useState, useMemo, useEffect, useCallback } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { Search, Plus, MoreVertical, Check, X, Upload, FileUp, AlertCircle, RefreshCw, History } from "lucide-react"
+import { Search, Plus, MoreVertical, Check, X, Upload, FileUp, AlertCircle, RefreshCw, History, ArrowLeft } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
@@ -319,6 +319,16 @@ export default function DealsPage() {
     <TooltipProvider>
     <div className="min-h-screen bg-gray-50" data-testid="deals-page">
       <div className="mx-auto max-w-[1600px] px-6 py-8">
+        {/* Back to Dashboard */}
+        <div className="mb-4">
+          <Link href="/">
+            <Button variant="ghost" size="sm" className="-ml-2 text-gray-600 hover:text-gray-900">
+              <ArrowLeft className="w-4 h-4 mr-2" />
+              Back to Dashboard
+            </Button>
+          </Link>
+        </div>
+
         {/* Header */}
         <div className="mb-8 flex items-start justify-between">
           <div>
