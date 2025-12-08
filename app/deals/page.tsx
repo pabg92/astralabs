@@ -596,7 +596,7 @@ export default function DealsPage() {
                       )}
                       <td className="px-4 py-4 min-w-[280px]" data-testid={`deal-title-${deal.id}`}>
                         <Link
-                          href={`/deals/${deal.id}`}
+                          href={`/reconciliation?dealId=${deal.id}`}
                           className="font-semibold text-blue-600 hover:text-blue-700 hover:underline text-sm"
                         >
                           {deal.title}
