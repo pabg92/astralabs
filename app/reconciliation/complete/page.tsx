@@ -208,14 +208,14 @@ function ResolutionPageContent() {
             .stats { display: flex; gap: 20px; margin: 30px 0; flex-wrap: wrap; }
             .stat-box { padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px; min-width: 120px; text-align: center; }
             .stat-box strong { display: block; font-size: 24px; margin-bottom: 5px; }
-            .clause { padding: 12px; margin: 8px 0; border-radius: 6px; border-left: 4px solid; }
+            .clause { padding: 12px; margin: 8px 0; border-radius: 6px; border-left: 4px solid; page-break-inside: avoid; }
             .accepted { background: #dcfce7; border-color: #22c55e; }
             .rejected { background: #fee2e2; border-color: #ef4444; }
             .pending { background: #fef3c7; border-color: #f59e0b; }
-            .clause-type { font-weight: bold; margin-bottom: 4px; }
-            .clause-summary { color: #475569; font-size: 14px; }
+            .clause-type { font-weight: bold; margin-bottom: 8px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; }
+            .clause-text { color: #1e293b; font-size: 14px; line-height: 1.5; white-space: pre-wrap; }
             .no-clauses { color: #94a3b8; font-style: italic; padding: 20px; text-align: center; }
-            @media print { body { padding: 20px; } }
+            @media print { body { padding: 20px; } .clause { page-break-inside: avoid; } }
           </style>
         </head>
         <body>
@@ -237,17 +237,17 @@ function ResolutionPageContent() {
           <h2>Accepted Clauses (${acceptedCount})</h2>
           ${acceptedClauses.length === 0
             ? '<p class="no-clauses">No clauses accepted</p>'
-            : acceptedClauses.map(c => `<div class="clause accepted"><div class="clause-type">${c.clauseType}</div><div class="clause-summary">${c.summary}</div></div>`).join('')}
+            : acceptedClauses.map(c => `<div class="clause accepted"><div class="clause-type">${c.clauseType}</div><div class="clause-text">${c.text || c.summary}</div></div>`).join('')}
 
           <h2>Rejected Clauses (${rejectedCount})</h2>
           ${rejectedClauses.length === 0
             ? '<p class="no-clauses">No clauses rejected</p>'
-            : rejectedClauses.map(c => `<div class="clause rejected"><div class="clause-type">${c.clauseType}</div><div class="clause-summary">${c.summary}</div></div>`).join('')}
+            : rejectedClauses.map(c => `<div class="clause rejected"><div class="clause-type">${c.clauseType}</div><div class="clause-text">${c.text || c.summary}</div></div>`).join('')}
 
           <h2>Pending Review (${pendingCount})</h2>
           ${pendingClauses.length === 0
             ? '<p class="no-clauses">All clauses reviewed</p>'
-            : pendingClauses.map(c => `<div class="clause pending"><div class="clause-type">${c.clauseType}</div><div class="clause-summary">${c.summary}</div></div>`).join('')}
+            : pendingClauses.map(c => `<div class="clause pending"><div class="clause-type">${c.clauseType}</div><div class="clause-text">${c.text || c.summary}</div></div>`).join('')}
         </body>
       </html>
     `
