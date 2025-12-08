@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { ArrowLeft, Plus, Trash2, Upload, Save, ArrowRight, FileText, Users, CheckCircle2, Zap } from "lucide-react"
+import { ArrowLeft, Plus, Trash2, Upload, Save, ArrowRight, FileText, Users, CheckCircle2, Zap, Info } from "lucide-react"
 
 interface PreAgreedTerm {
   id: string
@@ -524,7 +524,7 @@ export default function NewDealPage() {
 
             {/* Contract Upload */}
             <Card className="p-6 shadow-sm rounded-2xl border-slate-200">
-              <div className="flex items-center gap-3 mb-6">
+              <div className="flex items-center gap-3 mb-4">
                 <div className="w-10 h-10 rounded-lg bg-emerald-100 flex items-center justify-center">
                   <Upload className="w-5 h-5 text-emerald-600" />
                 </div>
@@ -532,6 +532,13 @@ export default function NewDealPage() {
                   <h2 className="text-lg font-semibold text-slate-900">Contract Upload</h2>
                   <p className="text-sm text-slate-500">Upload the contract document for reconciliation</p>
                 </div>
+              </div>
+
+              <div className="flex items-start gap-2 mb-4 p-3 bg-blue-50 rounded-lg border border-blue-100">
+                <Info className="w-4 h-4 text-blue-500 mt-0.5 flex-shrink-0" />
+                <p className="text-xs text-blue-700">
+                  Don&apos;t have the contract yet? No problem — save the deal as a draft and drop the contract in later from the Deals page when you&apos;re ready.
+                </p>
               </div>
 
               <div
