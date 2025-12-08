@@ -183,7 +183,7 @@ export default function HomePage() {
       title: "View Reports",
       description: "Access analytics and insights",
       icon: TrendingUp,
-      href: "/reconciliation/complete",
+      href: "/deals",
       color: "emerald",
       onClick: null,
     },

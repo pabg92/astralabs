@@ -799,7 +799,7 @@ function ReconciliationContent() {
     // Note: clauseStatuses are now persisted to database via clause_reviews table
     // Only save notes to localStorage (consider migrating to database comments in future)
     localStorage.setItem("clauseNotes", JSON.stringify(clauseNotes))
-    router.push("/reconciliation/complete")
+    router.push(`/reconciliation/complete?dealId=${dealId}`)
   }
 
   const selectedClauseKey = selectedClause?.clauseBoundaryId
@@ -1936,7 +1936,7 @@ function ReconciliationContent() {
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => router.push("/reconciliation/complete")}
+                    onClick={() => router.push(`/reconciliation/complete?dealId=${dealId}`)}
                     className="text-slate-500 hover:text-slate-700"
                     title="Skip to completion page"
                   >

@@ -672,7 +672,7 @@ export default function DealsPage() {
                             </DropdownMenuTrigger>
                           <DropdownMenuContent align="end">
                             <DropdownMenuItem asChild>
-                              <Link href={`/deals/${deal.id}`}>View Details</Link>
+                              <Link href={`/reconciliation?dealId=${deal.id}`}>View Details</Link>
                             </DropdownMenuItem>
                             <DropdownMenuItem asChild>
                               <Link href={`/deals/${deal.id}/edit`}>Edit Deal</Link>
