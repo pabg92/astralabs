@@ -199,7 +199,7 @@ function ResolutionPageContent() {
       <!DOCTYPE html>
       <html>
         <head>
-          <title>Reconciliation Report - ${dealName}</title>
+          <title>Contract Buddy Report - ${dealName}</title>
           <style>
             body { font-family: Arial, sans-serif; padding: 40px; max-width: 800px; margin: 0 auto; }
             h1 { color: #1e293b; border-bottom: 2px solid #e2e8f0; padding-bottom: 10px; }
@@ -219,7 +219,8 @@ function ResolutionPageContent() {
           </style>
         </head>
         <body>
-          <h1>Contract Reconciliation Report</h1>
+          <h1>Contract Buddy Reconciliation Report</h1>
+          <p style="color: #64748b; font-style: italic; margin-top: -5px; margin-bottom: 20px;">Smart Contract Reviews. For People With Better Things To Do.</p>
           <div class="header-info">
             <p><strong>Deal:</strong> ${dealName}</p>
             <p><strong>Document:</strong> ${contractFileName}</p>
