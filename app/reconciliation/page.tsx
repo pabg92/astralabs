@@ -2,7 +2,7 @@
 
 import type React from "react"
 
-import { useState, useEffect, useRef, Suspense, useMemo } from "react"
+import { useState, useEffect, useRef, Suspense, useMemo, useCallback } from "react"
 import dynamic from "next/dynamic"
 import confetti from "canvas-confetti"
 import { Card } from "@/components/ui/card"
@@ -1012,7 +1012,11 @@ function ReconciliationContent() {
     }
   }
 
-  const handleReject = (clause?: Clause) => {
+  const handleReject = (clauseOrEvent?: Clause | React.MouseEvent) => {
+    // Check if first arg is a valid Clause object (has id property) or an event/undefined
+    const clause = clauseOrEvent && 'id' in clauseOrEvent && typeof (clauseOrEvent as Clause).id === 'number'
+      ? (clauseOrEvent as Clause)
+      : undefined
     const targetClause = clause || selectedClause
     if (!targetClause) return
 
@@ -1052,9 +1056,9 @@ function ReconciliationContent() {
     }
   }, [selectedClause]) // Depend on selectedClause to update currentNote when it changes
 
-  const getClauseStatus = (clause: Clause): ClauseStatus => {
+  const getClauseStatus = useCallback((clause: Clause): ClauseStatus => {
     return clauseStatuses[clause.id] ?? clause.status
-  }
+  }, [clauseStatuses])
 
   const statusCounts = {
     match: clauses.filter((c) => getClauseStatus(c) === "match").length,
@@ -1072,7 +1076,7 @@ function ReconciliationContent() {
         text: clause.text,
         status: getClauseStatus(clause),
       })),
-    [clauses, clauseStatuses, riskAcceptedClauses],
+    [clauses, clauseStatuses, riskAcceptedClauses, getClauseStatus],
   )
 
   // Updated getStatusColor to only include 3 categories
@@ -1676,7 +1680,11 @@ function ReconciliationContent() {
     )
   }
 
-  const handleApprove = (clause?: Clause) => {
+  const handleApprove = (clauseOrEvent?: Clause | React.MouseEvent) => {
+    // Check if first arg is a valid Clause object (has id property) or an event/undefined
+    const clause = clauseOrEvent && 'id' in clauseOrEvent && typeof (clauseOrEvent as Clause).id === 'number'
+      ? (clauseOrEvent as Clause)
+      : undefined
     const targetClause = clause || selectedClause
     if (!targetClause) return
 
