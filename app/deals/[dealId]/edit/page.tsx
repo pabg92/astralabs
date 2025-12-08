@@ -1,0 +1,508 @@
+"use client"
+
+import type React from "react"
+import { useState, useEffect, use } from "react"
+import { useRouter } from "next/navigation"
+import Link from "next/link"
+import { Card } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Textarea } from "@/components/ui/textarea"
+import { Label } from "@/components/ui/label"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { ArrowLeft, Plus, Trash2, Save, FileText, Users, CheckCircle2, Loader2 } from "lucide-react"
+
+interface PreAgreedTerm {
+  id: string
+  clauseType: string
+  expectedTerm: string
+  notes: string
+}
+
+// Map user-friendly clause types to database clause_type values
+function mapClauseTypeToRelatedTypes(clauseType: string): string[] {
+  const normalized = clauseType.toLowerCase().trim()
+
+  if (/payment|fee|compensation|invoice/.test(normalized)) return ["payment_terms"]
+  if (/usage|rights|license/.test(normalized)) return ["usage_rights"]
+  if (/deliverable|scope|work|service|content/.test(normalized)) return ["scope_of_work", "deliverables"]
+  if (/exclusivity|exclusive|non-compete/.test(normalized)) return ["exclusivity"]
+  if (/approval|feedback|review/.test(normalized)) return ["approval_process", "general_terms"]
+  if (/confiden|nda|secret/.test(normalized)) return ["confidentiality"]
+  if (/termination|term|duration|cancel|expire/.test(normalized)) return ["term_and_termination"]
+  if (/indemn|liabilit|warranty/.test(normalized)) return ["indemnification"]
+  if (/intellectual|ip|copyright|trademark|ownership/.test(normalized)) return ["intellectual_property"]
+  if (/part(y|ies)|contact|address/.test(normalized)) return ["parties", "contact_information"]
+  return []
+}
+
+interface DealFormData {
+  dealName: string
+  talent: string
+  agency: string
+  brand: string
+  inOut: "In" | "Out" | ""
+  deliverables: string
+  usage: string
+  exclusivity: string
+  fee: string
+  status: string
+}
+
+export default function EditDealPage({ params }: { params: Promise<{ dealId: string }> }) {
+  const { dealId } = use(params)
+  const router = useRouter()
+
+  const [loading, setLoading] = useState(true)
+  const [fetchError, setFetchError] = useState<string | null>(null)
+
+  // Deal form state
+  const [formData, setFormData] = useState<DealFormData>({
+    dealName: "",
+    talent: "",
+    agency: "",
+    brand: "",
+    inOut: "",
+    deliverables: "",
+    usage: "",
+    exclusivity: "",
+    fee: "",
+    status: "draft",
+  })
+
+  // Pre-agreed terms state
+  const [terms, setTerms] = useState<PreAgreedTerm[]>([{ id: "1", clauseType: "", expectedTerm: "", notes: "" }])
+
+  // Form handlers
+  const updateFormData = (field: keyof DealFormData, value: string) => {
+    setFormData((prev) => ({ ...prev, [field]: value }))
+  }
+
+  // Terms handlers
+  const addTerm = () => {
+    const newTerm: PreAgreedTerm = {
+      id: Date.now().toString(),
+      clauseType: "",
+      expectedTerm: "",
+      notes: "",
+    }
+    setTerms([...terms, newTerm])
+  }
+
+  const removeTerm = (id: string) => {
+    if (terms.length > 1) {
+      setTerms(terms.filter((term) => term.id !== id))
+    }
+  }
+
+  const updateTerm = (id: string, field: keyof PreAgreedTerm, value: string) => {
+    setTerms(terms.map((term) => (term.id === id ? { ...term, [field]: value } : term)))
+  }
+
+  // Fetch deal data
+  useEffect(() => {
+    async function fetchDeal() {
+      try {
+        setLoading(true)
+        setFetchError(null)
+
+        const response = await fetch(`/api/deals/${dealId}`)
+        const result = await response.json()
+
+        if (!response.ok || !result.success) {
+          throw new Error(result.error || "Failed to fetch deal")
+        }
+
+        const deal = result.data
+
+        // Populate form data
+        setFormData({
+          dealName: deal.title || "",
+          talent: deal.talent_name || "",
+          agency: "", // Not stored in DB yet
+          brand: deal.client_name || "",
+          inOut: "",
+          deliverables: deal.description || "",
+          usage: "",
+          exclusivity: "",
+          fee: deal.value ? String(deal.value) : "",
+          status: deal.status || "draft",
+        })
+
+        // Populate terms
+        if (deal.pre_agreed_terms && deal.pre_agreed_terms.length > 0) {
+          setTerms(
+            deal.pre_agreed_terms.map((term: any) => ({
+              id: term.id,
+              clauseType: term.term_category || "",
+              expectedTerm: term.term_description || "",
+              notes: term.expected_value || "",
+            }))
+          )
+        }
+      } catch (error) {
+        console.error("Error fetching deal:", error)
+        setFetchError(error instanceof Error ? error.message : "Failed to load deal")
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    fetchDeal()
+  }, [dealId])
+
+  // Validation
+  const isBasicInfoComplete = formData.dealName && formData.talent && formData.brand
+
+  // Submit handlers
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [submitError, setSubmitError] = useState<string | null>(null)
+
+  const handleSave = async () => {
+    if (!isBasicInfoComplete) return
+
+    try {
+      setIsSubmitting(true)
+      setSubmitError(null)
+
+      // Prepare update payload
+      const payload: Record<string, any> = {
+        title: formData.dealName,
+        talent_name: formData.talent,
+        client_name: formData.brand,
+        status: formData.status,
+      }
+
+      if (formData.fee) {
+        payload.value = formData.fee.replace(/[^0-9.]/g, "")
+      }
+
+      if (formData.deliverables) {
+        payload.description = formData.deliverables
+      }
+
+      // Prepare terms
+      const validTerms = terms
+        .filter((term) => term.clauseType && term.expectedTerm)
+        .map((term) => ({
+          term_category: term.clauseType,
+          term_description: term.expectedTerm,
+          expected_value: term.notes || null,
+          is_mandatory: true,
+          related_clause_types: mapClauseTypeToRelatedTypes(term.clauseType),
+        }))
+
+      if (validTerms.length > 0) {
+        payload.terms = validTerms
+      }
+
+      // Submit to API
+      const response = await fetch(`/api/deals/${dealId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+
+      const result = await response.json()
+
+      if (!response.ok || !result.success) {
+        throw new Error(result.error || "Failed to update deal")
+      }
+
+      console.log("Deal updated:", result.data)
+      router.push("/deals")
+    } catch (error) {
+      console.error("Error updating deal:", error)
+      setSubmitError(error instanceof Error ? error.message : "Failed to update deal")
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <div className="text-center">
+          <Loader2 className="w-8 h-8 animate-spin text-blue-600 mx-auto mb-4" />
+          <p className="text-slate-600">Loading deal...</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (fetchError) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <div className="text-center">
+          <p className="text-red-600 mb-4">{fetchError}</p>
+          <Link href="/deals">
+            <Button variant="outline">Back to Deals</Button>
+          </Link>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-50">
+      <div className="max-w-7xl mx-auto p-8">
+        {/* Header */}
+        <div className="mb-8">
+          <div className="flex items-start justify-between gap-4 mb-4">
+            <Link href="/deals">
+              <Button variant="ghost" size="sm" className="-ml-2">
+                <ArrowLeft className="w-4 h-4 mr-2" />
+                Back to Deals
+              </Button>
+            </Link>
+          </div>
+          <h1 className="text-3xl font-bold text-slate-900 mb-2">Edit Deal</h1>
+          <p className="text-slate-600">Update deal information and pre-agreed terms.</p>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* Main Content */}
+          <div className="lg:col-span-2 space-y-6">
+            {/* Deal Information */}
+            <Card className="p-6 shadow-sm rounded-2xl border-slate-200">
+              <div className="flex items-center gap-3 mb-6">
+                <div className="w-10 h-10 rounded-lg bg-blue-100 flex items-center justify-center">
+                  <FileText className="w-5 h-5 text-blue-600" />
+                </div>
+                <div>
+                  <h2 className="text-lg font-semibold text-slate-900">Deal Information</h2>
+                  <p className="text-sm text-slate-500">Basic details about the partnership</p>
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="md:col-span-2">
+                    <Label htmlFor="dealName">Deal Name *</Label>
+                    <Input
+                      id="dealName"
+                      value={formData.dealName}
+                      onChange={(e) => updateFormData("dealName", e.target.value)}
+                      placeholder="e.g., Sarah Kim x Chanel - May 2025"
+                      className="rounded-lg"
+                    />
+                  </div>
+
+                  <div>
+                    <Label htmlFor="talent">Talent *</Label>
+                    <Input
+                      id="talent"
+                      value={formData.talent}
+                      onChange={(e) => updateFormData("talent", e.target.value)}
+                      placeholder="e.g., Sarah Kim"
+                      className="rounded-lg"
+                    />
+                  </div>
+
+                  <div>
+                    <Label htmlFor="brand">Brand *</Label>
+                    <Input
+                      id="brand"
+                      value={formData.brand}
+                      onChange={(e) => updateFormData("brand", e.target.value)}
+                      placeholder="e.g., Chanel"
+                      className="rounded-lg"
+                    />
+                  </div>
+
+                  <div>
+                    <Label htmlFor="fee">Fee</Label>
+                    <Input
+                      id="fee"
+                      value={formData.fee}
+                      onChange={(e) => updateFormData("fee", e.target.value)}
+                      placeholder="e.g., 52000"
+                      className="rounded-lg"
+                    />
+                  </div>
+
+                  <div>
+                    <Label htmlFor="status">Status</Label>
+                    <Select value={formData.status} onValueChange={(value) => updateFormData("status", value)}>
+                      <SelectTrigger className="rounded-lg">
+                        <SelectValue placeholder="Select status" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="draft">Draft</SelectItem>
+                        <SelectItem value="in_review">In Review</SelectItem>
+                        <SelectItem value="signed">Signed</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div className="md:col-span-2">
+                    <Label htmlFor="deliverables">Description / Deliverables</Label>
+                    <Textarea
+                      id="deliverables"
+                      value={formData.deliverables}
+                      onChange={(e) => updateFormData("deliverables", e.target.value)}
+                      placeholder="e.g., Instagram Campaign, YouTube Video"
+                      className="rounded-lg resize-none"
+                      rows={3}
+                    />
+                  </div>
+                </div>
+              </div>
+            </Card>
+
+            {/* Pre-agreed Terms */}
+            <Card className="p-6 shadow-sm rounded-2xl border-slate-200">
+              <div className="flex items-center justify-between mb-6">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-lg bg-purple-100 flex items-center justify-center">
+                    <Users className="w-5 h-5 text-purple-600" />
+                  </div>
+                  <div>
+                    <h2 className="text-lg font-semibold text-slate-900">Pre-agreed Terms</h2>
+                    <p className="text-sm text-slate-500">Define expected contractual terms for reconciliation</p>
+                  </div>
+                </div>
+                <Button onClick={addTerm} size="sm" className="rounded-lg bg-blue-500 hover:bg-blue-600">
+                  <Plus className="w-4 h-4 mr-2" />
+                  Add Term
+                </Button>
+              </div>
+
+              <div className="space-y-4">
+                {/* Table Header */}
+                <div className="grid grid-cols-12 gap-4 pb-3 border-b border-slate-200">
+                  <div className="col-span-3 text-xs font-semibold text-slate-700 uppercase">Clause Type</div>
+                  <div className="col-span-5 text-xs font-semibold text-slate-700 uppercase">Expected Term</div>
+                  <div className="col-span-3 text-xs font-semibold text-slate-700 uppercase">Notes</div>
+                  <div className="col-span-1"></div>
+                </div>
+
+                {/* Table Rows */}
+                {terms.map((term) => (
+                  <div key={term.id} className="grid grid-cols-12 gap-4 items-start">
+                    <div className="col-span-3">
+                      <Input
+                        value={term.clauseType}
+                        onChange={(e) => updateTerm(term.id, "clauseType", e.target.value)}
+                        placeholder="e.g., Payment Terms"
+                        className="rounded-lg"
+                      />
+                    </div>
+                    <div className="col-span-5">
+                      <Textarea
+                        value={term.expectedTerm}
+                        onChange={(e) => updateTerm(term.id, "expectedTerm", e.target.value)}
+                        placeholder="Describe the expected term..."
+                        className="rounded-lg resize-none h-20"
+                      />
+                    </div>
+                    <div className="col-span-3">
+                      <Textarea
+                        value={term.notes}
+                        onChange={(e) => updateTerm(term.id, "notes", e.target.value)}
+                        placeholder="Additional notes..."
+                        className="rounded-lg resize-none h-20"
+                      />
+                    </div>
+                    <div className="col-span-1 flex items-center justify-center pt-2">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => removeTerm(term.id)}
+                        disabled={terms.length === 1}
+                        className="text-red-500 hover:text-red-700 hover:bg-red-50"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          </div>
+
+          {/* Sidebar */}
+          <div className="space-y-6">
+            {/* Progress Summary */}
+            <Card className="p-6 shadow-sm rounded-2xl border-slate-200">
+              <h3 className="text-lg font-semibold text-slate-900 mb-4">Progress Summary</h3>
+
+              <div className="space-y-4">
+                <div className="flex items-start gap-3">
+                  <div
+                    className={`w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5 ${
+                      isBasicInfoComplete ? "bg-emerald-500" : "bg-slate-200"
+                    }`}
+                  >
+                    {isBasicInfoComplete && <CheckCircle2 className="w-3 h-3 text-white" />}
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium text-slate-900">Deal Information</p>
+                    <p className="text-xs text-slate-500">
+                      {isBasicInfoComplete ? "Complete" : "Required fields pending"}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-start gap-3">
+                  <div
+                    className={`w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5 ${
+                      terms.some((t) => t.clauseType && t.expectedTerm) ? "bg-emerald-500" : "bg-slate-200"
+                    }`}
+                  >
+                    {terms.some((t) => t.clauseType && t.expectedTerm) && (
+                      <CheckCircle2 className="w-3 h-3 text-white" />
+                    )}
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium text-slate-900">Pre-agreed Terms</p>
+                    <p className="text-xs text-slate-500">
+                      {terms.filter((t) => t.clauseType && t.expectedTerm).length} term(s) defined
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </Card>
+
+            {/* Actions */}
+            <Card className="p-6 shadow-sm rounded-2xl border-slate-200">
+              <h3 className="text-lg font-semibold text-slate-900 mb-4">Actions</h3>
+
+              <div className="space-y-3">
+                <Button
+                  onClick={handleSave}
+                  disabled={!isBasicInfoComplete || isSubmitting}
+                  className="w-full rounded-lg bg-blue-500 hover:bg-blue-600 disabled:bg-slate-300"
+                >
+                  {isSubmitting ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Saving...
+                    </>
+                  ) : (
+                    <>
+                      <Save className="w-4 h-4 mr-2" />
+                      Save Changes
+                    </>
+                  )}
+                </Button>
+
+                <Link href="/deals" className="block">
+                  <Button variant="outline" className="w-full rounded-lg bg-transparent">
+                    Cancel
+                  </Button>
+                </Link>
+
+                {submitError && (
+                  <div className="text-xs text-red-600 bg-red-50 p-3 rounded-lg border border-red-200">
+                    {submitError}
+                  </div>
+                )}
+              </div>
+            </Card>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
