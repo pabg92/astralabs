@@ -53,6 +53,7 @@ function ResolutionPageContent() {
   const [dealName, setDealName] = useState<string>("")
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [isDownloading, setIsDownloading] = useState(false)
 
   useEffect(() => {
     async function fetchReconciliationData() {
@@ -191,8 +192,99 @@ function ResolutionPageContent() {
     }
   }
 
-  const handleFinalize = () => {
-    alert("Contract reconciliation finalized! Export functionality would be triggered here.")
+  const handleDownloadReport = () => {
+    setIsDownloading(true)
+
+    const printContent = `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Reconciliation Report - ${dealName}</title>
+          <style>
+            body { font-family: Arial, sans-serif; padding: 40px; max-width: 800px; margin: 0 auto; }
+            h1 { color: #1e293b; border-bottom: 2px solid #e2e8f0; padding-bottom: 10px; }
+            h2 { color: #475569; margin-top: 30px; }
+            .header-info { margin: 20px 0; color: #64748b; }
+            .stats { display: flex; gap: 20px; margin: 30px 0; flex-wrap: wrap; }
+            .stat-box { padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px; min-width: 120px; text-align: center; }
+            .stat-box strong { display: block; font-size: 24px; margin-bottom: 5px; }
+            .clause { padding: 12px; margin: 8px 0; border-radius: 6px; border-left: 4px solid; }
+            .accepted { background: #dcfce7; border-color: #22c55e; }
+            .rejected { background: #fee2e2; border-color: #ef4444; }
+            .pending { background: #fef3c7; border-color: #f59e0b; }
+            .clause-type { font-weight: bold; margin-bottom: 4px; }
+            .clause-summary { color: #475569; font-size: 14px; }
+            .no-clauses { color: #94a3b8; font-style: italic; padding: 20px; text-align: center; }
+            @media print { body { padding: 20px; } }
+          </style>
+        </head>
+        <body>
+          <h1>Contract Reconciliation Report</h1>
+          <div class="header-info">
+            <p><strong>Deal:</strong> ${dealName}</p>
+            <p><strong>Document:</strong> ${contractFileName}</p>
+            <p><strong>Date:</strong> ${new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}</p>
+            <p><strong>Completion:</strong> ${completionRate}%</p>
+          </div>
+
+          <div class="stats">
+            <div class="stat-box"><strong>${totalClauses}</strong>Total Clauses</div>
+            <div class="stat-box" style="background:#dcfce7"><strong>${acceptedCount}</strong>Accepted</div>
+            <div class="stat-box" style="background:#fee2e2"><strong>${rejectedCount}</strong>Rejected</div>
+            <div class="stat-box" style="background:#fef3c7"><strong>${pendingCount}</strong>Pending</div>
+          </div>
+
+          <h2>Accepted Clauses (${acceptedCount})</h2>
+          ${acceptedClauses.length === 0
+            ? '<p class="no-clauses">No clauses accepted</p>'
+            : acceptedClauses.map(c => `<div class="clause accepted"><div class="clause-type">${c.clauseType}</div><div class="clause-summary">${c.summary}</div></div>`).join('')}
+
+          <h2>Rejected Clauses (${rejectedCount})</h2>
+          ${rejectedClauses.length === 0
+            ? '<p class="no-clauses">No clauses rejected</p>'
+            : rejectedClauses.map(c => `<div class="clause rejected"><div class="clause-type">${c.clauseType}</div><div class="clause-summary">${c.summary}</div></div>`).join('')}
+
+          <h2>Pending Review (${pendingCount})</h2>
+          ${pendingClauses.length === 0
+            ? '<p class="no-clauses">All clauses reviewed</p>'
+            : pendingClauses.map(c => `<div class="clause pending"><div class="clause-type">${c.clauseType}</div><div class="clause-summary">${c.summary}</div></div>`).join('')}
+        </body>
+      </html>
+    `
+
+    const printWindow = window.open('', '_blank')
+    if (printWindow) {
+      printWindow.document.write(printContent)
+      printWindow.document.close()
+      printWindow.print()
+    }
+
+    setIsDownloading(false)
+  }
+
+  const handleFinalise = async () => {
+    setIsDownloading(true)
+
+    try {
+      // Update deal status to signed/finalised
+      await fetch(`/api/deals/${dealId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'signed' })
+      })
+
+      // Download the report
+      handleDownloadReport()
+
+      // Show success and redirect
+      alert('Contract reconciliation finalised successfully!')
+      router.push('/deals')
+    } catch (error) {
+      console.error('Error finalising:', error)
+      alert('Failed to finalise. Please try again.')
+    } finally {
+      setIsDownloading(false)
+    }
   }
 
   const handleGoBack = () => {
@@ -601,11 +693,11 @@ function ResolutionPageContent() {
         <Card className="p-6 shadow-sm rounded-2xl border-slate-200">
           <div className="flex items-center justify-between">
             <div>
-              <h3 className="text-lg font-semibold text-slate-900 mb-1">Ready to Finalize?</h3>
+              <h3 className="text-lg font-semibold text-slate-900 mb-1">Ready to Finalise?</h3>
               <p className="text-sm text-slate-500">
                 {pendingCount > 0
-                  ? `You have ${pendingCount} clause${pendingCount > 1 ? "s" : ""} pending review. You can finalize now or go back to review.`
-                  : "All clauses have been reviewed. You can now finalize the reconciliation."}
+                  ? `You have ${pendingCount} clause${pendingCount > 1 ? "s" : ""} pending review. You can finalise now or go back to review.`
+                  : "All clauses have been reviewed. You can now finalise the reconciliation."}
               </p>
             </div>
 
@@ -615,18 +707,23 @@ function ResolutionPageContent() {
                 Revise Decisions
               </Button>
 
-              <Button variant="outline" className="rounded-lg bg-transparent">
-                <Download className="w-4 h-4 mr-2" />
+              <Button
+                variant="outline"
+                onClick={handleDownloadReport}
+                disabled={isDownloading}
+                className="rounded-lg bg-transparent"
+              >
+                {isDownloading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Download className="w-4 h-4 mr-2" />}
                 Download Report
               </Button>
 
               <Button
-                onClick={handleFinalize}
+                onClick={handleFinalise}
                 className="bg-emerald-500 hover:bg-emerald-600 rounded-lg px-6"
-                disabled={pendingCount === totalClauses}
+                disabled={isDownloading || pendingCount === totalClauses}
               >
-                <Send className="w-4 h-4 mr-2" />
-                Finalize & Export
+                {isDownloading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Send className="w-4 h-4 mr-2" />}
+                Finalise & Export
               </Button>
             </div>
           </div>
