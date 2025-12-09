@@ -1229,8 +1229,12 @@ function ReconciliationContent() {
     )
   }
 
+  // Normalize clause type for comparison (handles "Payment Terms" vs "payment_terms")
+  const normalizeClauseType = (s: string): string =>
+    s.toLowerCase().replace(/[\s_-]+/g, '_')
+
   const findMatchingTerm = (clause: Clause): PreAgreedTerm | null => {
-    return preAgreedTerms.find((term) => term.clauseType.toLowerCase() === clause.clauseType.toLowerCase()) || null
+    return preAgreedTerms.find((term) => normalizeClauseType(term.clauseType) === normalizeClauseType(clause.clauseType)) || null
   }
 
   const renderTextWithHighlights = () => {
@@ -2769,7 +2773,7 @@ function ReconciliationContent() {
                   <div className="space-y-3">
                     {preAgreedTerms.map((term) => {
                       const matchingClause = clauses.find(
-                        (c) => c.clauseType.toLowerCase() === term.clauseType.toLowerCase(),
+                        (c) => normalizeClauseType(c.clauseType) === normalizeClauseType(term.clauseType),
                       )
                       const currentStatus = matchingClause ? getClauseStatus(matchingClause) : "issue" // Default to issue if no matching clause
                       const isReconciled = currentStatus === "match"
@@ -2873,7 +2877,7 @@ function ReconciliationContent() {
                           {
                             preAgreedTerms.filter((term) => {
                               const matchingClause = clauses.find(
-                                (c) => c.clauseType.toLowerCase() === term.clauseType.toLowerCase(),
+                                (c) => normalizeClauseType(c.clauseType) === normalizeClauseType(term.clauseType),
                               )
                               return (
                                 matchingClause &&
@@ -2890,7 +2894,7 @@ function ReconciliationContent() {
                           {
                             preAgreedTerms.filter((term) => {
                               const matchingClause = clauses.find(
-                                (c) => c.clauseType.toLowerCase() === term.clauseType.toLowerCase(),
+                                (c) => normalizeClauseType(c.clauseType) === normalizeClauseType(term.clauseType),
                               )
                               return (
                                 matchingClause &&
@@ -2907,7 +2911,7 @@ function ReconciliationContent() {
                           {
                             preAgreedTerms.filter((term) => {
                               const matchingClause = clauses.find(
-                                (c) => c.clauseType.toLowerCase() === term.clauseType.toLowerCase(),
+                                (c) => normalizeClauseType(c.clauseType) === normalizeClauseType(term.clauseType),
                               )
                               return matchingClause && getClauseStatus(matchingClause) === "review"
                             }).length
@@ -2920,7 +2924,7 @@ function ReconciliationContent() {
                           {
                             preAgreedTerms.filter((term) => {
                               const matchingClause = clauses.find(
-                                (c) => c.clauseType.toLowerCase() === term.clauseType.toLowerCase(),
+                                (c) => normalizeClauseType(c.clauseType) === normalizeClauseType(term.clauseType),
                               )
                               return matchingClause && getClauseStatus(matchingClause) === "issue"
                             }).length
@@ -2933,7 +2937,7 @@ function ReconciliationContent() {
                           {
                             preAgreedTerms.filter(
                               (term) =>
-                                !clauses.find((c) => c.clauseType.toLowerCase() === term.clauseType.toLowerCase()),
+                                !clauses.find((c) => normalizeClauseType(c.clauseType) === normalizeClauseType(term.clauseType)),
                             ).length
                           }
                         </span>
