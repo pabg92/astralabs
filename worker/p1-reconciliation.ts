@@ -70,6 +70,7 @@ interface ComparisonResult {
 interface BatchComparison {
   idx: number
   clauseId: string
+  matchResultId: string
   termId: string
   clauseType: string
   termCategory: string
@@ -77,6 +78,8 @@ interface BatchComparison {
   clauseContent: string
   termDescription: string
   expectedValue: string
+  matchReason: 'type_match' | 'fallback_match' | 'semantic_fallback'
+  semanticScore: number
 }
 
 interface BatchResult {
@@ -88,66 +91,142 @@ interface BatchResult {
   confidence: number
 }
 
-// Find relevant terms for a clause using keyword matching
-function findRelevantTerms(clause: ClauseBoundary, preAgreedTerms: PreAgreedTerm[]): PreAgreedTerm[] {
-  return preAgreedTerms.filter((term) => {
-    // Direct match via related_clause_types
-    if (term.related_clause_types?.includes(clause.clause_type)) {
-      return true
-    }
-
-    const normalizedClauseType = clause.clause_type.replace(/_/g, " ").toLowerCase()
-    const termCategory = term.term_category.toLowerCase()
-    const termDescription = term.term_description.toLowerCase()
-
-    const keywordMap: Record<string, string[]> = {
-      payment: ["payment", "fee", "compensation", "invoice", "remuneration", "cost"],
-      usage: ["usage", "rights", "license", "utilization", "media"],
-      deliverable: ["deliverable", "scope", "work", "service", "content", "output"],
-      exclusivity: ["exclusivity", "exclusive", "non-compete", "compete"],
-      approval: ["approval", "feedback", "review", "consent", "sign-off"],
-      confidentiality: ["confidential", "nda", "secret", "proprietary", "disclosure"],
-      termination: ["termination", "term", "duration", "cancel", "expire", "end"],
-      indemnification: ["indemn", "liability", "warranty", "insurance", "claim"],
-      intellectual: ["intellectual", "ip", "copyright", "trademark", "ownership", "property"],
-      party: ["party", "parties", "contact", "address", "entity"],
-    }
-
-    for (const relatedKeywords of Object.values(keywordMap)) {
-      const clauseMatches = relatedKeywords.some((kw) => normalizedClauseType.includes(kw))
-      const termMatches = relatedKeywords.some((kw) =>
-        termCategory.includes(kw) || termDescription.includes(kw)
-      )
-      if (clauseMatches && termMatches) return true
-    }
-
-    return false
-  })
+interface ClauseCandidate {
+  clause: ClauseBoundary
+  matchResult: ClauseMatchResult
+  matchReason: 'type_match' | 'fallback_match' | 'semantic_fallback'
 }
 
-// Build batch comparisons list
+// ============ TERM CATEGORY → CLAUSE TYPE MAPPING ============
+// Maps PAT term_category to allowed clause_types for targeted matching
+const TERM_TO_CLAUSE_MAP: Record<string, { primary: string[], fallback: string[] }> = {
+  // Payment
+  "Payment Terms": { primary: ["payment_terms"], fallback: [] },
+
+  // Exclusivity variants
+  "Exclusivity": { primary: ["exclusivity"], fallback: ["deliverables"] },
+  "Exclusivity Window": { primary: ["exclusivity"], fallback: ["deliverables"] },
+  "Posting Restrictions": { primary: ["exclusivity", "deliverables"], fallback: [] },
+
+  // Usage/IP
+  "Usage Rights": { primary: ["intellectual_property"], fallback: ["deliverables"] },
+  "Usage & Licensing": { primary: ["intellectual_property"], fallback: ["deliverables"] },
+
+  // Approvals
+  "Brand Approval Required": { primary: ["deliverables"], fallback: ["scope_of_work"] },
+  "Approval & Reshoot Obligation": { primary: ["deliverables"], fallback: ["scope_of_work"] },
+
+  // Compliance
+  "FTC & Disclosure Compliance": { primary: ["compliance"], fallback: ["confidentiality"] },
+  "Disclosure Requirements": { primary: ["compliance"], fallback: ["confidentiality"] },
+
+  // Content/Deliverables
+  "Content Standards & Lighting": { primary: ["deliverables"], fallback: ["scope_of_work"] },
+  "Brand Tags, Hashtags & Links": { primary: ["deliverables"], fallback: [] },
+  "Minimum Duration & Feed Placement": { primary: ["deliverables"], fallback: [] },
+  "Posting Schedule": { primary: ["deliverables"], fallback: ["scope_of_work"] },
+  "Creative Requirements": { primary: ["deliverables"], fallback: ["scope_of_work"] },
+  "Delivery Deadline": { primary: ["deliverables"], fallback: ["termination"] },
+  "Pre-Production Requirement": { primary: ["deliverables"], fallback: ["scope_of_work"] },
+  "Clothing & Styling Requirement": { primary: ["deliverables"], fallback: [] },
+  "Analytics Delivery": { primary: ["deliverables"], fallback: ["compliance"] },
+}
+
+// Legacy keyword matching for unmapped term categories
+function keywordMatchClause(term: PreAgreedTerm, clause: ClauseBoundary): boolean {
+  const normalizedClauseType = clause.clause_type.replace(/_/g, " ").toLowerCase()
+  const termCategory = term.term_category.toLowerCase()
+  const termDescription = term.term_description.toLowerCase()
+
+  const keywordMap: Record<string, string[]> = {
+    payment: ["payment", "fee", "compensation", "invoice"],
+    usage: ["usage", "rights", "license", "media"],
+    deliverable: ["deliverable", "scope", "work", "content"],
+    exclusivity: ["exclusivity", "exclusive", "compete"],
+    approval: ["approval", "review", "consent"],
+    intellectual: ["intellectual", "ip", "copyright", "ownership"],
+  }
+
+  for (const relatedKeywords of Object.values(keywordMap)) {
+    const clauseMatches = relatedKeywords.some((kw) => normalizedClauseType.includes(kw))
+    const termMatches = relatedKeywords.some((kw) =>
+      termCategory.includes(kw) || termDescription.includes(kw)
+    )
+    if (clauseMatches && termMatches) return true
+  }
+  return false
+}
+
+// Select top 1-3 clauses for a given PAT term using type mapping
+function selectTopClausesForTerm(
+  term: PreAgreedTerm,
+  clauses: ClauseBoundary[],
+  matchResults: ClauseMatchResult[]
+): ClauseCandidate[] {
+  const mapping = TERM_TO_CLAUSE_MAP[term.term_category]
+
+  // Step 1: Filter by primary clause types
+  let candidates: ClauseCandidate[] = []
+  if (mapping?.primary.length) {
+    for (const clause of clauses) {
+      if (!mapping.primary.includes(clause.clause_type)) continue
+      const matchResult = matchResults.find(m => m.clause_boundary_id === clause.id)
+      if (matchResult) {
+        candidates.push({ clause, matchResult, matchReason: 'type_match' })
+      }
+    }
+  }
+
+  // Step 2: Fallback to secondary types if no primary matches
+  if (candidates.length === 0 && mapping?.fallback.length) {
+    for (const clause of clauses) {
+      if (!mapping.fallback.includes(clause.clause_type)) continue
+      const matchResult = matchResults.find(m => m.clause_boundary_id === clause.id)
+      if (matchResult) {
+        candidates.push({ clause, matchResult, matchReason: 'fallback_match' })
+      }
+    }
+  }
+
+  // Step 3: If still empty, use keyword matching for unmapped categories
+  if (candidates.length === 0) {
+    for (const clause of clauses) {
+      if (!keywordMatchClause(term, clause)) continue
+      const matchResult = matchResults.find(m => m.clause_boundary_id === clause.id)
+      if (matchResult) {
+        candidates.push({ clause, matchResult, matchReason: 'semantic_fallback' })
+      }
+    }
+  }
+
+  // Step 4: Sort by similarity score, take top 3
+  return candidates
+    .sort((a, b) => (b.matchResult.similarity_score || 0) - (a.matchResult.similarity_score || 0))
+    .slice(0, 3)
+}
+
+// Build batch comparisons list - term-centric approach (top 1-3 clauses per PAT)
 function buildBatchComparisons(
   clauses: ClauseBoundary[],
   matchResults: ClauseMatchResult[],
   preAgreedTerms: PreAgreedTerm[]
-): { comparisons: BatchComparison[], clauseTermMap: Map<string, Map<string, BatchComparison>> } {
+): { comparisons: BatchComparison[], termComparisonMap: Map<string, BatchComparison[]> } {
   const comparisons: BatchComparison[] = []
-  const clauseTermMap = new Map<string, Map<string, BatchComparison>>()
+  const termComparisonMap = new Map<string, BatchComparison[]>()
   let idx = 0
 
-  for (const matchResult of matchResults) {
-    const clause = clauses.find((c) => c.id === matchResult.clause_boundary_id)
-    if (!clause) continue
+  // For each PAT term, find top 1-3 relevant clauses
+  for (const term of preAgreedTerms) {
+    const candidates = selectTopClausesForTerm(term, clauses, matchResults)
+    if (candidates.length === 0) continue
 
-    const relevantTerms = findRelevantTerms(clause, preAgreedTerms)
-    if (relevantTerms.length === 0) continue
+    const termComparisons: BatchComparison[] = []
 
-    const termMap = new Map<string, BatchComparison>()
-
-    for (const term of relevantTerms) {
+    for (const { clause, matchResult, matchReason } of candidates) {
       const comparison: BatchComparison = {
         idx: idx++,
         clauseId: clause.id,
+        matchResultId: matchResult.id,
         termId: term.id,
         clauseType: clause.clause_type,
         termCategory: term.term_category,
@@ -155,15 +234,49 @@ function buildBatchComparisons(
         clauseContent: clause.content.substring(0, 600), // Truncate for context window
         termDescription: term.term_description,
         expectedValue: term.expected_value || "N/A",
+        matchReason,
+        semanticScore: matchResult.similarity_score || 0,
       }
       comparisons.push(comparison)
-      termMap.set(term.id, comparison)
+      termComparisons.push(comparison)
     }
 
-    clauseTermMap.set(matchResult.id, termMap)
+    termComparisonMap.set(term.id, termComparisons)
   }
 
-  return { comparisons, clauseTermMap }
+  return { comparisons, termComparisonMap }
+}
+
+// Select best match per PAT term (green > amber > red, then by confidence)
+function selectBestMatchPerTerm(
+  termComparisonMap: Map<string, BatchComparison[]>,
+  results: Map<number, BatchResult>
+): Map<string, { comparison: BatchComparison, result: BatchResult }> {
+  const bestByTerm = new Map<string, { comparison: BatchComparison, result: BatchResult }>()
+
+  for (const [termId, comparisons] of termComparisonMap) {
+    for (const comparison of comparisons) {
+      const result = results.get(comparison.idx)
+      if (!result) continue
+
+      const existing = bestByTerm.get(termId)
+      if (!existing || isBetterResult(result, existing.result)) {
+        bestByTerm.set(termId, { comparison, result })
+      }
+    }
+  }
+
+  return bestByTerm
+}
+
+// Compare results: green > amber > red, then by confidence
+function isBetterResult(a: BatchResult, b: BatchResult): boolean {
+  const score = (r: BatchResult) => {
+    if (r.matches && r.severity === "none") return 3  // green
+    if (r.matches && r.severity === "minor") return 2  // amber
+    return 1  // red
+  }
+  return score(a) > score(b) || (score(a) === score(b) && a.confidence > b.confidence)
 }
 
 // Execute batched GPT comparison
@@ -202,25 +315,34 @@ async function executeBatchComparison(
             messages: [
               {
                 role: "system",
-                content: `You are a contract compliance checker. For each comparison, determine if the contract clause satisfies the pre-agreed term.
+                content: `You are a contract compliance checker comparing contract clauses against pre-agreed terms.
 
-Output a JSON array with one object per comparison:
-[{"idx":0,"matches":true,"severity":"none","explanation":"<15 words>","differences":[],"confidence":0.95},...]
+For each comparison, determine if the clause satisfies the term:
 
-Severity levels:
-- "none": Clause fully satisfies term
-- "minor": Small deviation, acceptable
-- "major": Significant deviation, requires attention
+**GREEN (matches=true, severity="none"):** Clause fully satisfies the term requirements.
+**AMBER (matches=true, severity="minor"):** Clause partially satisfies but has minor deviations:
+  - Timing slightly off (e.g., 45 days vs 30 days)
+  - Amount close but not exact
+  - Scope slightly broader/narrower than expected
+  - Minor wording differences that don't change intent
+**RED (matches=false, severity="major"):** Clause conflicts with term OR term requirements absent:
+  - Contradictory requirements
+  - Missing critical elements specified in the term
+  - Fundamentally different scope/intent
 
-Be strict for MANDATORY terms. Be concise.`,
+Use AMBER for close-but-not-exact matches. Use RED only for clear conflicts or missing requirements.
+Be strict for [MANDATORY] terms. Be concise.
+
+IMPORTANT: Return results for ALL comparisons. Output format:
+{"results":[{"idx":0,"matches":true,"severity":"none","explanation":"<15 words>","differences":[],"confidence":0.95},{"idx":1,...},...]}`,
               },
               {
                 role: "user",
-                content: `Compare these ${batch.length} clause-term pairs:
+                content: `Compare these ${batch.length} clause-term pairs and return a result for EACH one:
 
 ${JSON.stringify(comparisonInputs, null, 0)}
 
-Return JSON array with results for each idx.`,
+Return JSON {"results":[...]} with exactly ${batch.length} result objects, one for each idx (0 to ${batch.length - 1}).`,
               },
             ],
             temperature: 0.1,
@@ -248,8 +370,24 @@ Return JSON array with results for each idx.`,
 
     try {
       const parsed = JSON.parse(content)
-      // Handle both array and object with results key
-      const batchResults: BatchResult[] = Array.isArray(parsed) ? parsed : (parsed.results || parsed.comparisons || [])
+      // Handle multiple response formats:
+      // 1. Array directly: [{idx:0,...}, {idx:1,...}]
+      // 2. Object with results/comparisons key: {results: [...]} or {comparisons: [...]}
+      // 3. Single object with idx: {idx:0, matches:...} (wrap in array)
+      let batchResults: BatchResult[]
+      if (Array.isArray(parsed)) {
+        batchResults = parsed
+      } else if (parsed.results && Array.isArray(parsed.results)) {
+        batchResults = parsed.results
+      } else if (parsed.comparisons && Array.isArray(parsed.comparisons)) {
+        batchResults = parsed.comparisons
+      } else if (typeof parsed.idx === 'number' && typeof parsed.matches === 'boolean') {
+        // Single result object - wrap in array
+        batchResults = [parsed]
+      } else {
+        console.error(`     ⚠️ Unexpected response format:`, Object.keys(parsed))
+        batchResults = []
+      }
 
       for (const result of batchResults) {
         results.set(result.idx, {
@@ -346,14 +484,14 @@ export async function performP1Reconciliation(
 
   if (matchError) throw matchError
 
-  // Build all comparisons upfront
-  const { comparisons, clauseTermMap } = buildBatchComparisons(
+  // Build all comparisons upfront (term-centric: top 1-3 clauses per PAT)
+  const { comparisons, termComparisonMap } = buildBatchComparisons(
     clauses || [],
     matchResults || [],
     preAgreedTerms
   )
 
-  console.log(`   Built ${comparisons.length} comparisons across ${clauseTermMap.size} clauses`)
+  console.log(`   Built ${comparisons.length} comparisons for ${termComparisonMap.size} PAT terms`)
 
   if (comparisons.length === 0) {
     console.log(`   ℹ️ No relevant clause-term matches found`)
@@ -361,9 +499,8 @@ export async function performP1Reconciliation(
   }
 
   // Select model based on context size
-  // GPT-4o: 128k context, GPT-5.1: 400k context (for very large batches)
   const estimatedTokens = comparisons.length * 150 // ~150 tokens per comparison
-  const model = estimatedTokens > 100000 ? "gpt-5.1" : "gpt-4o"
+  const model = estimatedTokens > 100000 ? "gpt-4o" : "gpt-4o"
   console.log(`   Using model: ${model} (estimated ${estimatedTokens} tokens)`)
 
   // Execute batched comparison
@@ -371,69 +508,79 @@ export async function performP1Reconciliation(
 
   console.log(`   Got ${batchResults.size}/${comparisons.length} results`)
 
+  // Select best match per PAT term (green > amber > red)
+  const bestMatchByTerm = selectBestMatchPerTerm(termComparisonMap, batchResults)
+
+  console.log(`   Selected ${bestMatchByTerm.size} best matches (1 per PAT)`)
+
+  // Group best matches by clause/matchResult for updating
+  const clauseUpdates = new Map<string, {
+    matchResult: ClauseMatchResult,
+    clause: ClauseBoundary,
+    patComparisons: any[]
+  }>()
+
+  for (const [termId, { comparison, result }] of bestMatchByTerm) {
+    const matchResult = matchResults?.find((m: ClauseMatchResult) => m.id === comparison.matchResultId)
+    const clause = clauses?.find((c: ClauseBoundary) => c.id === comparison.clauseId)
+    if (!matchResult || !clause) continue
+
+    if (!clauseUpdates.has(comparison.matchResultId)) {
+      clauseUpdates.set(comparison.matchResultId, {
+        matchResult,
+        clause,
+        patComparisons: []
+      })
+    }
+
+    let termRagParsing: "green" | "amber" | "red"
+    if (result.matches && result.severity === "none") {
+      termRagParsing = "green"
+    } else if (result.matches && result.severity === "minor") {
+      termRagParsing = "amber"
+    } else {
+      termRagParsing = "red"
+    }
+
+    clauseUpdates.get(comparison.matchResultId)!.patComparisons.push({
+      term_id: termId,
+      term_category: comparison.termCategory,
+      is_mandatory: comparison.isMandatory,
+      match_metadata: {
+        clause_type_match: comparison.matchReason === 'type_match',
+        match_reason: comparison.matchReason,
+        semantic_score: comparison.semanticScore,
+        candidates_considered: termComparisonMap.get(termId)?.length || 1,
+      },
+      comparison_result: {
+        matches: result.matches,
+        deviation_severity: result.severity,
+        explanation: result.explanation,
+        key_differences: result.differences,
+        confidence: result.confidence,
+      },
+      rag_parsing: termRagParsing,
+    })
+  }
+
   // Process results and update database
   let updatedCount = 0
   let discrepanciesCreated = 0
 
-  for (const matchResult of matchResults || []) {
-    const clause = clauses?.find((c: ClauseBoundary) => c.id === matchResult.clause_boundary_id)
-    if (!clause) continue
-
-    const termMap = clauseTermMap.get(matchResult.id)
-    if (!termMap || termMap.size === 0) {
-      // No relevant terms for this clause - mark as green
-      await supabase
-        .from("clause_match_results")
-        .update({
-          rag_parsing: "green",
-          rag_status: matchResult.rag_risk === "green" ? "green" : "amber",
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", matchResult.id)
-      continue
-    }
-
+  for (const [matchResultId, { matchResult, clause, patComparisons }] of clauseUpdates) {
+    // Calculate worst-case rag_parsing from PAT comparisons
     let rag_parsing: "green" | "amber" | "red" = "green"
-    const preAgreedComparisons: any[] = []
-
-    for (const [termId, comparison] of termMap) {
-      const result = batchResults.get(comparison.idx)
-      if (!result) continue
-
-      let termRagParsing: "green" | "amber" | "red"
-      if (result.matches && result.severity === "none") {
-        termRagParsing = "green"
-      } else if (result.matches && result.severity === "minor") {
-        termRagParsing = "amber"
-      } else {
-        termRagParsing = "red"
-      }
-
-      preAgreedComparisons.push({
-        term_id: termId,
-        term_category: comparison.termCategory,
-        is_mandatory: comparison.isMandatory,
-        comparison_result: {
-          matches: result.matches,
-          deviation_severity: result.severity,
-          explanation: result.explanation,
-          key_differences: result.differences,
-          confidence: result.confidence,
-        },
-        rag_parsing: termRagParsing,
-      })
-
-      // Calculate worst-case rag_parsing
-      if (termRagParsing === "red" && comparison.isMandatory) {
+    for (const comp of patComparisons) {
+      if (comp.rag_parsing === "red" && comp.is_mandatory) {
         rag_parsing = "red"
-      } else if (termRagParsing === "red" && rag_parsing !== "red") {
+      } else if (comp.rag_parsing === "red" && rag_parsing !== "red") {
         rag_parsing = "amber"
-      } else if (termRagParsing === "amber" && rag_parsing === "green") {
+      } else if (comp.rag_parsing === "amber" && rag_parsing === "green") {
         rag_parsing = "amber"
       }
     }
 
-    // Calculate final rag_status
+    // Calculate final rag_status (combine with library matching)
     const rag_risk = matchResult.rag_risk as "green" | "amber" | "red"
     let rag_status: "green" | "amber" | "red"
 
@@ -453,7 +600,7 @@ export async function performP1Reconciliation(
         rag_status,
         gpt_analysis: {
           ...(matchResult.gpt_analysis || {}),
-          pre_agreed_comparisons: preAgreedComparisons,
+          pre_agreed_comparisons: patComparisons,
           reconciliation_timestamp: new Date().toISOString(),
         },
         discrepancy_count: rag_status === "red" ? 1 : 0,
@@ -463,7 +610,7 @@ export async function performP1Reconciliation(
 
     if (!updateError) updatedCount++
 
-    // Phase 8: Flag low-confidence matches for LCL growth
+    // Flag low-confidence matches for LCL growth
     const similarityScore = matchResult.similarity_score || 0
     if (similarityScore < 0.85 && similarityScore > 0) {
       const priority = similarityScore < 0.5 ? "critical" : similarityScore < 0.6 ? "high" : similarityScore < 0.7 ? "medium" : "low"
@@ -471,7 +618,7 @@ export async function performP1Reconciliation(
       const { error: reviewError } = await supabase.from("admin_review_queue").insert({
         document_id: documentId,
         clause_boundary_id: clause.id,
-        review_type: "new_clause",
+        review_type: "low_confidence",  // Fixed: was "new_clause" which violates constraint
         status: "pending",
         priority,
         issue_description: `Low confidence match (${(similarityScore * 100).toFixed(1)}%) for ${clause.clause_type}`,
@@ -492,7 +639,7 @@ export async function performP1Reconciliation(
 
     // Create discrepancy if RED
     if (rag_status === "red" || rag_parsing === "red") {
-      const redComparisons = preAgreedComparisons.filter((c) => c.rag_parsing === "red")
+      const redComparisons = patComparisons.filter((c: any) => c.rag_parsing === "red")
       const description = redComparisons.length > 0
         ? `Conflicts with: ${redComparisons[0].term_category}`
         : `Deviates from library`
