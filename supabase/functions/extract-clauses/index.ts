@@ -21,6 +21,12 @@ const ALLOWED_MODELS = ["gpt-4o", "gpt-5.1", "gpt-5.1-codex-mini"] as const
 type AllowedModel = typeof ALLOWED_MODELS[number]
 
 const MAX_CLAUSE_LENGTH = 400 // Single source of truth - used everywhere
+const MIN_CLAUSE_LENGTH = 5 // Minimum length after trim to avoid junk slices
+
+// ============ INDEX-BASED EXTRACTION FEATURE FLAG ============
+// When true: GPT returns character indices, content derived from slice (100% verbatim match)
+// When false: GPT returns content text, findClauseOffset() used for offset calculation (legacy)
+const USE_INDEX_BASED_EXTRACTION = Deno.env.get("USE_INDEX_BASED_EXTRACTION") !== "false" // Default: true
 
 // Model context limits (tokens)
 const MODEL_CONTEXT_LIMITS: Record<AllowedModel, number> = {
@@ -181,6 +187,149 @@ function findClauseOffset(
   return null
 }
 
+// ============ INDEX-BASED VALIDATION ============
+
+interface IndexValidationTelemetry {
+  clauses_returned: number
+  clauses_valid: number
+  dropped_for_bounds: number
+  dropped_for_overlap: number
+  dropped_for_empty: number
+  dropped_for_length: number
+  final_coverage_rate: number
+}
+
+interface ValidatedIndexedClause {
+  start_index: number
+  end_index: number
+  content: string  // Derived from slice
+  clause_type: string
+  summary: string
+  confidence: number
+  rag_status: "green" | "amber" | "red"
+  section_title?: string
+}
+
+/**
+ * Validates and dedupes indexed clauses from GPT.
+ * Enforces: bounds, min/max length, non-empty slice, non-overlapping ranges.
+ * Returns validated clauses with derived content + telemetry.
+ */
+function validateClauseIndices(
+  rawClauses: RawIndexedClause[],
+  fullText: string,
+  chunkStart: number = 0  // For chunked extraction, add this to convert local -> global
+): { valid: ValidatedIndexedClause[]; telemetry: IndexValidationTelemetry } {
+  const textLength = fullText.length
+  const telemetry: IndexValidationTelemetry = {
+    clauses_returned: rawClauses.length,
+    clauses_valid: 0,
+    dropped_for_bounds: 0,
+    dropped_for_overlap: 0,
+    dropped_for_empty: 0,
+    dropped_for_length: 0,
+    final_coverage_rate: 0
+  }
+
+  if (rawClauses.length === 0) {
+    return { valid: [], telemetry }
+  }
+
+  // Step 1: Filter by bounds and length, derive content
+  const withContent: Array<ValidatedIndexedClause & { _globalStart: number; _globalEnd: number }> = []
+
+  for (const raw of rawClauses) {
+    // Convert local indices to global (for chunked extraction)
+    const globalStart = chunkStart + raw.start_index
+    const globalEnd = chunkStart + raw.end_index
+
+    // Bounds check
+    if (globalStart < 0 || globalEnd > textLength || globalStart >= globalEnd) {
+      telemetry.dropped_for_bounds++
+      continue
+    }
+
+    // Length check
+    const length = globalEnd - globalStart
+    if (length <= MIN_CLAUSE_LENGTH) {
+      telemetry.dropped_for_length++
+      continue
+    }
+    if (length > MAX_CLAUSE_LENGTH) {
+      telemetry.dropped_for_length++
+      continue
+    }
+
+    // Derive content from slice
+    const content = fullText.slice(globalStart, globalEnd)
+
+    // Non-empty check (after trim)
+    if (!content.trim() || content.trim().length <= MIN_CLAUSE_LENGTH) {
+      telemetry.dropped_for_empty++
+      continue
+    }
+
+    withContent.push({
+      start_index: globalStart,
+      end_index: globalEnd,
+      content,
+      clause_type: raw.clause_type,
+      summary: raw.summary,
+      confidence: raw.confidence,
+      rag_status: raw.rag_status,
+      section_title: raw.section_title,
+      _globalStart: globalStart,
+      _globalEnd: globalEnd
+    })
+  }
+
+  // Step 2: Sort by [start, end] and remove overlaps (keep first, allow touching)
+  withContent.sort((a, b) => {
+    if (a._globalStart !== b._globalStart) return a._globalStart - b._globalStart
+    return a._globalEnd - b._globalEnd
+  })
+
+  const valid: ValidatedIndexedClause[] = []
+  let lastEnd = -1
+
+  for (const clause of withContent) {
+    // Allow touching (start == lastEnd), reject true overlaps (start < lastEnd)
+    if (clause._globalStart < lastEnd) {
+      telemetry.dropped_for_overlap++
+      continue
+    }
+
+    // Remove internal tracking fields
+    const { _globalStart, _globalEnd, ...cleaned } = clause
+    valid.push(cleaned)
+    lastEnd = clause._globalEnd
+  }
+
+  telemetry.clauses_valid = valid.length
+  telemetry.final_coverage_rate = rawClauses.length > 0
+    ? valid.length / rawClauses.length
+    : 0
+
+  return { valid, telemetry }
+}
+
+/**
+ * Emit index validation telemetry for monitoring.
+ */
+function emitIndexValidationTelemetry(
+  telemetry: IndexValidationTelemetry,
+  documentId: string,
+  chunkIndex?: number
+): void {
+  console.log(JSON.stringify({
+    event: "index_validation",
+    level: telemetry.final_coverage_rate < 0.8 ? "warn" : "info",
+    document_id: documentId,
+    chunk_index: chunkIndex ?? null,
+    ...telemetry
+  }))
+}
+
 function validateRagStatus(status: any): "green" | "amber" | "red" {
   const normalized = String(status || "amber").toLowerCase()
   if (normalized === "green" || normalized === "amber" || normalized === "red") {
@@ -242,34 +391,64 @@ function extractClausesArray(parsed: any): any[] {
 
 // ============ SINGLE-PASS EXTRACTION ============
 
-async function extractClausesSinglePass(
-  contractText: string,
-  apiKey: string,
-  model: AllowedModel = "gpt-5.1"
-): Promise<ExtractedClause[]> {
-  const estimatedTokens = estimateTokens(contractText)
-  console.log(`${model} extraction: ${contractText.length} chars (~${estimatedTokens} tokens) in single pass`)
+// Build system prompt based on extraction mode
+function buildSinglePassSystemPrompt(): string {
+  if (USE_INDEX_BASED_EXTRACTION) {
+    return `You are "ContractBuddy Clause Extractor" - a precision legal document parser.
 
-  // Create abort controller for timeout
-  const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), EXTRACTION_TIMEOUT_MS)
+YOUR PRIMARY OBJECTIVE: Decompose this contract into ATOMIC, SINGLE-OBLIGATION clauses by identifying their CHARACTER POSITIONS.
 
-  try {
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      signal: controller.signal,
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: model,
-        temperature: 0.2,
-        response_format: { type: "json_object" },
-        messages: [
-          {
-            role: "system",
-            content: `You are "ContractBuddy Clause Extractor" - a precision legal document parser.
+OUTPUT MUST BE JSON:
+- Return ONLY a single JSON object (no prose, no markdown).
+- The word "json" here is intentional to satisfy response_format requirements.
+
+WHAT IS AN ATOMIC CLAUSE?
+- ONE obligation, requirement, right, or definition
+- ${MIN_CLAUSE_LENGTH + 1}-${MAX_CLAUSE_LENGTH} characters (ideal: 150-300)
+- 1-2 sentences maximum
+- Can stand alone grammatically
+
+MANDATORY SPLITTING RULES:
+1. NUMBERED LISTS (1., 2., 3.): Each item = separate clause
+2. BULLETED LISTS (-, *, •): Each bullet = separate clause
+3. MULTIPLE SENTENCES: Split if expressing DIFFERENT obligations
+4. CONJUNCTIONS ("and shall", "and must"): Split at each obligation
+5. DIFFERENT DEADLINES: Each deadline = separate clause
+6. DIFFERENT ACTORS ("Influencer must", "Brand shall"): Split by actor
+
+HARD LIMIT: Maximum ${MAX_CLAUSE_LENGTH} characters per clause (end_index - start_index <= ${MAX_CLAUSE_LENGTH}). If longer, SPLIT IT.
+
+CRITICAL: Return CHARACTER INDICES (0-indexed) not text content. We will extract the exact text using your indices.
+
+OUTPUT FORMAT:
+{
+  "clauses": [
+    {
+      "start_index": <integer>,  // Character offset where clause begins (0-indexed, inclusive)
+      "end_index": <integer>,    // Character offset where clause ends (exclusive, like slice())
+      "clause_type": "snake_case_type",
+      "summary": "1 sentence description",
+      "confidence": 0.0-1.0,
+      "rag_status": "green" | "amber" | "red"
+    }
+  ]
+}
+
+INDEX RULES:
+- start_index: First character of the clause (0-indexed)
+- end_index: One past the last character (exclusive, like JavaScript slice)
+- end_index - start_index must be between ${MIN_CLAUSE_LENGTH + 1} and ${MAX_CLAUSE_LENGTH}
+- Indices must not overlap with other clauses (but can touch: one clause's end_index can equal next clause's start_index)
+- Count characters carefully including spaces and punctuation
+
+VALIDATION BEFORE OUTPUT:
+- Every clause length (end_index - start_index) is ${MIN_CLAUSE_LENGTH + 1}-${MAX_CLAUSE_LENGTH}? If not, SPLIT IT
+- No overlapping ranges? If overlapping, FIX IT
+- Expected: 80-150 clauses for a typical contract`
+  }
+
+  // Legacy content-based prompt
+  return `You are "ContractBuddy Clause Extractor" - a precision legal document parser.
 
 YOUR PRIMARY OBJECTIVE: Decompose this contract into ATOMIC, SINGLE-OBLIGATION clauses.
 
@@ -318,13 +497,57 @@ VALIDATION BEFORE OUTPUT:
 - Every clause has ≤ 2 sentences? If not, SPLIT IT
 - Every list item is a separate clause? If not, FIX IT
 - Expected: 80-150 clauses for a typical contract`
+}
+
+async function extractClausesSinglePass(
+  contractText: string,
+  apiKey: string,
+  model: AllowedModel = "gpt-5.1",
+  documentId?: string  // For telemetry
+): Promise<ExtractedClause[]> {
+  // In index mode, text is already sanitized by extractWithTimeoutFallback
+  // In legacy mode, apply traditional sanitization (nulls + trim)
+  const sanitizedText = USE_INDEX_BASED_EXTRACTION
+    ? contractText  // Already sanitized, don't modify
+    : contractText.replace(/\u0000/g, "").trim()
+
+  const estimatedTokens = estimateTokens(sanitizedText)
+  console.log(`${model} extraction: ${sanitizedText.length} chars (~${estimatedTokens} tokens) in single pass (index_mode=${USE_INDEX_BASED_EXTRACTION})`)
+
+  // Create abort controller for timeout
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), EXTRACTION_TIMEOUT_MS)
+
+  try {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      signal: controller.signal,
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: model,
+        temperature: 0.2,
+        response_format: { type: "json_object" },
+        messages: [
+          {
+            role: "system",
+            content: buildSinglePassSystemPrompt()
           },
           {
             role: "user",
-            content: `Extract all clauses from this contract. Remember: SPLIT aggressively. Each obligation = one clause.
+            content: USE_INDEX_BASED_EXTRACTION
+              ? `Extract all clauses from this contract by identifying their CHARACTER POSITIONS. Remember: SPLIT aggressively. Each obligation = one clause with its start_index and end_index.
+
+The text below is exactly ${sanitizedText.length} characters long (0-indexed from 0 to ${sanitizedText.length - 1}).
 
 CONTRACT TEXT:
-${contractText}`
+${sanitizedText}`
+              : `Extract all clauses from this contract. Remember: SPLIT aggressively. Each obligation = one clause.
+
+CONTRACT TEXT:
+${sanitizedText}`
           }
         ]
       })
@@ -340,6 +563,42 @@ ${contractText}`
     // Robust JSON parsing - handle SDK structured outputs and edge cases
     const clausesArray = parseClausesResponse(data)
 
+    if (USE_INDEX_BASED_EXTRACTION) {
+      // Index-based parsing: validate indices and derive content from slice
+      const rawClauses: RawIndexedClause[] = clausesArray.map((clause: any) => ({
+        start_index: Number(clause.start_index || 0),
+        end_index: Number(clause.end_index || 0),
+        clause_type: String(clause.clause_type || "general_terms").replace(/\s+/g, "_"),
+        summary: String(clause.summary || ""),
+        confidence: Number(clause.confidence || 0.8),
+        rag_status: validateRagStatus(clause.rag_status),
+        section_title: clause.section_title || null
+      }))
+
+      // Validate and derive content
+      const { valid, telemetry } = validateClauseIndices(rawClauses, sanitizedText, 0)
+
+      // Emit telemetry
+      if (documentId) {
+        emitIndexValidationTelemetry(telemetry, documentId)
+      }
+
+      // Convert to ExtractedClause format
+      return valid.map((clause) => ({
+        content: clause.content,
+        clause_type: clause.clause_type,
+        summary: clause.summary,
+        confidence: clause.confidence,
+        rag_status: clause.rag_status,
+        section_title: clause.section_title || null,
+        chunk_index: 0,
+        start_index: clause.start_index,
+        end_index: clause.end_index,
+        parsing_quality: clause.confidence
+      }))
+    }
+
+    // Legacy content-based parsing
     return clausesArray.map((clause: any, index: number) => ({
       content: String(clause.content || ""),
       clause_type: String(clause.clause_type || "general_terms").replace(/\s+/g, "_"),
@@ -366,26 +625,40 @@ ${contractText}`
 
 // ============ EXTRACTION WRAPPERS ============
 
+// Canonical sanitization for index mode - MUST be used consistently
+// for both GPT input and extracted_text persistence
+function sanitizeForIndexMode(text: string): string {
+  // Only strip nulls, do NOT trim - preserves character positions
+  return text.replace(/\u0000/g, "")
+}
+
 // Wrapper with timeout fallback to chunked extraction
+// Returns sanitizedText so persistence can use the same string as indices
 async function extractWithTimeoutFallback(
   contractText: string,
   apiKey: string,
-  pathDecision: ExtractionPathDecision
-): Promise<{ clauses: ExtractedClause[]; usedFallback: boolean }> {
+  pathDecision: ExtractionPathDecision,
+  documentId?: string  // For telemetry in index mode
+): Promise<{ clauses: ExtractedClause[]; usedFallback: boolean; sanitizedText: string }> {
+  // CRITICAL: Sanitize once at the top, use everywhere
+  const sanitizedText = USE_INDEX_BASED_EXTRACTION
+    ? sanitizeForIndexMode(contractText)
+    : contractText
+
   if (pathDecision.path === "chunked") {
     // Already chunked path - use existing flow
-    const clauses = await runChunkedExtraction(contractText, apiKey, pathDecision.model)
-    return { clauses, usedFallback: false }
+    const clauses = await runChunkedExtraction(sanitizedText, apiKey, pathDecision.model, documentId)
+    return { clauses, usedFallback: false, sanitizedText }
   }
 
   try {
-    const clauses = await extractClausesSinglePass(contractText, apiKey, pathDecision.model)
-    return { clauses, usedFallback: false }
+    const clauses = await extractClausesSinglePass(sanitizedText, apiKey, pathDecision.model, documentId)
+    return { clauses, usedFallback: false, sanitizedText }
   } catch (err: any) {
     if (err.message.includes("timed out")) {
       console.warn(`Single-pass timed out, falling back to chunked extraction`)
-      const clauses = await runChunkedExtraction(contractText, apiKey, "gpt-4o")
-      return { clauses, usedFallback: true }
+      const clauses = await runChunkedExtraction(sanitizedText, apiKey, "gpt-4o", documentId)
+      return { clauses, usedFallback: true, sanitizedText }
     }
     throw err
   }
@@ -396,27 +669,40 @@ async function extractWithTimeoutFallback(
 async function runChunkedExtraction(
   contractText: string,
   apiKey: string,
-  model: AllowedModel
+  model: AllowedModel,
+  documentId?: string  // For telemetry
 ): Promise<ExtractedClause[]> {
-  const textChunks = chunkContractText(contractText)
+  const { chunks: textChunks, sanitizedText } = chunkContractText(contractText)
   let extractedClauses: ExtractedClause[] = []
 
   for (let i = 0; i < textChunks.length; i++) {
     const chunkPayload = textChunks[i]
     // IMPORTANT: Pass model to allow chunked 5.1 if needed
+    // Pass chunkStart and sanitizedText for index-based extraction
     const chunkClauses = await callOpenAIForChunk({
       apiKey,
       chunkText: chunkPayload.text,
       chunkIndex: i,
       totalChunks: textChunks.length,
       sections: chunkPayload.sections,
-      model // Pass model param
+      model,
+      chunkStart: chunkPayload.start,
+      sanitizedText,
+      documentId
     })
-    const coveredClauses = ensureSectionCoverage(chunkPayload.sections, chunkClauses, i)
-    extractedClauses.push(...coveredClauses)
+
+    // In index mode, skip ensureSectionCoverage (no header padding)
+    if (USE_INDEX_BASED_EXTRACTION) {
+      extractedClauses.push(...chunkClauses)
+    } else {
+      const coveredClauses = ensureSectionCoverage(chunkPayload.sections, chunkClauses, i)
+      extractedClauses.push(...coveredClauses)
+    }
   }
 
-  return dedupeClauses(extractedClauses)
+  return USE_INDEX_BASED_EXTRACTION
+    ? dedupeClausesByRange(extractedClauses)
+    : dedupeClauses(extractedClauses)
 }
 
 type ExtractedClause = {
@@ -430,6 +716,20 @@ type ExtractedClause = {
   parsing_quality?: number
   section_title?: string
   chunk_index?: number
+  // Index-based extraction fields (when USE_INDEX_BASED_EXTRACTION=true)
+  start_index?: number  // Global character offset where clause begins (0-indexed)
+  end_index?: number    // Global character offset where clause ends (exclusive)
+}
+
+// Raw clause from GPT in index-based mode (before content derivation)
+type RawIndexedClause = {
+  start_index: number
+  end_index: number
+  clause_type: string
+  summary: string
+  confidence: number
+  rag_status: "green" | "amber" | "red"
+  section_title?: string
 }
 
 type SectionInfo = {
@@ -440,6 +740,7 @@ type SectionInfo = {
 type ChunkPayload = {
   text: string
   sections: SectionInfo[]
+  start: number  // Global character offset where this chunk begins (for index-based extraction)
 }
 
 function normalizeSectionTitle(title: string | undefined | null) {
@@ -745,20 +1046,36 @@ function ensureSectionCoverage(
 /**
  * Split the contract text into overlapping character chunks so GPT does not
  * attempt to summarize a 50k+ character payload in one go.
+ *
+ * IMPORTANT (String Identity Guardrail): In index mode, the text passed here
+ * should already be sanitized by sanitizeForIndexMode() at the wrapper level.
+ * This function does NOT do additional sanitization to preserve index alignment.
+ *
+ * Returns: { chunks, sanitizedText } where sanitizedText is the canonical
+ * string for all index-based slicing operations.
  */
-function chunkContractText(text: string): ChunkPayload[] {
-  const sanitized = text.replace(/\u0000/g, "").trim()
+function chunkContractText(text: string): { chunks: ChunkPayload[]; sanitizedText: string } {
+  // In index mode, text is already sanitized by extractWithTimeoutFallback
+  // In legacy mode, apply traditional sanitization (nulls + trim)
+  const sanitized = USE_INDEX_BASED_EXTRACTION
+    ? text  // Already sanitized, don't modify
+    : text.replace(/\u0000/g, "").trim()
+
   if (sanitized.length === 0) {
-    return []
+    return { chunks: [], sanitizedText: sanitized }
   }
 
   if (sanitized.length <= OPENAI_CHUNK_SIZE) {
-    return [
-      {
-        text: sanitized,
-        sections: detectSections(sanitized),
-      },
-    ]
+    return {
+      chunks: [
+        {
+          text: sanitized,
+          sections: detectSections(sanitized),
+          start: 0,  // Single chunk starts at position 0
+        },
+      ],
+      sanitizedText: sanitized
+    }
   }
 
   const chunks: ChunkPayload[] = []
@@ -770,12 +1087,13 @@ function chunkContractText(text: string): ChunkPayload[] {
     chunks.push({
       text: chunkText,
       sections: detectSections(chunkText),
+      start,  // Global character offset where this chunk begins
     })
     if (end === sanitized.length) break
     start = end - OPENAI_CHUNK_OVERLAP
   }
 
-  return chunks
+  return { chunks, sanitizedText: sanitized }
 }
 
 /**
@@ -818,6 +1136,50 @@ function dedupeClauses(clauses: ExtractedClause[]) {
     seen.add(fingerprint)
     return true
   })
+}
+
+/**
+ * Range-based deduplication for index-based extraction.
+ * Sort by [start, end], keep first occurrence, drop overlaps.
+ * Allows touching ranges (start == prev.end), rejects true overlaps.
+ */
+function dedupeClausesByRange(clauses: ExtractedClause[]): ExtractedClause[] {
+  // Filter clauses that have valid indices
+  const withIndices = clauses.filter(c =>
+    typeof c.start_index === 'number' &&
+    typeof c.end_index === 'number'
+  )
+
+  const withoutIndices = clauses.length - withIndices.length
+  if (withoutIndices > 0) {
+    console.warn(`⚠️ Range dedupe: ${withoutIndices} clause(s) missing indices (dropped)`)
+  }
+
+  // Sort by [start, end] tuple
+  withIndices.sort((a, b) => {
+    if (a.start_index !== b.start_index) return a.start_index! - b.start_index!
+    return a.end_index! - b.end_index!
+  })
+
+  const result: ExtractedClause[] = []
+  let lastEnd = -1
+  let overlapDrops = 0
+
+  for (const clause of withIndices) {
+    // Allow touching (start == lastEnd), reject true overlaps (start < lastEnd)
+    if (clause.start_index! < lastEnd) {
+      overlapDrops++
+      continue
+    }
+    result.push(clause)
+    lastEnd = clause.end_index!
+  }
+
+  if (overlapDrops > 0) {
+    console.log(`🔄 Range dedupe: dropped ${overlapDrops} overlapping clause(s)`)
+  }
+
+  return result
 }
 
 function enforceClauseGranularity(
@@ -1300,44 +1662,32 @@ function ensureContentFromChunk(
   return filtered
 }
 
-async function callOpenAIForChunk({
-  apiKey,
-  chunkText,
-  chunkIndex,
-  totalChunks,
-  sections,
-  model = "gpt-4o",
-}: {
-  apiKey: string
-  chunkText: string
-  chunkIndex: number
-  totalChunks: number
-  sections: SectionInfo[]
-  model?: AllowedModel
-}) {
-  let attempt = 0
-  let lastError: any = null
+// Build chunked extraction prompt based on mode
+function buildChunkedSystemPrompt(): string {
+  if (USE_INDEX_BASED_EXTRACTION) {
+    return `You are the "ContractBuddy Clause Extractor", an AI paralegal specialised in commercial and influencer marketing agreements.
 
-  while (attempt < OPENAI_MAX_ATTEMPTS) {
-    attempt += 1
+Your job:
+- Read contract text.
+- Identify sections and clauses by their CHARACTER POSITIONS.
+- Output a clean, strictly valid JSON object with clause indices.
 
-    try {
-      const openaiResponse = await fetch(
-        "https://api.openai.com/v1/chat/completions",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${apiKey}`,
-          },
-          body: JSON.stringify({
-            model: model,
-            temperature: attempt === 1 ? 0.2 : 0.1,
-            response_format: { type: "json_object" },
-            messages: [
-              {
-                role: "system",
-                content: `You are the "ContractBuddy Clause Extractor", an AI paralegal specialised in commercial and influencer marketing agreements.
+Global rules:
+- You are conservative and literal: you only use information that is explicitly present in the text you are given.
+- You never hallucinate new obligations, parties, dates, or numbers.
+- You never invent section headings that are not provided.
+- You NEVER include explanations, commentary, markdown, or any text outside of the JSON object.
+- All keys MUST be in double quotes, no trailing commas, and the JSON MUST be syntactically valid.
+
+Semantics (granular clauses required):
+- A "clause" is a **single obligation/definition/right**, ideally ${MIN_CLAUSE_LENGTH + 1}–${MAX_CLAUSE_LENGTH} characters, max 3 sentences.
+- Split bullets/numbered lists into separate clauses (one per bullet/sub-item).
+- Return CHARACTER INDICES not text content. We will extract the exact text using your indices.
+
+If instructions in later messages conflict with these global rules, follow THESE global rules.`
+  }
+
+  return `You are the "ContractBuddy Clause Extractor", an AI paralegal specialised in commercial and influencer marketing agreements.
 
 Your job:
 - Read contract text.
@@ -1363,11 +1713,77 @@ Semantics (granular clauses required):
   - "amber": ambiguous, incomplete, or partially present; content may be missing from this chunk.
   - "red": clearly risky, contradictory, or appears to omit something critical for this section.
 
-If instructions in later messages conflict with these global rules, follow THESE global rules.`,
-              },
-              {
-                role: "user",
-                content: `You are processing chunk ${chunkIndex + 1} of ${totalChunks} for a contract document.
+If instructions in later messages conflict with these global rules, follow THESE global rules.`
+}
+
+function buildChunkedUserPrompt(
+  chunkText: string,
+  chunkIndex: number,
+  totalChunks: number,
+  sections: SectionInfo[]
+): string {
+  if (USE_INDEX_BASED_EXTRACTION) {
+    return `You are processing chunk ${chunkIndex + 1} of ${totalChunks} for a contract document.
+You MUST only use text from this chunk.
+
+Section headings expected for this chunk (from document formatting):
+${buildSectionOutline(sections)}
+
+---
+
+Your task:
+Identify clauses in this chunk by their CHARACTER POSITIONS. Return a JSON object with a "clauses" array.
+
+### 1. Output format (hard requirement)
+
+Return ONLY a single JSON object:
+
+{
+  "clauses": [
+    {
+      "start_index": <integer>,  // Character offset where clause begins (0-indexed within THIS chunk)
+      "end_index": <integer>,    // Character offset where clause ends (exclusive, like slice())
+      "clause_type": "snake_case_type",
+      "summary": "1-3 sentence description",
+      "confidence": 0.0-1.0,
+      "rag_status": "green" | "amber" | "red"
+    }
+  ]
+}
+
+No other fields. No extra top-level keys. No comments. No markdown.
+
+### 2. Index rules
+
+- start_index and end_index are 0-indexed positions WITHIN THIS CHUNK TEXT
+- end_index - start_index must be between ${MIN_CLAUSE_LENGTH + 1} and ${MAX_CLAUSE_LENGTH}
+- Indices must not overlap (but can touch: one clause's end_index can equal next clause's start_index)
+- Count characters carefully including spaces and punctuation
+
+### 3. Field semantics
+
+- clause_type (snake_case): e.g. "parties", "scope_of_work", "fees_and_payment", "term_and_termination", "usage_rights", "confidentiality", "miscellaneous".
+- summary: 1–3 sentences, neutral and factual.
+- confidence: 0.8–1.0 (clear), 0.5–0.79 (some ambiguity), 0.0–0.49 (incomplete/ambiguous/truncated).
+- rag_status: "green", "amber", or "red" based only on this chunk.
+
+### 4. Validation checklist
+
+Before returning the JSON, ensure:
+- Top level is { "clauses": [ ... ] }.
+- Every clause length (end_index - start_index) is ${MIN_CLAUSE_LENGTH + 1}-${MAX_CLAUSE_LENGTH}
+- No overlapping ranges
+- JSON is syntactically valid (no trailing commas/comments).
+
+---
+
+Chunk text (exactly ${chunkText.length} characters, 0-indexed from 0 to ${chunkText.length - 1}):
+
+${chunkText}`
+  }
+
+  // Legacy content-based prompt
+  return `You are processing chunk ${chunkIndex + 1} of ${totalChunks} for a contract document.
 You MUST only use text from this chunk.
 
 Section headings expected for this chunk (from document formatting):
@@ -1452,7 +1868,57 @@ Before returning the JSON, ensure:
 
 Chunk text (only source of truth):
 
-${chunkText}`,
+${chunkText}`
+}
+
+async function callOpenAIForChunk({
+  apiKey,
+  chunkText,
+  chunkIndex,
+  totalChunks,
+  sections,
+  model = "gpt-4o",
+  chunkStart = 0,
+  sanitizedText = "",
+  documentId
+}: {
+  apiKey: string
+  chunkText: string
+  chunkIndex: number
+  totalChunks: number
+  sections: SectionInfo[]
+  model?: AllowedModel
+  chunkStart?: number       // Global offset where this chunk begins (for index mode)
+  sanitizedText?: string    // Full sanitized text (for index mode slicing)
+  documentId?: string       // For telemetry
+}) {
+  let attempt = 0
+  let lastError: any = null
+
+  while (attempt < OPENAI_MAX_ATTEMPTS) {
+    attempt += 1
+
+    try {
+      const openaiResponse = await fetch(
+        "https://api.openai.com/v1/chat/completions",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify({
+            model: model,
+            temperature: attempt === 1 ? 0.2 : 0.1,
+            response_format: { type: "json_object" },
+            messages: [
+              {
+                role: "system",
+                content: buildChunkedSystemPrompt()
+              },
+              {
+                role: "user",
+                content: buildChunkedUserPrompt(chunkText, chunkIndex, totalChunks, sections)
               },
             ],
           }),
@@ -1482,26 +1948,70 @@ ${chunkText}`,
             ? [parsed]
             : []
 
-      let normalizedClauses: ExtractedClause[] = clausesArray.map((clause: any) => ({
-        content: String(clause.content || clause.text || ""),
-        clause_type: String(
-          clause.clause_type || clause.type || "unknown"
-        ).replace(/\s+/g, "_"),
-        summary: String(clause.summary || ""),
-        confidence: Number(clause.confidence || 0.7),
-        rag_status: String(clause.rag_status || "amber").toLowerCase() as
-          | "green"
-          | "amber"
-          | "red",
-        start_page: clause.start_page || null,
-        end_page: clause.end_page || null,
-        parsing_quality: Number(clause.parsing_quality || clause.confidence || 0.7),
-        section_title: clause.section_title || clause.heading || null,
-        chunk_index: chunkIndex,
-      }))
+      let normalizedClauses: ExtractedClause[]
 
-      normalizedClauses = enforceClauseGranularity(normalizedClauses, chunkIndex)
-      normalizedClauses = ensureContentFromChunk(normalizedClauses, chunkText, chunkIndex)
+      if (USE_INDEX_BASED_EXTRACTION) {
+        // Index-based parsing: validate indices and derive content from slice
+        // GPT returns local indices (within this chunk), we convert to global indices
+        const rawClauses: RawIndexedClause[] = clausesArray.map((clause: any) => ({
+          start_index: Number(clause.start_index || 0),
+          end_index: Number(clause.end_index || 0),
+          clause_type: String(clause.clause_type || "general_terms").replace(/\s+/g, "_"),
+          summary: String(clause.summary || ""),
+          confidence: Number(clause.confidence || 0.8),
+          rag_status: validateRagStatus(clause.rag_status),
+          section_title: clause.section_title || null
+        }))
+
+        // Validate using the FULL sanitized text, with chunkStart offset for global coordinates
+        // CRITICAL: We slice from sanitizedText (the full document), not chunkText
+        const { valid, telemetry } = validateClauseIndices(rawClauses, sanitizedText, chunkStart)
+
+        // Emit telemetry
+        if (documentId) {
+          emitIndexValidationTelemetry(telemetry, documentId, chunkIndex)
+        }
+
+        // Convert to ExtractedClause format with global indices
+        normalizedClauses = valid.map((clause) => ({
+          content: clause.content,
+          clause_type: clause.clause_type,
+          summary: clause.summary,
+          confidence: clause.confidence,
+          rag_status: clause.rag_status,
+          section_title: clause.section_title || null,
+          chunk_index: chunkIndex,
+          start_index: clause.start_index,
+          end_index: clause.end_index,
+          parsing_quality: clause.confidence
+        }))
+
+        // In index mode, skip enforceClauseGranularity and ensureContentFromChunk
+        // (splitting is done in the prompt, content is derived from slice)
+      } else {
+        // Legacy content-based parsing
+        normalizedClauses = clausesArray.map((clause: any) => ({
+          content: String(clause.content || clause.text || ""),
+          clause_type: String(
+            clause.clause_type || clause.type || "unknown"
+          ).replace(/\s+/g, "_"),
+          summary: String(clause.summary || ""),
+          confidence: Number(clause.confidence || 0.7),
+          rag_status: String(clause.rag_status || "amber").toLowerCase() as
+            | "green"
+            | "amber"
+            | "red",
+          start_page: clause.start_page || null,
+          end_page: clause.end_page || null,
+          parsing_quality: Number(clause.parsing_quality || clause.confidence || 0.7),
+          section_title: clause.section_title || clause.heading || null,
+          chunk_index: chunkIndex,
+        }))
+
+        // Legacy post-processing
+        normalizedClauses = enforceClauseGranularity(normalizedClauses, chunkIndex)
+        normalizedClauses = ensureContentFromChunk(normalizedClauses, chunkText, chunkIndex)
+      }
 
       if (
         normalizedClauses.length < OPENAI_MIN_CLAUSES_PER_CHUNK &&
@@ -1523,7 +2033,7 @@ ${chunkText}`,
       console.log(
         `📊 Chunk ${chunkIndex + 1}/${totalChunks}: clauses=${normalizedClauses.length}, avgLen=${Math.round(
           avgLength
-        )}, overLimit=${overLimit}`
+        )}, overLimit=${overLimit} (index_mode=${USE_INDEX_BASED_EXTRACTION})`
       )
 
       if (normalizedClauses.length === 0) {
@@ -1866,24 +2376,32 @@ Deno.serve(async (req) => {
       const startTime = Date.now()
 
       // Use wrapper that handles timeouts and falls back to chunked if needed
-      const { clauses: rawClauses, usedFallback } = await extractWithTimeoutFallback(
+      // Returns sanitizedText for index mode persistence (ensures indices align with stored text)
+      const { clauses: rawClauses, usedFallback, sanitizedText } = await extractWithTimeoutFallback(
         extractedText,
         openaiApiKey,
-        pathDecision
+        pathDecision,
+        document_id  // For index validation telemetry
       )
+
+      // CRITICAL: Use sanitizedText for all downstream operations in index mode
+      // This ensures indices computed on sanitizedText align with persisted extracted_text
+      const textForPersistence = USE_INDEX_BASED_EXTRACTION ? sanitizedText : extractedText
       const extractionTime = Date.now() - startTime
 
       if (usedFallback) {
         console.warn(`Extraction used timeout fallback to chunked path`)
       }
 
-      // Deduplication
+      // Deduplication - use range-based for index mode, content-based for legacy
       const preDedupCount = rawClauses.length
-      extractedClauses = dedupeClauses(rawClauses)
+      extractedClauses = USE_INDEX_BASED_EXTRACTION
+        ? dedupeClausesByRange(rawClauses)
+        : dedupeClauses(rawClauses)
 
       if (extractedClauses.length !== preDedupCount) {
         console.log(
-          `🧹 Dedupe removed ${preDedupCount - extractedClauses.length} overlapping clause(s)`
+          `🧹 Dedupe removed ${preDedupCount - extractedClauses.length} overlapping clause(s) [index_mode=${USE_INDEX_BASED_EXTRACTION}]`
         )
       }
 
@@ -1892,11 +2410,14 @@ Deno.serve(async (req) => {
       const preSplitMegaCount = preSplitMetrics.megaClauseCount
 
       // Force-split any remaining mega-clauses (safety net)
-      if (preSplitMegaCount > 0) {
+      // In index mode, skip force-split to preserve verbatim indices
+      if (preSplitMegaCount > 0 && !USE_INDEX_BASED_EXTRACTION) {
         console.log(`Force-splitting ${preSplitMegaCount} mega-clauses...`)
         extractedClauses = forceGranularitySmart(extractedClauses)
         const postSplitMetrics = computeExtractionMetrics(extractedClauses)
         console.log(`Post-split: ${postSplitMetrics.clauseCount} clauses, avg ${postSplitMetrics.avgLength} chars`)
+      } else if (preSplitMegaCount > 0 && USE_INDEX_BASED_EXTRACTION) {
+        console.log(`⚠️ ${preSplitMegaCount} mega-clauses detected but skipping force-split in index mode`)
       }
 
       // Compute final metrics AFTER force-split
@@ -2051,43 +2572,88 @@ Deno.serve(async (req) => {
 
     // Checkpoint D: Persistence
     console.log("Checkpoint D: Persisting clauses to database...")
-    console.log(`Inserting ${extractedClauses.length} clauses into clause_boundaries`)
+    console.log(`Inserting ${extractedClauses.length} clauses into clause_boundaries (index_mode=${USE_INDEX_BASED_EXTRACTION})`)
 
     try {
-      // Calculate character offsets using monotonic search
-      let lastEnd = 0
       let offsetHits = 0
       let offsetMisses = 0
-      const clauseRecords = extractedClauses.map((clause) => {
-        const offset = findClauseOffset(extractedText, clause.content, lastEnd)
+      let clauseRecords: Array<{
+        document_id: string
+        tenant_id: string
+        content: string
+        clause_type: string
+        confidence: number
+        start_page?: number | null
+        end_page?: number | null
+        parsing_quality: number
+        section_title: string | null
+        start_char: number | null
+        end_char: number | null
+        parsing_issues: Array<{ issue: string; score?: number }>
+      }>
 
-        if (offset) {
-          lastEnd = offset.end // Advance search position for next clause
-          offsetHits++
-        } else {
-          // SAFETY: Advance lastEnd even on miss to prevent duplicate matching
-          // Use clause content length as minimum advancement
-          lastEnd = Math.min(lastEnd + clause.content.length, extractedText.length)
-          offsetMisses++
-        }
+      if (USE_INDEX_BASED_EXTRACTION) {
+        // Index-based: clauses already have start_index/end_index from validation
+        // Content was already derived from slice, so 100% match guaranteed
+        clauseRecords = extractedClauses.map((clause) => {
+          const hasIndices = typeof clause.start_index === 'number' && typeof clause.end_index === 'number'
+          if (hasIndices) {
+            offsetHits++
+          } else {
+            offsetMisses++
+          }
 
-        return {
-          document_id,
-          tenant_id,
-          content: clause.content,
-          clause_type: clause.clause_type,
-          confidence: clause.confidence,
-          start_page: clause.start_page,
-          end_page: clause.end_page,
-          parsing_quality: clause.parsing_quality || clause.confidence,
-          section_title: clause.section_title || null,
-          start_char: offset?.start ?? null,
-          end_char: offset?.end ?? null,
-          parsing_issues: clause.confidence < 0.7
-            ? [{ issue: "low_confidence", score: clause.confidence }]
-            : [],
-        }
-      })
+          return {
+            document_id,
+            tenant_id,
+            content: clause.content,
+            clause_type: clause.clause_type,
+            confidence: clause.confidence,
+            start_page: clause.start_page,
+            end_page: clause.end_page,
+            parsing_quality: clause.parsing_quality || clause.confidence,
+            section_title: clause.section_title || null,
+            start_char: clause.start_index ?? null,  // Use index directly
+            end_char: clause.end_index ?? null,      // Use index directly
+            parsing_issues: clause.confidence < 0.7
+              ? [{ issue: "low_confidence", score: clause.confidence }]
+              : [],
+          }
+        })
+      } else {
+        // Legacy: Calculate character offsets using monotonic search (findClauseOffset)
+        let lastEnd = 0
+        clauseRecords = extractedClauses.map((clause) => {
+          const offset = findClauseOffset(extractedText, clause.content, lastEnd)
+
+          if (offset) {
+            lastEnd = offset.end // Advance search position for next clause
+            offsetHits++
+          } else {
+            // SAFETY: Advance lastEnd even on miss to prevent duplicate matching
+            // Use clause content length as minimum advancement
+            lastEnd = Math.min(lastEnd + clause.content.length, extractedText.length)
+            offsetMisses++
+          }
+
+          return {
+            document_id,
+            tenant_id,
+            content: clause.content,
+            clause_type: clause.clause_type,
+            confidence: clause.confidence,
+            start_page: clause.start_page,
+            end_page: clause.end_page,
+            parsing_quality: clause.parsing_quality || clause.confidence,
+            section_title: clause.section_title || null,
+            start_char: offset?.start ?? null,
+            end_char: offset?.end ?? null,
+            parsing_issues: clause.confidence < 0.7
+              ? [{ issue: "low_confidence", score: clause.confidence }]
+              : [],
+          }
+        })
+      }
 
       // Insert clauses into clause_boundaries
       const { data: insertedClauses, error: insertError } = await supabase
@@ -2102,7 +2668,9 @@ Deno.serve(async (req) => {
       console.log(`✅ Inserted ${insertedClauses?.length || 0} clauses`)
 
       // Log offset calculation stats (no raw text for security)
-      console.log(`📍 Offset mapping: ${offsetHits} hits, ${offsetMisses} misses (${((offsetHits / (offsetHits + offsetMisses)) * 100).toFixed(1)}% coverage)`)
+      const totalClauses = offsetHits + offsetMisses
+      const coveragePct = totalClauses > 0 ? ((offsetHits / totalClauses) * 100).toFixed(1) : '0'
+      console.log(`📍 Offset mapping: ${offsetHits} hits, ${offsetMisses} misses (${coveragePct}% coverage) [index_mode=${USE_INDEX_BASED_EXTRACTION}]`)
 
       // Identify low-confidence clauses for admin review queue
       const lowConfidenceClauses = extractedClauses.filter(
@@ -2154,11 +2722,12 @@ Deno.serve(async (req) => {
       }
 
       // Update document status to clauses_extracted and save extracted text
+      // CRITICAL: In index mode, persist sanitizedText (same as used for indices)
       const { error: statusUpdateError } = await supabase
         .from("document_repository")
         .update({
           processing_status: "clauses_extracted",
-          extracted_text: extractedText, // Store raw extracted text for full document view
+          extracted_text: textForPersistence, // In index mode: sanitized; in legacy: original
           error_message: null, // Clear any previous errors
         })
         .eq("id", document_id)
