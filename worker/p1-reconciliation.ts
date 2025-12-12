@@ -6,6 +6,7 @@
 import { createClient } from '@supabase/supabase-js'
 
 // ============ CONFIGURATION ============
+const P1_MODEL = process.env.P1_MODEL || "gpt-5.1"  // Higher-accuracy model for comparisons
 const MAX_RETRIES = 3
 const BACKOFF_MULTIPLIER = 2
 const MAX_BACKOFF_MS = 30000
@@ -41,6 +42,8 @@ interface PreAgreedTerm {
   expected_value: string
   is_mandatory: boolean
   related_clause_types: string[] | null
+  normalized_term_category?: string
+  normalized_clause_type?: string
 }
 
 interface ClauseBoundary {
@@ -91,6 +94,15 @@ interface BatchResult {
   confidence: number
 }
 
+interface NormalizedTerm {
+  id: string
+  term_category?: string
+  clause_type_guess?: string
+  description?: string
+  expected_value?: string
+  is_mandatory?: boolean
+}
+
 interface ClauseCandidate {
   clause: ClauseBoundary
   matchResult: ClauseMatchResult
@@ -135,7 +147,7 @@ const TERM_TO_CLAUSE_MAP: Record<string, { primary: string[], fallback: string[]
 // Legacy keyword matching for unmapped term categories
 function keywordMatchClause(term: PreAgreedTerm, clause: ClauseBoundary): boolean {
   const normalizedClauseType = clause.clause_type.replace(/_/g, " ").toLowerCase()
-  const termCategory = term.term_category.toLowerCase()
+  const termCategory = (term.normalized_term_category || term.term_category).toLowerCase()
   const termDescription = term.term_description.toLowerCase()
 
   const keywordMap: Record<string, string[]> = {
@@ -157,13 +169,101 @@ function keywordMatchClause(term: PreAgreedTerm, clause: ClauseBoundary): boolea
   return false
 }
 
+// Normalize PAT terms via GPT to correct typos and map categories/clauses
+async function normalizePatTerms(
+  terms: PreAgreedTerm[],
+  openaiApiKey: string
+): Promise<PreAgreedTerm[]> {
+  if (!terms.length) return terms
+
+  const payload = terms.map((t) => ({
+    id: t.id,
+    term_category: t.term_category,
+    description: t.term_description,
+    expected_value: t.expected_value,
+    is_mandatory: t.is_mandatory,
+  }))
+
+  try {
+    const response = await callWithBackoff(
+      async () => {
+        const res = await fetch("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${openaiApiKey}`,
+          },
+            body: JSON.stringify({
+              // Use lightweight model to avoid rate limits on normalization
+              model: "gpt-4o-mini",
+            messages: [
+              {
+                role: "system",
+                content: `You are a contract term normalizer. Normalize pre-agreed terms (PATs) to reduce typos and map to known categories.
+
+Return JSON {"results":[{"id":"...","term_category":"<normalized>","clause_type_guess":"<payment_terms|exclusivity|usage_rights|approval|posting_schedule|compliance|content_standards|analytics|delivery_deadline|pre_production|usage_licensing>","description":"<cleaned description>","expected_value":"<cleaned value>","is_mandatory":true/false}]}`,
+              },
+              {
+                role: "user",
+                content: `Normalize these PATs:
+${JSON.stringify(payload, null, 0)}
+
+Use the closest known term_category; leave clause_type_guess empty if unsure; keep unknown fields as-is. Output JSON only.`,
+              },
+            ],
+            temperature: 0,
+            response_format: { type: "json_object" },
+          }),
+        })
+        if (!res.ok) {
+          const err: any = new Error(`OpenAI error ${res.status}`)
+          err.status = res.status
+          throw err
+        }
+        return res
+      },
+      "PAT normalization"
+    )
+
+    const data = await response.json()
+    const content = data.choices?.[0]?.message?.content
+    if (!content) return terms
+
+    const parsed = JSON.parse(content)
+    const normalized: NormalizedTerm[] = parsed.results || parsed || []
+    const normalizedById = new Map<string, NormalizedTerm>()
+    for (const n of normalized) {
+      if (n?.id) normalizedById.set(n.id, n)
+    }
+
+    return terms.map((t) => {
+      const n = normalizedById.get(t.id)
+      if (!n) return t
+      return {
+        ...t,
+        normalized_term_category: n.term_category || t.term_category,
+        normalized_clause_type: n.clause_type_guess,
+        term_description: n.description || t.term_description,
+        expected_value: n.expected_value || t.expected_value,
+        is_mandatory: typeof n.is_mandatory === "boolean" ? n.is_mandatory : t.is_mandatory,
+      }
+    })
+  } catch (err) {
+    console.warn("⚠️ PAT normalization failed, using raw terms:", err)
+    return terms
+  }
+}
+
 // Select top 1-3 clauses for a given PAT term using type mapping
 function selectTopClausesForTerm(
   term: PreAgreedTerm,
   clauses: ClauseBoundary[],
   matchResults: ClauseMatchResult[]
 ): ClauseCandidate[] {
-  const mapping = TERM_TO_CLAUSE_MAP[term.term_category]
+  const category = term.normalized_term_category || term.term_category
+  const mapping = TERM_TO_CLAUSE_MAP[category] || (term.normalized_clause_type
+    ? { primary: [term.normalized_clause_type], fallback: [] }
+    : undefined)
 
   // Step 1: Filter by primary clause types
   let candidates: ClauseCandidate[] = []
@@ -229,7 +329,7 @@ function buildBatchComparisons(
         matchResultId: matchResult.id,
         termId: term.id,
         clauseType: clause.clause_type,
-        termCategory: term.term_category,
+        termCategory: term.normalized_term_category || term.term_category,
         isMandatory: term.is_mandatory,
         clauseContent: clause.content.substring(0, 600), // Truncate for context window
         termDescription: term.term_description,
@@ -283,7 +383,7 @@ function isBetterResult(a: BatchResult, b: BatchResult): boolean {
 async function executeBatchComparison(
   comparisons: BatchComparison[],
   openaiApiKey: string,
-  model: string = "gpt-4o"
+  model: string = P1_MODEL
 ): Promise<Map<number, BatchResult>> {
   const results = new Map<number, BatchResult>()
 
@@ -467,6 +567,9 @@ export async function performP1Reconciliation(
 
   console.log(`   Found ${preAgreedTerms.length} pre-agreed terms`)
 
+  // Normalize PATs to reduce typos and map categories/clauses
+  const normalizedTerms = await normalizePatTerms(preAgreedTerms, openaiApiKey)
+
   // Fetch clauses
   const { data: clauses, error: clausesError } = await supabase
     .from("clause_boundaries")
@@ -488,7 +591,7 @@ export async function performP1Reconciliation(
   const { comparisons, termComparisonMap } = buildBatchComparisons(
     clauses || [],
     matchResults || [],
-    preAgreedTerms
+    normalizedTerms
   )
 
   console.log(`   Built ${comparisons.length} comparisons for ${termComparisonMap.size} PAT terms`)
@@ -498,13 +601,12 @@ export async function performP1Reconciliation(
     return { p1_comparisons_made: 0 }
   }
 
-  // Select model based on context size
+  // Use configured P1 model for higher accuracy
   const estimatedTokens = comparisons.length * 150 // ~150 tokens per comparison
-  const model = estimatedTokens > 100000 ? "gpt-4o" : "gpt-4o"
-  console.log(`   Using model: ${model} (estimated ${estimatedTokens} tokens)`)
+  console.log(`   Using model: ${P1_MODEL} (estimated ${estimatedTokens} tokens)`)
 
   // Execute batched comparison
-  const batchResults = await executeBatchComparison(comparisons, openaiApiKey, model)
+  const batchResults = await executeBatchComparison(comparisons, openaiApiKey, P1_MODEL)
 
   console.log(`   Got ${batchResults.size}/${comparisons.length} results`)
 

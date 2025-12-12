@@ -1,6 +1,6 @@
 // Edge Function: generate-embeddings
 // Phase 6: Generate embeddings for contract clauses and find library matches
-// Processes clauses from extract-clauses, generates Cohere embeddings, finds similar library clauses
+// Processes clauses from extract-clauses, generates OpenAI embeddings, finds similar library clauses
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.3"
 
@@ -18,10 +18,6 @@ interface ClauseRecord {
   tenant_id: string
 }
 
-interface CohereEmbedding {
-  embeddings: number[][]
-}
-
 interface SimilarClause {
   id: string
   clause_id: string
@@ -31,6 +27,10 @@ interface SimilarClause {
   risk_level: string
   similarity: number
   match_category: string
+}
+
+interface OpenAIEmbeddingResponse {
+  data: { embedding: number[]; index: number }[]
 }
 
 Deno.serve(async (req) => {
@@ -56,12 +56,16 @@ Deno.serve(async (req) => {
 
     supabase = createClient(supabaseUrl, supabaseServiceKey)
 
-    // Get Cohere API key
-    const cohereApiKey = Deno.env.get("COHERE_API_KEY")
-    if (!cohereApiKey) {
-      throw new Error(
-        "COHERE_API_KEY environment variable is required for embedding generation"
-      )
+    // Get OpenAI API key
+    const openaiApiKey = Deno.env.get("OPENAI_API_KEY")
+    if (!openaiApiKey) {
+      throw new Error("OPENAI_API_KEY is required for embedding generation")
+    }
+    const EMBEDDING_MODEL =
+      Deno.env.get("EMBEDDING_MODEL") || "text-embedding-3-large"
+    const EMBEDDING_DIMENSIONS = Number(Deno.env.get("EMBEDDING_DIMENSIONS") || "1024")
+    if (!Number.isFinite(EMBEDDING_DIMENSIONS) || EMBEDDING_DIMENSIONS <= 0) {
+      throw new Error("Invalid EMBEDDING_DIMENSIONS; must be a positive number")
     }
 
     // Parse request body for document_id (optional - if not provided, process all)
@@ -112,7 +116,7 @@ Deno.serve(async (req) => {
 
     console.log(`Found ${clauses.length} clauses without embeddings`)
 
-    // Step 2: Batch process with Cohere (25 clauses per batch)
+    // Step 2: Batch process with OpenAI embeddings (25 clauses per batch)
     const batchSize = 25
     let totalEmbeddingsGenerated = 0
     let totalMatchesCreated = 0
@@ -127,41 +131,46 @@ Deno.serve(async (req) => {
         `Processing batch ${batchNum}: ${batch.length} clauses (${i + 1}-${i + batch.length} of ${clauses.length})`
       )
 
-      // Extract texts for Cohere
+      // Extract texts for embeddings
       const texts = batch.map((c) => c.content.substring(0, 2000)) // Limit to 2000 chars per clause
 
       try {
-        // Step 3: Call Cohere API
-        const cohereResponse = await fetch("https://api.cohere.ai/v1/embed", {
+        // Step 3: Call OpenAI embeddings API
+        // Note: text-embedding-3-large natively produces 3072 dims, but our DB schema uses vector(1024)
+        // OpenAI supports dimension reduction via the 'dimensions' parameter (uses Matryoshka Representation Learning)
+        const embedResponse = await fetch("https://api.openai.com/v1/embeddings", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${cohereApiKey}`,
+            Authorization: `Bearer ${openaiApiKey}`,
           },
           body: JSON.stringify({
-            texts: texts,
-            model: "embed-english-v3.0",
-            input_type: "search_document",
+            model: EMBEDDING_MODEL,
+            input: texts,
+            dimensions: EMBEDDING_DIMENSIONS,
+            encoding_format: "float",
           }),
         })
 
-        if (!cohereResponse.ok) {
-          const errorText = await cohereResponse.text()
+        if (!embedResponse.ok) {
+          const errorText = await embedResponse.text()
           throw new Error(
-            `Cohere API error (${cohereResponse.status}): ${errorText}`
+            `OpenAI embeddings error (${embedResponse.status}): ${errorText}`
           )
         }
 
-        const cohereData = (await cohereResponse.json()) as CohereEmbedding
-        const embeddings = cohereData.embeddings
+        const embedData = (await embedResponse.json()) as OpenAIEmbeddingResponse
+        const embeddings = embedData.data
+          .sort((a, b) => a.index - b.index)
+          .map((d) => d.embedding)
 
         if (embeddings.length !== batch.length) {
           throw new Error(
-            `Cohere returned ${embeddings.length} embeddings but expected ${batch.length}`
+            `OpenAI returned ${embeddings.length} embeddings but expected ${batch.length}`
           )
         }
 
-        console.log(`✅ Generated ${embeddings.length} embeddings from Cohere`)
+        console.log(`✅ Generated ${embeddings.length} embeddings from OpenAI (${EMBEDDING_MODEL})`)
 
         // Step 4: Store embeddings and find matches
         for (let j = 0; j < batch.length; j++) {
@@ -186,23 +195,29 @@ Deno.serve(async (req) => {
 
           totalEmbeddingsGenerated++
 
-          // Step 5: Find similar clauses from library
+          // Step 5: Find similar clauses from library using direct SQL
+          // (avoiding RPC function overload ambiguity issues)
+          const embeddingString = `[${embeddingArray.join(',')}]`
+          // Note: Not filtering by clause_type since extracted clause types
+          // use different naming conventions than LCL (e.g., 'content_requirement' vs 'compliance')
+          // Semantic similarity will still find the best matches regardless of type naming
           const { data: matches, error: matchError } = await supabase.rpc(
-            "find_similar_clauses",
+            'find_similar_clauses_v2',
             {
-              query_embedding: embeddingArray,
-              similarity_threshold: 0.60, // Lowered from 0.75: library uses templates with placeholders while contracts have specific values
-              max_results: 10,
-              p_tenant_id: clause.tenant_id,
+              p_query_embedding: embeddingString,
+              p_similarity_threshold: 0.60,
+              p_max_results: 10,
+              p_tenant_id: null,
+              p_clause_type: null
             }
           )
 
           if (matchError) {
             console.error(
               `Error finding similar clauses for ${clause.id}:`,
-              matchError
+              matchError.message || matchError
             )
-            continue
+            // Continue without match - still create clause_match_results entry
           }
 
           // Step 6: Persist match to clause_match_results (even if no library match)
@@ -210,7 +225,7 @@ Deno.serve(async (req) => {
           let similarity_score = 0
           let ragRisk: "green" | "amber" | "red" = "amber"
           let gpt_analysis: any = {
-            embedding_source: "cohere_embed_english_v3",
+            embedding_source: EMBEDDING_MODEL,
           }
 
           if (!matches || matches.length === 0) {
@@ -218,7 +233,7 @@ Deno.serve(async (req) => {
             ragRisk = "amber" // No match means needs review
             gpt_analysis = {
               no_library_match: true,
-              embedding_source: "cohere_embed_english_v3",
+              embedding_source: EMBEDDING_MODEL,
               reason: "No similar clauses found in library above 0.60 similarity threshold"
             }
           } else {
@@ -255,7 +270,7 @@ Deno.serve(async (req) => {
                 similarity: m.similarity,
                 match_category: m.match_category,
               })),
-              embedding_source: "cohere_embed_english_v3",
+              embedding_source: EMBEDDING_MODEL,
             }
           }
 
@@ -321,7 +336,8 @@ Deno.serve(async (req) => {
           matches_created: totalMatchesCreated,
           batches_processed: embeddingStats.length,
           batch_stats: embeddingStats,
-          cohere_model: "embed-english-v3.0",
+          embedding_model: EMBEDDING_MODEL,
+          embedding_dimensions: EMBEDDING_DIMENSIONS,
         },
         execution_time_ms: executionTime,
       })

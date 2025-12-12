@@ -21,12 +21,14 @@ const ALLOWED_MODELS = ["gpt-4o", "gpt-5.1", "gpt-5.1-codex-mini"] as const
 type AllowedModel = typeof ALLOWED_MODELS[number]
 
 const MAX_CLAUSE_LENGTH = 400 // Single source of truth - used everywhere
-const MIN_CLAUSE_LENGTH = 5 // Minimum length after trim to avoid junk slices
+const MIN_CLAUSE_LENGTH = 50 // Minimum length - rejects headers like "CAMPAIGN DETAILS" (16 chars)
 
-// ============ INDEX-BASED EXTRACTION FEATURE FLAG ============
-// When true: GPT returns character indices, content derived from slice (100% verbatim match)
-// When false: GPT returns content text, findClauseOffset() used for offset calculation (legacy)
-const USE_INDEX_BASED_EXTRACTION = Deno.env.get("USE_INDEX_BASED_EXTRACTION") !== "false" // Default: true
+// ============ EXTRACTION MODE FEATURE FLAGS ============
+// LINE_BASED (recommended): GPT returns line numbers, we convert to character indices
+// INDEX_BASED (legacy): GPT returns character indices directly (prone to counting errors)
+// CONTENT_BASED (legacy): GPT returns content text, findClauseOffset() used for offset calculation
+const USE_LINE_BASED_EXTRACTION = true // LINE MODE - GPT returns line numbers, we derive indices
+const USE_INDEX_BASED_EXTRACTION = !USE_LINE_BASED_EXTRACTION // Fallback to index mode if line mode disabled
 
 // Model context limits (tokens)
 const MODEL_CONTEXT_LIMITS: Record<AllowedModel, number> = {
@@ -187,6 +189,137 @@ function findClauseOffset(
   return null
 }
 
+// ============ LINE-BASED EXTRACTION UTILITIES ============
+
+/**
+ * Line mapping for converting line numbers back to character indices.
+ * Each entry maps a line number (0-indexed) to its character range in the original text.
+ */
+interface LineMapping {
+  /** The line number (0-indexed) */
+  lineNumber: number
+  /** Start character index (inclusive) */
+  startChar: number
+  /** End character index (exclusive) */
+  endChar: number
+  /** The actual line content */
+  content: string
+}
+
+interface LineNumberedDocument {
+  /** Text with line numbers prefixed: "[0] First line\n[1] Second line\n..." */
+  numberedText: string
+  /** Map from line number to character positions */
+  lineMap: Map<number, LineMapping>
+  /** Original text (unchanged) */
+  originalText: string
+  /** Total number of lines */
+  totalLines: number
+}
+
+/**
+ * Prepares a document for line-based extraction by:
+ * 1. Splitting into lines
+ * 2. Prefixing each line with its number in brackets: [0], [1], etc.
+ * 3. Creating a map from line numbers to character positions in the original text
+ *
+ * This allows GPT to reference lines by number, and we convert back to exact character indices.
+ */
+function prepareLineNumberedDocument(text: string): LineNumberedDocument {
+  const lines = text.split('\n')
+  const lineMap = new Map<number, LineMapping>()
+
+  let numberedText = ''
+  let charPosition = 0
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    const startChar = charPosition
+    const endChar = charPosition + line.length
+
+    lineMap.set(i, {
+      lineNumber: i,
+      startChar,
+      endChar,
+      content: line
+    })
+
+    // Build numbered text for GPT
+    numberedText += `[${i}] ${line}\n`
+
+    // Move char position past this line and the newline character
+    // (except for the last line which may not have a trailing newline)
+    charPosition = endChar + (i < lines.length - 1 ? 1 : 0)
+  }
+
+  return {
+    numberedText,
+    lineMap,
+    originalText: text,
+    totalLines: lines.length
+  }
+}
+
+/**
+ * Raw clause from GPT in line-based mode (before conversion to character indices)
+ */
+interface RawLineBasedClause {
+  start_line: number
+  end_line: number
+  clause_type: string
+  summary: string
+  confidence: number
+  rag_status: "green" | "amber" | "red"
+  section_title?: string
+}
+
+/**
+ * Converts line-based clauses to index-based clauses using the line map.
+ * This gives us exact character positions without GPT having to count characters.
+ */
+function convertLinesToIndices(
+  lineClauses: RawLineBasedClause[],
+  lineDoc: LineNumberedDocument
+): RawIndexedClause[] {
+  const results: RawIndexedClause[] = []
+
+  for (const clause of lineClauses) {
+    const startLine = Math.max(0, clause.start_line)
+    const endLine = Math.min(lineDoc.totalLines - 1, clause.end_line)
+
+    // Validate line numbers
+    if (startLine > endLine || startLine < 0 || endLine >= lineDoc.totalLines) {
+      console.warn(`Invalid line range [${clause.start_line}, ${clause.end_line}] for clause: ${clause.summary?.slice(0, 50)}`)
+      continue
+    }
+
+    const startMapping = lineDoc.lineMap.get(startLine)
+    const endMapping = lineDoc.lineMap.get(endLine)
+
+    if (!startMapping || !endMapping) {
+      console.warn(`Line mapping not found for lines ${startLine}-${endLine}`)
+      continue
+    }
+
+    // start_index: beginning of start line
+    // end_index: end of end line (exclusive)
+    const startIndex = startMapping.startChar
+    const endIndex = endMapping.endChar
+
+    results.push({
+      start_index: startIndex,
+      end_index: endIndex,
+      clause_type: clause.clause_type,
+      summary: clause.summary,
+      confidence: clause.confidence,
+      rag_status: clause.rag_status,
+      section_title: clause.section_title
+    })
+  }
+
+  return results
+}
+
 // ============ INDEX-BASED VALIDATION ============
 
 interface IndexValidationTelemetry {
@@ -208,6 +341,513 @@ interface ValidatedIndexedClause {
   confidence: number
   rag_status: "green" | "amber" | "red"
   section_title?: string
+}
+
+/**
+ * Snap an index to the nearest word boundary.
+ * For start indices: snap backwards to find start of word (after whitespace/punctuation)
+ * For end indices: snap forwards to find end of word (at whitespace/punctuation)
+ */
+function snapToWordBoundary(
+  text: string,
+  index: number,
+  direction: 'start' | 'end',
+  maxAdjust: number = 15  // Max characters to adjust
+): number {
+  if (index < 0) return 0
+  if (index >= text.length) return text.length
+
+  const isWordChar = (c: string) => /[a-zA-Z0-9]/.test(c)
+
+  if (direction === 'start') {
+    // For start: if we're in the middle of a word, snap backwards to word start
+    // Check if current position is mid-word (previous char is word char)
+    if (index > 0 && isWordChar(text[index - 1]) && isWordChar(text[index])) {
+      // We're mid-word, find the start
+      let adjusted = index
+      while (adjusted > 0 && adjusted > index - maxAdjust && isWordChar(text[adjusted - 1])) {
+        adjusted--
+      }
+      return adjusted
+    }
+    return index
+  } else {
+    // For end: if we're in the middle of a word, snap forwards to word end
+    // Check if current position is mid-word (current char is word char)
+    if (index < text.length && isWordChar(text[index])) {
+      // We're mid-word, find the end
+      let adjusted = index
+      while (adjusted < text.length && adjusted < index + maxAdjust && isWordChar(text[adjusted])) {
+        adjusted++
+      }
+      return adjusted
+    }
+    return index
+  }
+}
+
+// ============ SENTENCE BOUNDARY SNAPPING ============
+// Improves clause boundaries by snapping to sentence starts/ends
+
+const SENTENCE_END_CHARS = new Set(['.', '!', '?', ':', ';'])
+const SENTENCE_START_AFTER = new Set(['.', '!', '?', ':', ';', '\n'])
+
+// List item markers: bullet points and numbered items
+const LIST_MARKER_REGEX = /\n\s*[\u2022•·*\-]\s*|\n\s*\d+[\.\)]\s*/
+
+// Telemetry for snap distance tracking
+interface SnapTelemetry {
+  total_snaps: number
+  snapped_to_sentence: number
+  snapped_to_list: number
+  snapped_to_word: number
+  no_snap_exceeded_window: number
+  second_pass_corrections: number
+  snap_distances: number[]
+}
+
+function createSnapTelemetry(): SnapTelemetry {
+  return {
+    total_snaps: 0,
+    snapped_to_sentence: 0,
+    snapped_to_list: 0,
+    snapped_to_word: 0,
+    no_snap_exceeded_window: 0,
+    second_pass_corrections: 0,
+    snap_distances: []
+  }
+}
+
+// Global telemetry instance for current extraction
+let snapTelemetry: SnapTelemetry = createSnapTelemetry()
+
+function emitSnapTelemetry(documentId: string): void {
+  const distances = snapTelemetry.snap_distances
+  const avgDistance = distances.length > 0
+    ? distances.reduce((a, b) => a + b, 0) / distances.length
+    : 0
+  const maxDistance = distances.length > 0 ? Math.max(...distances) : 0
+
+  console.log(JSON.stringify({
+    event: "snap_telemetry",
+    document_id: documentId,
+    total_snaps: snapTelemetry.total_snaps,
+    snapped_to_sentence: snapTelemetry.snapped_to_sentence,
+    snapped_to_list: snapTelemetry.snapped_to_list,
+    snapped_to_word: snapTelemetry.snapped_to_word,
+    no_snap_exceeded_window: snapTelemetry.no_snap_exceeded_window,
+    second_pass_corrections: snapTelemetry.second_pass_corrections,
+    avg_snap_distance: Math.round(avgDistance * 10) / 10,
+    max_snap_distance: maxDistance
+  }))
+
+  // Reset for next document
+  snapTelemetry = createSnapTelemetry()
+}
+
+/**
+ * Check if a line looks like a section header (should be excluded from clauses)
+ * Examples: "PAYMENT TERMS", "1. Introduction", "Campaign Details:"
+ */
+function isLikelyHeader(line: string): boolean {
+  const trimmed = line.trim()
+  if (trimmed.length < 3 || trimmed.length > 80) return false
+
+  // ALL CAPS (e.g., "PAYMENT TERMS", "CONFIDENTIALITY")
+  if (/^[A-Z][A-Z\s\d\.\-:]+$/.test(trimmed) && trimmed.length < 50) return true
+
+  // Numbered sections (e.g., "1. Payment", "II. Terms")
+  if (/^[\dIVX]+[\.\)]\s+[A-Z]/.test(trimmed)) return true
+
+  // Ends with colon only (e.g., "Payment terms:")
+  if (/^[a-zA-Z\s\d\.\-]+:\s*$/.test(trimmed) && trimmed.length < 40) return true
+
+  return false
+}
+
+/**
+ * Find the start of a list item (bullet or numbered) looking backwards
+ * Returns the position after the list marker, or -1 if not found
+ */
+function findListItemStart(text: string, index: number, maxLookback: number): number {
+  // Look backwards for list marker pattern
+  const searchStart = Math.max(0, index - maxLookback)
+  const searchText = text.slice(searchStart, index)
+
+  // Find all list markers in the search region
+  const bulletMatch = searchText.match(/\n\s*[\u2022•·*\-]\s*(?=[^\s])/g)
+  const numberedMatch = searchText.match(/\n\s*\d+[\.\)]\s*(?=[^\s])/g)
+
+  let lastBulletPos = -1
+  let lastNumberedPos = -1
+
+  if (bulletMatch) {
+    // Find position of last bullet marker
+    let searchPos = 0
+    for (const match of searchText.matchAll(/\n\s*[\u2022•·*\-]\s*/g)) {
+      lastBulletPos = searchStart + match.index! + match[0].length
+    }
+  }
+
+  if (numberedMatch) {
+    // Find position of last numbered marker
+    for (const match of searchText.matchAll(/\n\s*\d+[\.\)]\s*/g)) {
+      lastNumberedPos = searchStart + match.index! + match[0].length
+    }
+  }
+
+  // Return the closest list marker (highest position)
+  const listStart = Math.max(lastBulletPos, lastNumberedPos)
+  return listStart > 0 && index - listStart <= maxLookback ? listStart : -1
+}
+
+/**
+ * Find the start of the current/previous sentence
+ * Looks backwards for sentence-ending punctuation or newline
+ */
+function findSentenceStart(text: string, index: number, maxLookback: number = 100): number {
+  let pos = index
+
+  // First, skip any leading whitespace at current position
+  while (pos > 0 && /\s/.test(text[pos - 1])) {
+    pos--
+  }
+
+  // Look backwards for sentence boundary
+  const startPos = pos
+  while (pos > 0 && startPos - pos < maxLookback) {
+    const prevChar = text[pos - 1]
+
+    // Found sentence-ending punctuation followed by space/newline
+    if (SENTENCE_START_AFTER.has(prevChar)) {
+      // Make sure we're at the start of a new sentence (after punct + space)
+      if (pos < text.length && /[A-Z"'\(]/.test(text[pos])) {
+        return pos
+      }
+      // Keep looking if current char isn't a sentence start
+    }
+
+    // Stop at paragraph break (double newline)
+    if (prevChar === '\n' && pos > 1 && text[pos - 2] === '\n') {
+      return pos
+    }
+
+    pos--
+  }
+
+  // Didn't find sentence boundary, return original
+  return index
+}
+
+/**
+ * Find the end of the current sentence
+ * Looks forward for sentence-ending punctuation
+ */
+function findSentenceEnd(text: string, index: number, maxLookahead: number = 100): number {
+  let pos = index
+
+  while (pos < text.length && pos - index < maxLookahead) {
+    const char = text[pos]
+
+    // Found sentence end
+    if (SENTENCE_END_CHARS.has(char)) {
+      // Include the punctuation
+      return pos + 1
+    }
+
+    // Stop at paragraph break
+    if (char === '\n' && pos + 1 < text.length && text[pos + 1] === '\n') {
+      return pos
+    }
+
+    pos++
+  }
+
+  // Didn't find sentence end, return original
+  return index
+}
+
+/**
+ * Find the start of the current line
+ */
+function findLineStart(text: string, index: number): number {
+  let pos = index
+  while (pos > 0 && text[pos - 1] !== '\n') {
+    pos--
+  }
+  return pos
+}
+
+/**
+ * Find the end of the current line
+ */
+function findLineEnd(text: string, index: number): number {
+  let pos = index
+  while (pos < text.length && text[pos] !== '\n') {
+    pos++
+  }
+  return pos
+}
+
+/**
+ * Check if a position starts mid-sentence (lowercase after alphanumeric)
+ */
+function isMidSentenceStart(text: string, index: number): boolean {
+  if (index <= 0 || index >= text.length) return false
+  const currentChar = text[index]
+  const prevChar = text[index - 1]
+
+  // If current char is lowercase and previous char is alphanumeric (not punct/newline), we're mid-sentence
+  return /[a-z]/.test(currentChar) && /[a-zA-Z0-9]/.test(prevChar)
+}
+
+/**
+ * Check if position is at a valid clause end (at sentence-ending punctuation)
+ */
+function isValidClauseEnd(text: string, index: number): boolean {
+  if (index <= 0 || index > text.length) return false
+  const prevChar = text[index - 1]
+  return SENTENCE_END_CHARS.has(prevChar) || prevChar === '\n'
+}
+
+/**
+ * Check if a period is likely a sentence-ending period (not abbreviation/email/url)
+ */
+function isSentenceEndPeriod(text: string, periodIndex: number): boolean {
+  // Period not at text boundary
+  if (periodIndex <= 0 || periodIndex >= text.length - 1) return true
+
+  const charAfter = text[periodIndex + 1]
+  const charBefore = text[periodIndex - 1]
+
+  // If followed by lowercase letter without space, it's likely not sentence end
+  // e.g., "adanola.com" or "e.g."
+  if (/[a-z]/.test(charAfter)) return false
+
+  // If preceded by single uppercase letter, likely abbreviation (e.g., "J. Smith")
+  if (/^[A-Z]$/.test(charBefore) && (periodIndex < 2 || /\s/.test(text[periodIndex - 2]))) return false
+
+  // If followed by @ or in email/URL context
+  if (charAfter === '@' || charBefore === '@') return false
+
+  // If followed by space then uppercase, very likely sentence end
+  if (charAfter === ' ' || charAfter === '\n') return true
+
+  return true
+}
+
+/**
+ * AGGRESSIVE boundary correction - forces expansion to valid boundaries
+ * Unlike snapToSentenceBoundary which has a window limit, this will expand
+ * as far as needed (up to maxExpand) to find a valid boundary.
+ */
+function forceValidBoundaries(
+  text: string,
+  start: number,
+  end: number,
+  maxExpand: number = 300
+): { start: number; end: number } {
+  let newStart = start
+  let newEnd = end
+
+  // FORCE START to valid boundary
+  // If char before start is alphanumeric, we're mid-word/sentence - expand backwards
+  while (newStart > 0 && newStart > start - maxExpand) {
+    const prevChar = text[newStart - 1]
+
+    // Stop at newline
+    if (prevChar === '\n') break
+
+    // Stop at sentence-ending punctuation (but check period carefully)
+    if (prevChar === ':' || prevChar === ';' || prevChar === '!' || prevChar === '?') break
+    if (prevChar === '.' && isSentenceEndPeriod(text, newStart - 1)) break
+
+    // Stop if we hit a bullet marker (we're at list item start)
+    if (/[•·*\-]/.test(prevChar) && (newStart < 2 || text[newStart - 2] === '\n' || /\s/.test(text[newStart - 2]))) {
+      break
+    }
+
+    newStart--
+  }
+
+  // Skip any whitespace after the boundary
+  while (newStart < end && /\s/.test(text[newStart])) {
+    newStart++
+  }
+
+  // FORCE END to valid boundary
+  // If char at end-1 is not sentence-ending punctuation, expand forwards
+  while (newEnd < text.length && newEnd < end + maxExpand) {
+    const lastChar = text[newEnd - 1]
+
+    // Stop at newline (paragraph break)
+    if (lastChar === '\n') break
+
+    // Stop at sentence-ending punctuation (but check period carefully)
+    if (lastChar === ':' || lastChar === ';' || lastChar === '!' || lastChar === '?') break
+    if (lastChar === '.' && isSentenceEndPeriod(text, newEnd - 1)) break
+
+    newEnd++
+  }
+
+  return { start: newStart, end: newEnd }
+}
+
+/**
+ * Snap an index to sentence/list boundaries with adaptive window
+ *
+ * Features:
+ * - List-aware: Prefers \n\s*[•·*-]\s or \n\s*\d+[.)]\s boundaries for list items
+ * - Adaptive window: Expands to min(150, clause_length * 0.5) when first char is lowercase
+ * - Second-pass: If still mid-sentence after snap, tries extended lookback
+ * - Telemetry: Logs snap distances for tuning
+ */
+function snapToSentenceBoundary(
+  text: string,
+  index: number,
+  direction: 'start' | 'end',
+  baseMaxAdjust: number = 80,
+  clauseLength?: number  // Optional: for adaptive window calculation
+): number {
+  if (index < 0) return 0
+  if (index >= text.length) return text.length
+
+  snapTelemetry.total_snaps++
+
+  if (direction === 'start') {
+    // Calculate adaptive window
+    let maxAdjust = baseMaxAdjust
+
+    // Check if we might be mid-sentence (lowercase start with alphanumeric predecessor)
+    const needsExtendedSearch = index > 0 && index < text.length &&
+      /[a-z]/.test(text[index]) && /[a-zA-Z0-9]/.test(text[index - 1])
+
+    if (needsExtendedSearch && clauseLength) {
+      // Adaptive window: up to min(150, clause_length * 0.5)
+      maxAdjust = Math.min(150, Math.max(baseMaxAdjust, Math.floor(clauseLength * 0.5)))
+    }
+
+    // Priority 1: Try list item boundary (safe for list contexts)
+    const listStart = findListItemStart(text, index, maxAdjust)
+    if (listStart > 0 && index - listStart <= maxAdjust) {
+      snapTelemetry.snapped_to_list++
+      snapTelemetry.snap_distances.push(index - listStart)
+      return listStart
+    }
+
+    // Priority 2: Try sentence start
+    const sentenceStart = findSentenceStart(text, index, maxAdjust)
+    if (sentenceStart < index && index - sentenceStart <= maxAdjust) {
+      snapTelemetry.snapped_to_sentence++
+      snapTelemetry.snap_distances.push(index - sentenceStart)
+      return sentenceStart
+    }
+
+    // Priority 3: Word boundary fallback
+    const wordStart = snapToWordBoundary(text, index, 'start', 15)
+
+    // Second-pass check: If we're still mid-sentence, try harder
+    if (isMidSentenceStart(text, wordStart) && clauseLength) {
+      // Extended search with larger window
+      const extendedMax = Math.min(200, clauseLength)
+      const extendedListStart = findListItemStart(text, wordStart, extendedMax)
+      if (extendedListStart > 0 && wordStart - extendedListStart <= extendedMax) {
+        snapTelemetry.second_pass_corrections++
+        snapTelemetry.snapped_to_list++
+        snapTelemetry.snap_distances.push(wordStart - extendedListStart)
+        return extendedListStart
+      }
+
+      const extendedSentenceStart = findSentenceStart(text, wordStart, extendedMax)
+      if (extendedSentenceStart < wordStart && wordStart - extendedSentenceStart <= extendedMax) {
+        snapTelemetry.second_pass_corrections++
+        snapTelemetry.snapped_to_sentence++
+        snapTelemetry.snap_distances.push(wordStart - extendedSentenceStart)
+        return extendedSentenceStart
+      }
+
+      // Log that we couldn't fix this one
+      snapTelemetry.no_snap_exceeded_window++
+    }
+
+    snapTelemetry.snapped_to_word++
+    if (wordStart !== index) {
+      snapTelemetry.snap_distances.push(index - wordStart)
+    }
+    return wordStart
+
+  } else {
+    // End snapping (less complex - just find sentence end)
+    const sentenceEnd = findSentenceEnd(text, index, baseMaxAdjust)
+
+    if (sentenceEnd > index && sentenceEnd - index <= baseMaxAdjust) {
+      snapTelemetry.snapped_to_sentence++
+      snapTelemetry.snap_distances.push(sentenceEnd - index)
+      return sentenceEnd
+    }
+
+    // Fall back to word boundary
+    const wordEnd = snapToWordBoundary(text, index, 'end', 15)
+    snapTelemetry.snapped_to_word++
+    if (wordEnd !== index) {
+      snapTelemetry.snap_distances.push(wordEnd - index)
+    }
+    return wordEnd
+  }
+}
+
+/**
+ * Trim leading headers from clause start
+ * Returns adjusted start index that skips header lines
+ */
+function trimLeadingHeaders(text: string, startIndex: number, endIndex: number): number {
+  let pos = startIndex
+
+  // Skip leading whitespace
+  while (pos < endIndex && /\s/.test(text[pos])) {
+    pos++
+  }
+
+  // Check if we're at a header line
+  const lineStart = pos
+  const lineEnd = findLineEnd(text, pos)
+  const line = text.slice(lineStart, lineEnd)
+
+  if (isLikelyHeader(line)) {
+    // Skip the header line and any following whitespace
+    pos = lineEnd
+    while (pos < endIndex && /\s/.test(text[pos])) {
+      pos++
+    }
+
+    // Make sure we haven't gone past endIndex or made clause too short
+    if (pos < endIndex && endIndex - pos >= MIN_CLAUSE_LENGTH) {
+      return pos
+    }
+  }
+
+  return startIndex
+}
+
+/**
+ * Trim trailing incomplete content
+ * Returns adjusted end index
+ */
+function trimTrailingContent(text: string, startIndex: number, endIndex: number): number {
+  // Just ensure we end at word boundary if we didn't find sentence end
+  let pos = endIndex
+
+  // Skip trailing whitespace
+  while (pos > startIndex && /\s/.test(text[pos - 1])) {
+    pos--
+  }
+
+  // Make sure we haven't made clause too short
+  if (pos - startIndex >= MIN_CLAUSE_LENGTH) {
+    return pos
+  }
+
+  return endIndex
 }
 
 /**
@@ -240,27 +880,55 @@ function validateClauseIndices(
 
   for (const raw of rawClauses) {
     // Convert local indices to global (for chunked extraction)
-    const globalStart = chunkStart + raw.start_index
-    const globalEnd = chunkStart + raw.end_index
+    let globalStart = chunkStart + raw.start_index
+    let globalEnd = chunkStart + raw.end_index
 
-    // Bounds check
+    // Bounds check (before snapping)
     if (globalStart < 0 || globalEnd > textLength || globalStart >= globalEnd) {
       telemetry.dropped_for_bounds++
       continue
     }
 
-    // Length check
+    // Calculate raw clause length for adaptive window
+    const rawClauseLength = globalEnd - globalStart
+
+    // Snap indices to SENTENCE boundaries (not just word boundaries)
+    // This fixes GPT's tendency to start/end clauses mid-sentence
+    // Pass clause length for adaptive window calculation
+    globalStart = snapToSentenceBoundary(fullText, globalStart, 'start', 80, rawClauseLength)
+    globalEnd = snapToSentenceBoundary(fullText, globalEnd, 'end', 80, rawClauseLength)
+
+    // AGGRESSIVE boundary correction: force valid boundaries if still mid-sentence
+    // This expands up to 300 chars to find proper sentence start/end
+    const forced = forceValidBoundaries(fullText, globalStart, globalEnd, 300)
+    globalStart = forced.start
+    globalEnd = forced.end
+
+    // Trim leading headers (e.g., "PAYMENT TERMS:", "1. Introduction")
+    globalStart = trimLeadingHeaders(fullText, globalStart, globalEnd)
+
+    // Trim trailing incomplete content
+    globalEnd = trimTrailingContent(fullText, globalStart, globalEnd)
+
+    // Re-validate bounds after snapping and trimming
+    if (globalStart < 0 || globalEnd > textLength || globalStart >= globalEnd) {
+      telemetry.dropped_for_bounds++
+      continue
+    }
+
+    // Length check (after snapping and boundary forcing)
     const length = globalEnd - globalStart
     if (length <= MIN_CLAUSE_LENGTH) {
       telemetry.dropped_for_length++
       continue
     }
-    if (length > MAX_CLAUSE_LENGTH) {
+    // Allow up to 2x MAX due to aggressive boundary expansion (we expand up to 300 chars)
+    if (length > MAX_CLAUSE_LENGTH * 2) {
       telemetry.dropped_for_length++
       continue
     }
 
-    // Derive content from slice
+    // Derive content from slice (with snapped indices)
     const content = fullText.slice(globalStart, globalEnd)
 
     // Non-empty check (after trim)
@@ -392,59 +1060,133 @@ function extractClausesArray(parsed: any): any[] {
 // ============ SINGLE-PASS EXTRACTION ============
 
 // Build system prompt based on extraction mode
-function buildSinglePassSystemPrompt(): string {
-  if (USE_INDEX_BASED_EXTRACTION) {
+function buildSinglePassSystemPrompt(totalLines?: number): string {
+  // LINE-BASED MODE (recommended): GPT returns line numbers, we convert to character indices
+  if (USE_LINE_BASED_EXTRACTION) {
     return `You are "ContractBuddy Clause Extractor" - a precision legal document parser.
 
-YOUR PRIMARY OBJECTIVE: Decompose this contract into ATOMIC, SINGLE-OBLIGATION clauses by identifying their CHARACTER POSITIONS.
+YOUR TASK: Extract clauses by returning their LINE NUMBERS (start_line and end_line).
+The document has been pre-processed with line numbers in brackets: [0], [1], [2], etc.
+${totalLines ? `Total lines: ${totalLines} (line numbers 0 to ${totalLines - 1})` : ''}
 
-OUTPUT MUST BE JSON:
-- Return ONLY a single JSON object (no prose, no markdown).
-- The word "json" here is intentional to satisfy response_format requirements.
-
-WHAT IS AN ATOMIC CLAUSE?
-- ONE obligation, requirement, right, or definition
-- ${MIN_CLAUSE_LENGTH + 1}-${MAX_CLAUSE_LENGTH} characters (ideal: 150-300)
-- 1-2 sentences maximum
-- Can stand alone grammatically
-
-MANDATORY SPLITTING RULES:
-1. NUMBERED LISTS (1., 2., 3.): Each item = separate clause
-2. BULLETED LISTS (-, *, •): Each bullet = separate clause
-3. MULTIPLE SENTENCES: Split if expressing DIFFERENT obligations
-4. CONJUNCTIONS ("and shall", "and must"): Split at each obligation
-5. DIFFERENT DEADLINES: Each deadline = separate clause
-6. DIFFERENT ACTORS ("Influencer must", "Brand shall"): Split by actor
-
-HARD LIMIT: Maximum ${MAX_CLAUSE_LENGTH} characters per clause (end_index - start_index <= ${MAX_CLAUSE_LENGTH}). If longer, SPLIT IT.
-
-CRITICAL: Return CHARACTER INDICES (0-indexed) not text content. We will extract the exact text using your indices.
-
-OUTPUT FORMAT:
+OUTPUT FORMAT (strict JSON only, no markdown, no extra keys):
 {
   "clauses": [
     {
-      "start_index": <integer>,  // Character offset where clause begins (0-indexed, inclusive)
-      "end_index": <integer>,    // Character offset where clause ends (exclusive, like slice())
-      "clause_type": "snake_case_type",
-      "summary": "1 sentence description",
-      "confidence": 0.0-1.0,
-      "rag_status": "green" | "amber" | "red"
+      "start_line": 0,
+      "end_line": 2,
+      "clause_type": "payment_terms",
+      "summary": "One sentence description",
+      "confidence": 0.95,
+      "rag_status": "green"
     }
   ]
 }
 
-INDEX RULES:
-- start_index: First character of the clause (0-indexed)
-- end_index: One past the last character (exclusive, like JavaScript slice)
-- end_index - start_index must be between ${MIN_CLAUSE_LENGTH + 1} and ${MAX_CLAUSE_LENGTH}
-- Indices must not overlap with other clauses (but can touch: one clause's end_index can equal next clause's start_index)
-- Count characters carefully including spaces and punctuation
+WHAT IS A CLAUSE?
+- ONE obligation, requirement, right, or definition
+- A COMPLETE THOUGHT that can stand alone grammatically
+- Typically 1-4 lines of text
+- MUST include COMPLETE sentences - never cut mid-sentence
 
-VALIDATION BEFORE OUTPUT:
-- Every clause length (end_index - start_index) is ${MIN_CLAUSE_LENGTH + 1}-${MAX_CLAUSE_LENGTH}? If not, SPLIT IT
-- No overlapping ranges? If overlapping, FIX IT
-- Expected: 80-150 clauses for a typical contract`
+SPLITTING RULES (each becomes separate clause):
+1. Each bullet point (•, ·, *, -) = separate clause
+2. Each numbered item (1., 2., a)) = separate clause
+3. Different obligations joined by "and shall" / "and must" = split
+4. Different actors ("Influencer must" vs "Brand shall") = split
+
+CLAUSE_TYPE VALUES (use exactly one of these):
+payment_terms, invoicing, invoicing_obligation, invoicing_consequence,
+deliverable_obligation, content_requirement, content_restriction,
+timeline_obligation, usage_rights, exclusivity, confidentiality,
+termination_right, term_definition, execution_clause, acceptance_mechanism,
+third_party_terms, indemnification, liability_limitation, general_terms
+
+RAG_STATUS VALUES:
+- "green": Standard/favorable term
+- "amber": Unusual term needing review
+- "red": Problematic/risky term
+
+LINE NUMBER RULES (CRITICAL):
+- start_line: The line number where the clause BEGINS (look at the [N] prefix)
+- end_line: The line number where the clause ENDS (inclusive)
+- Example: If clause spans lines [5] to [7], return start_line: 5, end_line: 7
+- EXCLUDE section headers (ALL CAPS lines like "PAYMENT TERMS") from clause content
+- Include the FULL sentence even if it spans multiple lines
+
+BOUNDARY GUIDANCE:
+- ALWAYS start at the beginning of a sentence
+- ALWAYS end at the end of a sentence (after the period/punctuation)
+- If a sentence continues on the next line, include that line in end_line
+- Never split a sentence between two clauses
+
+REQUIREMENTS:
+1. Return 15-35 clauses for typical contracts
+2. No overlapping line ranges
+3. Valid line numbers within document range
+4. Every clause must contain COMPLETE sentences`
+  }
+
+  // INDEX-BASED MODE (legacy): GPT returns character indices directly
+  if (USE_INDEX_BASED_EXTRACTION) {
+    return `You are "ContractBuddy Clause Extractor" - a precision legal document parser.
+
+YOUR TASK: Extract clauses by returning their CHARACTER POSITIONS (start_index and end_index).
+
+OUTPUT FORMAT (strict JSON only, no markdown, no extra keys):
+{
+  "clauses": [
+    {
+      "start_index": 0,
+      "end_index": 150,
+      "clause_type": "payment_terms",
+      "summary": "One sentence description",
+      "confidence": 0.95,
+      "rag_status": "green"
+    }
+  ]
+}
+
+WHAT IS A CLAUSE?
+- ONE obligation, requirement, right, or definition
+- A COMPLETE THOUGHT that can stand alone grammatically
+- LENGTH: ${MIN_CLAUSE_LENGTH}-${MAX_CLAUSE_LENGTH} characters (HARD LIMIT - we will reject clauses outside this range)
+
+SPLITTING RULES (each becomes separate clause):
+1. Each bullet point (•, ·, *, -) = separate clause
+2. Each numbered item (1., 2., a)) = separate clause
+3. Different obligations joined by "and shall" / "and must" = split
+4. Different actors ("Influencer must" vs "Brand shall") = split
+
+CLAUSE_TYPE VALUES (use exactly one of these):
+payment_terms, invoicing, invoicing_obligation, invoicing_consequence,
+deliverable_obligation, content_requirement, content_restriction,
+timeline_obligation, usage_rights, exclusivity, confidentiality,
+termination_right, term_definition, execution_clause, acceptance_mechanism,
+third_party_terms, indemnification, liability_limitation, general_terms
+
+RAG_STATUS VALUES:
+- "green": Standard/favorable term
+- "amber": Unusual term needing review
+- "red": Problematic/risky term
+
+INDEX RULES (CRITICAL):
+- start_index: 0-based position of FIRST character of clause
+- end_index: Position AFTER last character (Python slice notation: text[start:end])
+- For bullet items: start AFTER the bullet marker ("· " or "- ")
+- EXCLUDE section headers (ALL CAPS lines) from clause content
+- Clause = text[start_index:end_index]
+
+BOUNDARY GUIDANCE:
+- Prefer starting at sentence beginnings (after . or newline)
+- Prefer ending at sentence ends (at . or before newline)
+- We will auto-correct minor boundary drift, so approximate positions are OK
+
+REQUIREMENTS:
+1. Every clause: ${MIN_CLAUSE_LENGTH}-${MAX_CLAUSE_LENGTH} characters
+2. Return 15-35 clauses for typical contracts
+3. No overlapping indices
+4. Valid positions within document length`
   }
 
   // Legacy content-based prompt
@@ -505,18 +1247,55 @@ async function extractClausesSinglePass(
   model: AllowedModel = "gpt-5.1",
   documentId?: string  // For telemetry
 ): Promise<ExtractedClause[]> {
-  // In index mode, text is already sanitized by extractWithTimeoutFallback
+  // In index/line mode, text is already sanitized by extractWithTimeoutFallback
   // In legacy mode, apply traditional sanitization (nulls + trim)
-  const sanitizedText = USE_INDEX_BASED_EXTRACTION
+  const sanitizedText = (USE_LINE_BASED_EXTRACTION || USE_INDEX_BASED_EXTRACTION)
     ? contractText  // Already sanitized, don't modify
     : contractText.replace(/\u0000/g, "").trim()
 
-  const estimatedTokens = estimateTokens(sanitizedText)
-  console.log(`${model} extraction: ${sanitizedText.length} chars (~${estimatedTokens} tokens) in single pass (index_mode=${USE_INDEX_BASED_EXTRACTION})`)
+  // Prepare line-numbered document for line-based extraction
+  let lineDoc: LineNumberedDocument | null = null
+  let textForGpt = sanitizedText
+
+  if (USE_LINE_BASED_EXTRACTION) {
+    lineDoc = prepareLineNumberedDocument(sanitizedText)
+    textForGpt = lineDoc.numberedText
+    console.log(`Line-based extraction: ${lineDoc.totalLines} lines prepared`)
+  }
+
+  const estimatedTokens = estimateTokens(textForGpt)
+  const extractionMode = USE_LINE_BASED_EXTRACTION ? 'line_mode' : (USE_INDEX_BASED_EXTRACTION ? 'index_mode' : 'content_mode')
+  console.log(`${model} extraction: ${sanitizedText.length} chars (~${estimatedTokens} tokens) in single pass (${extractionMode})`)
 
   // Create abort controller for timeout
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), EXTRACTION_TIMEOUT_MS)
+
+  // Build user message based on extraction mode
+  let userMessage: string
+  if (USE_LINE_BASED_EXTRACTION && lineDoc) {
+    userMessage = `Extract all clauses from this contract by identifying their LINE NUMBERS. Each line is prefixed with its number in brackets [N].
+
+Remember: SPLIT aggressively. Each obligation = one clause with its start_line and end_line.
+IMPORTANT: Always include COMPLETE sentences. If a sentence spans multiple lines, include all those lines.
+
+The document has ${lineDoc.totalLines} lines (numbered 0 to ${lineDoc.totalLines - 1}).
+
+CONTRACT TEXT:
+${textForGpt}`
+  } else if (USE_INDEX_BASED_EXTRACTION) {
+    userMessage = `Extract all clauses from this contract by identifying their CHARACTER POSITIONS. Remember: SPLIT aggressively. Each obligation = one clause with its start_index and end_index.
+
+The text below is exactly ${sanitizedText.length} characters long (0-indexed from 0 to ${sanitizedText.length - 1}).
+
+CONTRACT TEXT:
+${sanitizedText}`
+  } else {
+    userMessage = `Extract all clauses from this contract. Remember: SPLIT aggressively. Each obligation = one clause.
+
+CONTRACT TEXT:
+${sanitizedText}`
+  }
 
   try {
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -533,21 +1312,11 @@ async function extractClausesSinglePass(
         messages: [
           {
             role: "system",
-            content: buildSinglePassSystemPrompt()
+            content: buildSinglePassSystemPrompt(lineDoc?.totalLines)
           },
           {
             role: "user",
-            content: USE_INDEX_BASED_EXTRACTION
-              ? `Extract all clauses from this contract by identifying their CHARACTER POSITIONS. Remember: SPLIT aggressively. Each obligation = one clause with its start_index and end_index.
-
-The text below is exactly ${sanitizedText.length} characters long (0-indexed from 0 to ${sanitizedText.length - 1}).
-
-CONTRACT TEXT:
-${sanitizedText}`
-              : `Extract all clauses from this contract. Remember: SPLIT aggressively. Each obligation = one clause.
-
-CONTRACT TEXT:
-${sanitizedText}`
+            content: userMessage
           }
         ]
       })
@@ -563,11 +1332,20 @@ ${sanitizedText}`
     // Robust JSON parsing - handle SDK structured outputs and edge cases
     const clausesArray = parseClausesResponse(data)
 
-    if (USE_INDEX_BASED_EXTRACTION) {
-      // Index-based parsing: validate indices and derive content from slice
-      const rawClauses: RawIndexedClause[] = clausesArray.map((clause: any) => ({
-        start_index: Number(clause.start_index || 0),
-        end_index: Number(clause.end_index || 0),
+    // LINE-BASED MODE: Convert line numbers to character indices
+    if (USE_LINE_BASED_EXTRACTION && lineDoc) {
+      const firstClause = clausesArray[0]
+      const isLineBased = firstClause &&
+        (firstClause.start_line !== undefined || firstClause.end_line !== undefined)
+
+      if (!isLineBased) {
+        console.warn('Expected line-based response but got different format, falling back to index detection')
+      }
+
+      // Parse line-based clauses
+      const lineClauses: RawLineBasedClause[] = clausesArray.map((clause: any) => ({
+        start_line: Number(clause.start_line ?? 0),
+        end_line: Number(clause.end_line ?? 0),
         clause_type: String(clause.clause_type || "general_terms").replace(/\s+/g, "_"),
         summary: String(clause.summary || ""),
         confidence: Number(clause.confidence || 0.8),
@@ -575,12 +1353,81 @@ ${sanitizedText}`
         section_title: clause.section_title || null
       }))
 
+      console.log(`Line-based extraction: ${lineClauses.length} clauses returned by GPT`)
+
+      // Convert line numbers to character indices
+      const rawClauses = convertLinesToIndices(lineClauses, lineDoc)
+      console.log(`Line-to-index conversion: ${rawClauses.length} clauses with valid indices`)
+
+      // Validate and derive content (using original text, not numbered text)
+      const { valid, telemetry } = validateClauseIndices(rawClauses, sanitizedText, 0)
+
+      // Emit telemetry
+      if (documentId) {
+        emitIndexValidationTelemetry(telemetry, documentId)
+        emitSnapTelemetry(documentId)
+      }
+
+      console.log(`Line-based extraction complete: ${valid.length} valid clauses`)
+
+      // Convert to ExtractedClause format
+      return valid.map((clause) => ({
+        content: clause.content,
+        clause_type: clause.clause_type,
+        summary: clause.summary,
+        confidence: clause.confidence,
+        rag_status: clause.rag_status,
+        section_title: clause.section_title || null,
+        chunk_index: 0,
+        start_index: clause.start_index,
+        end_index: clause.end_index,
+        parsing_quality: clause.confidence
+      }))
+    }
+
+    // INDEX-BASED MODE (legacy): GPT returns character indices directly
+    if (USE_INDEX_BASED_EXTRACTION) {
+      // Detect if response is anchor-based or index-based
+      const firstClause = clausesArray[0]
+      const isAnchorBased = firstClause &&
+        (firstClause.start_anchor || firstClause.end_anchor) &&
+        !firstClause.start_index
+
+      let rawClauses: RawIndexedClause[]
+
+      if (isAnchorBased) {
+        // Anchor-based: GPT returned text anchors, convert to indices
+        console.log('Detected anchor-based response, converting to indices...')
+        const anchorClauses: RawAnchorClause[] = clausesArray.map((clause: any) => ({
+          start_anchor: String(clause.start_anchor || ""),
+          end_anchor: String(clause.end_anchor || ""),
+          clause_type: String(clause.clause_type || "general_terms").replace(/\s+/g, "_"),
+          summary: String(clause.summary || ""),
+          confidence: Number(clause.confidence || 0.8),
+          rag_status: validateRagStatus(clause.rag_status),
+          section_title: clause.section_title || null
+        }))
+        rawClauses = convertAnchorsToIndices(anchorClauses, sanitizedText)
+      } else {
+        // Index-based: validate indices and derive content from slice
+        rawClauses = clausesArray.map((clause: any) => ({
+          start_index: Number(clause.start_index || 0),
+          end_index: Number(clause.end_index || 0),
+          clause_type: String(clause.clause_type || "general_terms").replace(/\s+/g, "_"),
+          summary: String(clause.summary || ""),
+          confidence: Number(clause.confidence || 0.8),
+          rag_status: validateRagStatus(clause.rag_status),
+          section_title: clause.section_title || null
+        }))
+      }
+
       // Validate and derive content
       const { valid, telemetry } = validateClauseIndices(rawClauses, sanitizedText, 0)
 
       // Emit telemetry
       if (documentId) {
         emitIndexValidationTelemetry(telemetry, documentId)
+        emitSnapTelemetry(documentId)
       }
 
       // Convert to ExtractedClause format
@@ -730,6 +1577,172 @@ type RawIndexedClause = {
   confidence: number
   rag_status: "green" | "amber" | "red"
   section_title?: string
+}
+
+// Raw clause from GPT in anchor-based mode
+type RawAnchorClause = {
+  start_anchor: string
+  end_anchor: string
+  clause_type: string
+  summary: string
+  confidence: number
+  rag_status: "green" | "amber" | "red"
+  section_title?: string
+}
+
+/**
+ * Convert anchor-based clauses to index-based by finding anchor positions in text.
+ * Uses fuzzy matching to handle minor GPT transcription errors.
+ */
+function convertAnchorsToIndices(
+  anchorClauses: RawAnchorClause[],
+  fullText: string
+): RawIndexedClause[] {
+  const results: RawIndexedClause[] = []
+  const normalizedText = fullText.toLowerCase().replace(/\s+/g, ' ')
+
+  for (const clause of anchorClauses) {
+    const startAnchor = clause.start_anchor?.trim()
+    const endAnchor = clause.end_anchor?.trim()
+
+    if (!startAnchor || !endAnchor) {
+      console.warn('Skipping clause with missing anchors:', clause.summary?.slice(0, 50))
+      continue
+    }
+
+    // Find start position using fuzzy search
+    const startPos = findAnchorPosition(fullText, normalizedText, startAnchor, 0)
+    if (startPos < 0) {
+      console.warn('Could not find start anchor:', startAnchor.slice(0, 40))
+      continue
+    }
+
+    // Find end position (search from after start position)
+    const endPos = findAnchorEndPosition(fullText, normalizedText, endAnchor, startPos)
+    if (endPos < 0) {
+      console.warn('Could not find end anchor:', endAnchor.slice(0, 40))
+      continue
+    }
+
+    // Validate reasonable clause length
+    const length = endPos - startPos
+    if (length < MIN_CLAUSE_LENGTH || length > MAX_CLAUSE_LENGTH + 100) {
+      console.warn(`Clause length out of range (${length}):`, startAnchor.slice(0, 30))
+      continue
+    }
+
+    results.push({
+      start_index: startPos,
+      end_index: endPos,
+      clause_type: clause.clause_type,
+      summary: clause.summary,
+      confidence: clause.confidence,
+      rag_status: clause.rag_status,
+      section_title: clause.section_title
+    })
+  }
+
+  console.log(`Converted ${results.length}/${anchorClauses.length} anchor clauses to indices`)
+  return results
+}
+
+/**
+ * Find the position of an anchor in the text using fuzzy matching
+ */
+function findAnchorPosition(
+  fullText: string,
+  normalizedText: string,
+  anchor: string,
+  searchFrom: number
+): number {
+  // First try exact match
+  const exactPos = fullText.indexOf(anchor, searchFrom)
+  if (exactPos >= 0) return exactPos
+
+  // Try normalized match (lowercase, collapsed whitespace)
+  const normalizedAnchor = anchor.toLowerCase().replace(/\s+/g, ' ')
+  const normalizedPos = normalizedText.indexOf(normalizedAnchor, searchFrom)
+  if (normalizedPos >= 0) {
+    // Map back to original text position (approximate)
+    return findOriginalPosition(fullText, normalizedPos, anchor)
+  }
+
+  // Try with first few words only (more forgiving)
+  const firstWords = anchor.split(/\s+/).slice(0, 5).join(' ')
+  const firstWordsPos = fullText.toLowerCase().indexOf(firstWords.toLowerCase(), searchFrom)
+  if (firstWordsPos >= 0) {
+    return firstWordsPos
+  }
+
+  return -1
+}
+
+/**
+ * Find the END position of an anchor (returns position AFTER the anchor text)
+ */
+function findAnchorEndPosition(
+  fullText: string,
+  normalizedText: string,
+  anchor: string,
+  searchFrom: number
+): number {
+  // First try exact match
+  const exactPos = fullText.indexOf(anchor, searchFrom)
+  if (exactPos >= 0) return exactPos + anchor.length
+
+  // Try normalized match
+  const normalizedAnchor = anchor.toLowerCase().replace(/\s+/g, ' ')
+  const normalizedPos = normalizedText.indexOf(normalizedAnchor, searchFrom)
+  if (normalizedPos >= 0) {
+    const originalPos = findOriginalPosition(fullText, normalizedPos, anchor)
+    // Find the actual end in original text
+    const endSearch = fullText.toLowerCase().indexOf(
+      anchor.split(/\s+/).slice(-3).join(' ').toLowerCase(),
+      originalPos
+    )
+    if (endSearch >= 0) {
+      // Find the sentence end after this point
+      const sentenceEnd = findNextSentenceEnd(fullText, endSearch)
+      return sentenceEnd
+    }
+    return originalPos + anchor.length
+  }
+
+  // Try with last few words only
+  const lastWords = anchor.split(/\s+/).slice(-4).join(' ')
+  const lastWordsPos = fullText.toLowerCase().indexOf(lastWords.toLowerCase(), searchFrom)
+  if (lastWordsPos >= 0) {
+    return findNextSentenceEnd(fullText, lastWordsPos)
+  }
+
+  return -1
+}
+
+/**
+ * Map a position in normalized text back to original text
+ */
+function findOriginalPosition(fullText: string, normalizedPos: number, anchor: string): number {
+  // Simple approach: find the first few words in the original text
+  const firstWords = anchor.split(/\s+/).slice(0, 4).join('\\s+')
+  const regex = new RegExp(firstWords.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i')
+  const match = fullText.slice(Math.max(0, normalizedPos - 50)).match(regex)
+  if (match && match.index !== undefined) {
+    return Math.max(0, normalizedPos - 50) + match.index
+  }
+  return normalizedPos
+}
+
+/**
+ * Find the next sentence end from a position
+ */
+function findNextSentenceEnd(text: string, from: number): number {
+  const sentenceEnders = ['.', '!', '?', ':', ';']
+  for (let i = from; i < text.length && i < from + 200; i++) {
+    if (sentenceEnders.includes(text[i])) {
+      return i + 1
+    }
+  }
+  return from + 50 // fallback
 }
 
 type SectionInfo = {
@@ -1759,6 +2772,9 @@ No other fields. No extra top-level keys. No comments. No markdown.
 - end_index - start_index must be between ${MIN_CLAUSE_LENGTH + 1} and ${MAX_CLAUSE_LENGTH}
 - Indices must not overlap (but can touch: one clause's end_index can equal next clause's start_index)
 - Count characters carefully including spaces and punctuation
+- CRITICAL: Indices MUST align with WORD BOUNDARIES - never cut a word in half!
+  - start_index: beginning of a word (after space/newline/punctuation)
+  - end_index: end of a word (at space/newline/punctuation/end-of-text)
 
 ### 3. Field semantics
 
@@ -2372,6 +3388,9 @@ Deno.serve(async (req) => {
 
     console.log(`Checkpoint C: ${pathDecision.model} extraction starting...`)
 
+    // Declare at function scope so it's accessible in Checkpoint D
+    let textForPersistence: string = extractedText
+
     try {
       const startTime = Date.now()
 
@@ -2386,7 +3405,7 @@ Deno.serve(async (req) => {
 
       // CRITICAL: Use sanitizedText for all downstream operations in index mode
       // This ensures indices computed on sanitizedText align with persisted extracted_text
-      const textForPersistence = USE_INDEX_BASED_EXTRACTION ? sanitizedText : extractedText
+      textForPersistence = USE_INDEX_BASED_EXTRACTION ? sanitizedText : extractedText
       const extractionTime = Date.now() - startTime
 
       if (usedFallback) {
@@ -2721,12 +3740,12 @@ Deno.serve(async (req) => {
         }
       }
 
-      // Update document status to clauses_extracted and save extracted text
+      // Update document status to completed and save extracted text
       // CRITICAL: In index mode, persist sanitizedText (same as used for indices)
       const { error: statusUpdateError } = await supabase
         .from("document_repository")
         .update({
-          processing_status: "clauses_extracted",
+          processing_status: "completed",
           extracted_text: textForPersistence, // In index mode: sanitized; in legacy: original
           error_message: null, // Clear any previous errors
         })
@@ -2736,7 +3755,7 @@ Deno.serve(async (req) => {
         console.error("Failed to update document status:", statusUpdateError)
         // Don't throw - clauses are already inserted
       } else {
-        console.log(`✅ Updated document status to 'clauses_extracted'`)
+        console.log(`✅ Updated document status to 'completed'`)
       }
 
       console.log("Checkpoint D complete!")
