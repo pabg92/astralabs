@@ -3674,10 +3674,13 @@ Deno.serve(async (req) => {
         })
       }
 
-      // Insert clauses into clause_boundaries
+      // Insert clauses into clause_boundaries (upsert to prevent duplicates)
       const { data: insertedClauses, error: insertError } = await supabase
         .from("clause_boundaries")
-        .insert(clauseRecords)
+        .upsert(clauseRecords, {
+          onConflict: 'document_id,content',
+          ignoreDuplicates: true  // Skip if already exists, don't update
+        })
         .select("id, clause_type, confidence")
 
       if (insertError) {
