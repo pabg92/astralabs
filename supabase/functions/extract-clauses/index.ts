@@ -20,7 +20,7 @@ const OPENAI_MAX_ATTEMPTS = 2
 const ALLOWED_MODELS = ["gpt-4o", "gpt-5.1", "gpt-5.1-codex-mini"] as const
 type AllowedModel = typeof ALLOWED_MODELS[number]
 
-const MAX_CLAUSE_LENGTH = 400 // Single source of truth - used everywhere
+const MAX_CLAUSE_LENGTH = 600 // Increased from 400 to reduce mid-sentence fragments (legal sentences often 300-500 chars)
 
 // Model context limits (tokens)
 const MODEL_CONTEXT_LIMITS: Record<AllowedModel, number> = {
@@ -91,6 +91,48 @@ function decideExtractionPath(
     estimatedTokens,
     contextLimit
   }
+}
+
+// ============ LEGAL ABBREVIATION PROTECTION ============
+
+// Common legal abbreviations that contain periods but shouldn't trigger sentence splits
+const LEGAL_ABBREVIATIONS = [
+  'Inc.', 'Corp.', 'Ltd.', 'LLC.', 'L.L.C.', 'Co.',
+  'No.', 'Nos.', 'vs.', 'v.', 'U.S.', 'U.K.',
+  'et al.', 'e.g.', 'i.e.', 'etc.',
+  'F.2d', 'F.3d', 'F. Supp.', 'S. Ct.',
+  'Mr.', 'Mrs.', 'Ms.', 'Dr.', 'Jr.', 'Sr.',
+  'Art.', 'Sec.', 'Ch.', 'Pt.', 'Vol.',
+  'approx.', 'min.', 'max.', 'avg.',
+  'Jan.', 'Feb.', 'Mar.', 'Apr.', 'Aug.', 'Sept.', 'Oct.', 'Nov.', 'Dec.'
+]
+
+// Placeholder character that won't appear in contracts
+const ABBREV_PLACEHOLDER = '§'
+
+/**
+ * Protect legal abbreviations from false sentence splits.
+ * Replaces periods in known abbreviations with a placeholder.
+ */
+function protectLegalAbbreviations(text: string): string {
+  let result = text
+  for (const abbr of LEGAL_ABBREVIATIONS) {
+    // Create regex that matches the abbreviation (escape special chars)
+    const escaped = abbr.replace(/\./g, '\\.')
+    const pattern = new RegExp(escaped, 'g')
+    // Replace with placeholder version
+    const placeholder = abbr.replace(/\./g, ABBREV_PLACEHOLDER)
+    result = result.replace(pattern, placeholder)
+  }
+  return result
+}
+
+/**
+ * Restore legal abbreviations after sentence splitting.
+ * Replaces placeholders back with periods.
+ */
+function restoreLegalAbbreviations(text: string): string {
+  return text.replace(new RegExp(ABBREV_PLACEHOLDER, 'g'), '.')
 }
 
 // ============ HELPER FUNCTIONS ============
@@ -293,9 +335,16 @@ MANDATORY SPLITTING RULES:
 
 HARD LIMIT: Maximum ${MAX_CLAUSE_LENGTH} characters per clause. If longer, SPLIT IT.
 
+CRITICAL - SENTENCE COMPLETENESS:
+- Every clause MUST be a COMPLETE sentence ending with . or ; or ! or ?
+- NEVER cut a clause mid-sentence
+- If splitting a long sentence, find natural break points (semicolons, colons, commas before conjunctions)
+- A clause like "The influencer shall deliver" is WRONG (incomplete)
+- A clause like "The influencer shall deliver all content by the deadline." is CORRECT
+
 EXAMPLE:
 Input: "PAYMENT: Invoice within 7 days. Payment within 30 days. Invoice must include: (1) date (2) VAT number (3) address"
-Output: 5 clauses (one per obligation)
+Output: 5 clauses (one per obligation, each a complete sentence)
 
 WHEN IN DOUBT: SPLIT. More small clauses is always better than one mega-clause.
 
@@ -633,6 +682,7 @@ function inferClauseTypeFromTitle(title: string) {
 }
 
 // Split long/compound text into micro-clauses (single obligations) for better matching.
+// UPDATED: Now uses sentence-based splitting to avoid mid-sentence fragments.
 function splitIntoMicroClauses(
   content: string,
   sectionTitle: string | null,
@@ -642,44 +692,91 @@ function splitIntoMicroClauses(
   const sanitized = content.trim()
   if (!sanitized) return []
 
-  // Prefer bullet/line splits; fallback to sentences.
+  const MICRO_MIN = 40
+  const MICRO_MAX = MAX_CLAUSE_LENGTH
+  const MICRO_MAX_GRACE = MICRO_MAX + 100 // Allow 100 char grace for complete sentences
+
+  // Priority 1: Split on bullet points (keep existing logic)
   const bulletParts = sanitized
     .split(/(?:\r?\n|\r)[\u2022\u2023\u25E6\u2024\u2043\-•▪]\s*/g)
     .map((p) => p.trim())
     .filter((p) => p.length > 0)
 
-  const candidates =
-    bulletParts.length > 1
-      ? bulletParts
-      : sanitized
-          .split(/(?<=[\.!\?])\s+/)
-          .map((s) => s.trim())
-          .filter((s) => s.length > 0)
+  if (bulletParts.length > 1) {
+    // Recursively process each bullet point
+    return bulletParts.flatMap((part) =>
+      splitIntoMicroClauses(part, sectionTitle, clauseType, chunkIndex)
+    )
+  }
 
-  const MICRO_MIN = 40
-  const MICRO_MAX = MAX_CLAUSE_LENGTH
-  const pieces = candidates.flatMap((text) => {
-    if (text.length <= MICRO_MAX) return [text]
-    // Chunk oversized sentences at word boundaries to avoid mid-word splits
-    const segments: string[] = []
-    let remaining = text
-    while (remaining.length > MICRO_MAX) {
-      // Find the last space within the max length
-      let splitAt = remaining.lastIndexOf(' ', MICRO_MAX)
-      // If no space found (very long word), fall back to hard split
-      if (splitAt === -1 || splitAt < MICRO_MAX * 0.5) {
-        splitAt = MICRO_MAX
+  // Priority 2: Split on numbered list items (1., 2., (a), (b), etc.)
+  const numberedPattern = /(?:^|\n)\s*(?:\d+[.):]|\([a-z]\)|\([0-9]+\))\s+/gi
+  if (numberedPattern.test(sanitized)) {
+    const numberedParts = sanitized
+      .split(/(?:^|\n)\s*(?:\d+[.):]|\([a-z]\)|\([0-9]+\))\s+/gi)
+      .map((p) => p.trim())
+      .filter((p) => p.length > 0)
+    if (numberedParts.length > 1) {
+      return numberedParts.flatMap((part) =>
+        splitIntoMicroClauses(part, sectionTitle, clauseType, chunkIndex)
+      )
+    }
+  }
+
+  // Priority 3: Sentence-based splitting (NEW - replaces word boundary splitting)
+  // Split on sentence boundaries first, then combine sentences up to MICRO_MAX
+  // Note: Semicolons are valid clause separators in legal text (e.g., "Influencer shall; (a) deliver...")
+
+  // Protect legal abbreviations before splitting to avoid false sentence breaks
+  const protectedText = protectLegalAbbreviations(sanitized)
+  const sentences = protectedText
+    .split(/(?<=[.!?;])\s+/)
+    .map((s) => restoreLegalAbbreviations(s.trim()))
+    .filter((s) => s.length > 0)
+
+  const segments: string[] = []
+  let current = ""
+
+  for (const sentence of sentences) {
+    const combined = current ? current + " " + sentence : sentence
+
+    if (combined.length <= MICRO_MAX) {
+      // Sentence fits, add to current buffer
+      current = combined
+    } else if (current.length === 0) {
+      // Single sentence too long - try to keep it complete if within grace period
+      if (sentence.length <= MICRO_MAX_GRACE) {
+        segments.push(sentence)
+      } else {
+        // Last resort: split at word boundary for very long single sentences
+        let remaining = sentence
+        while (remaining.length > MICRO_MAX) {
+          const splitAt = remaining.lastIndexOf(" ", MICRO_MAX)
+          if (splitAt > MICRO_MAX * 0.5) {
+            segments.push(remaining.slice(0, splitAt).trim())
+            remaining = remaining.slice(splitAt).trim()
+          } else {
+            // No good split point, keep as-is to avoid mid-word breaks
+            break
+          }
+        }
+        if (remaining.length > 0) {
+          segments.push(remaining)
+        }
       }
-      segments.push(remaining.slice(0, splitAt).trim())
-      remaining = remaining.slice(splitAt).trim()
+    } else {
+      // Current buffer is full, push it and start new with this sentence
+      segments.push(current.trim())
+      current = sentence
     }
-    if (remaining.length > 0) {
-      segments.push(remaining)
-    }
-    return segments
-  })
+  }
 
-  return pieces
+  // Push remaining buffer
+  if (current.trim()) {
+    segments.push(current.trim())
+  }
+
+  return segments
     .map((piece) => piece.trim())
     .filter((piece) => piece.length >= MICRO_MIN)
     .map((piece) => ({
@@ -992,7 +1089,56 @@ function createSplitClause(
   }]
 }
 
+// UPDATED: Prefer sentence boundaries over word boundaries to avoid mid-sentence fragments
 function chunkAtWordBoundaries(text: string, maxLength: number): string[] {
+  const maxLengthGrace = maxLength + 100 // Allow grace period for complete sentences
+
+  // First try: split on sentence boundaries and combine up to maxLength
+  // Note: Semicolons are valid clause separators in legal text
+
+  // Protect legal abbreviations before splitting to avoid false sentence breaks
+  const protectedText = protectLegalAbbreviations(text)
+  const sentences = protectedText
+    .split(/(?<=[.!?;])\s+/)
+    .map((s) => restoreLegalAbbreviations(s.trim()))
+    .filter((s) => s.length > 0)
+
+  if (sentences.length > 1) {
+    const chunks: string[] = []
+    let current = ""
+
+    for (const sentence of sentences) {
+      const combined = current ? current + " " + sentence : sentence
+
+      if (combined.length <= maxLength) {
+        current = combined
+      } else if (current.length === 0) {
+        // Single sentence too long - keep if within grace, else word-split
+        if (sentence.length <= maxLengthGrace) {
+          chunks.push(sentence)
+        } else {
+          // Fall through to word-based splitting for this sentence
+          chunks.push(...wordBasedChunk(sentence, maxLength))
+        }
+      } else {
+        chunks.push(current.trim())
+        current = sentence
+      }
+    }
+
+    if (current.trim()) {
+      chunks.push(current.trim())
+    }
+
+    return chunks.filter((c) => c.length > 0)
+  }
+
+  // Fallback: word-based chunking for text without sentence boundaries
+  return wordBasedChunk(text, maxLength)
+}
+
+// Helper for pure word-based chunking (last resort)
+function wordBasedChunk(text: string, maxLength: number): string[] {
   const words = text.split(/\s+/)
   const chunks: string[] = []
   let current: string[] = []
@@ -1000,7 +1146,7 @@ function chunkAtWordBoundaries(text: string, maxLength: number): string[] {
 
   for (const word of words) {
     if (currentLen + word.length + 1 > maxLength && current.length > 0) {
-      chunks.push(current.join(' '))
+      chunks.push(current.join(" "))
       current = []
       currentLen = 0
     }
@@ -1009,7 +1155,7 @@ function chunkAtWordBoundaries(text: string, maxLength: number): string[] {
   }
 
   if (current.length > 0) {
-    chunks.push(current.join(' '))
+    chunks.push(current.join(" "))
   }
 
   return chunks
@@ -1353,7 +1499,9 @@ Global rules:
 - All keys MUST be in double quotes, no trailing commas, and the JSON MUST be syntactically valid.
 
 Semantics (granular clauses required):
-- A "clause" is a **single obligation/definition/right**, ideally 50–400 characters, max 3 sentences. Do NOT merge multiple obligations into one clause.
+- A "clause" is a **single obligation/definition/right**, ideally 50–${MAX_CLAUSE_LENGTH} characters, max 2 sentences. Do NOT merge multiple obligations into one clause.
+- CRITICAL: Every clause MUST be a COMPLETE sentence ending with . or ; or ! or ?
+- NEVER cut a clause mid-sentence. A fragment like "The influencer shall deliver" is WRONG.
 - Split bullets/numbered lists into separate clauses (one per bullet/sub-item). If a paragraph has multiple obligations, split them.
 - If a clause looks truncated at the start or end (chunk boundary), still return it but:
   - set a lower confidence (≤ 0.4)
@@ -1430,8 +1578,7 @@ No other fields. No extra top-level keys. No comments. No markdown.
 
 ### 3. Field semantics
 
-- content: Verbatim or lightly cleaned text from this chunk only (core clause body). Aim for 50–400 characters; NEVER return a mega-clause.
-- content: **Verbatim text from this chunk only** (light whitespace cleanup allowed). Aim for 50–400 characters; NEVER paraphrase or merge multiple obligations; NEVER return a mega-clause.
+- content: Verbatim or lightly cleaned text from this chunk only (core clause body). Aim for 50–${MAX_CLAUSE_LENGTH} characters; NEVER return a mega-clause. MUST be a complete sentence ending with . or ; or ! or ?
 - clause_type (snake_case): e.g. "parties", "scope_of_work", "fees_and_payment", "term_and_termination", "usage_rights", "confidentiality", "miscellaneous".
 - summary: 1–3 sentences, neutral and factual.
 - confidence: 0.8–1.0 (clear), 0.5–0.79 (some ambiguity), 0.0–0.49 (incomplete/ambiguous/truncated).

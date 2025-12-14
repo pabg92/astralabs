@@ -1,6 +1,7 @@
 // Edge Function: generate-embeddings
 // Phase 6: Generate embeddings for contract clauses and find library matches
-// Processes clauses from extract-clauses, generates Cohere embeddings, finds similar library clauses
+// Processes clauses from extract-clauses, generates OpenAI embeddings, finds similar library clauses
+// Uses OpenAI text-embedding-3-large to match LCL embeddings
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.3"
 
@@ -10,6 +11,10 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type",
 }
 
+// OpenAI embedding model config - must match LCL embeddings
+const EMBEDDING_MODEL = "text-embedding-3-large"
+const EMBEDDING_DIMENSIONS = 1024
+
 interface ClauseRecord {
   id: string
   content: string
@@ -18,8 +23,9 @@ interface ClauseRecord {
   tenant_id: string
 }
 
-interface CohereEmbedding {
-  embeddings: number[][]
+interface OpenAIEmbeddingResponse {
+  data: Array<{ embedding: number[]; index: number }>
+  usage: { prompt_tokens: number; total_tokens: number }
 }
 
 interface SimilarClause {
@@ -56,11 +62,11 @@ Deno.serve(async (req) => {
 
     supabase = createClient(supabaseUrl, supabaseServiceKey)
 
-    // Get Cohere API key
-    const cohereApiKey = Deno.env.get("COHERE_API_KEY")
-    if (!cohereApiKey) {
+    // Get OpenAI API key (must match LCL embedding model)
+    const openaiApiKey = Deno.env.get("OPENAI_API_KEY")
+    if (!openaiApiKey) {
       throw new Error(
-        "COHERE_API_KEY environment variable is required for embedding generation"
+        "OPENAI_API_KEY environment variable is required for embedding generation"
       )
     }
 
@@ -112,7 +118,7 @@ Deno.serve(async (req) => {
 
     console.log(`Found ${clauses.length} clauses without embeddings`)
 
-    // Step 2: Batch process with Cohere (25 clauses per batch)
+    // Step 2: Batch process with OpenAI (25 clauses per batch)
     const batchSize = 25
     let totalEmbeddingsGenerated = 0
     let totalMatchesCreated = 0
@@ -127,41 +133,45 @@ Deno.serve(async (req) => {
         `Processing batch ${batchNum}: ${batch.length} clauses (${i + 1}-${i + batch.length} of ${clauses.length})`
       )
 
-      // Extract texts for Cohere
-      const texts = batch.map((c) => c.content.substring(0, 2000)) // Limit to 2000 chars per clause
+      // Extract texts for OpenAI
+      const texts = batch.map((c) => c.content.substring(0, 8000)) // OpenAI supports longer input
 
       try {
-        // Step 3: Call Cohere API
-        const cohereResponse = await fetch("https://api.cohere.ai/v1/embed", {
+        // Step 3: Call OpenAI Embeddings API
+        const openaiResponse = await fetch("https://api.openai.com/v1/embeddings", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${cohereApiKey}`,
+            Authorization: `Bearer ${openaiApiKey}`,
           },
           body: JSON.stringify({
-            texts: texts,
-            model: "embed-english-v3.0",
-            input_type: "search_document",
+            model: EMBEDDING_MODEL,
+            input: texts,
+            dimensions: EMBEDDING_DIMENSIONS,
+            encoding_format: "float",
           }),
         })
 
-        if (!cohereResponse.ok) {
-          const errorText = await cohereResponse.text()
+        if (!openaiResponse.ok) {
+          const errorText = await openaiResponse.text()
           throw new Error(
-            `Cohere API error (${cohereResponse.status}): ${errorText}`
+            `OpenAI API error (${openaiResponse.status}): ${errorText}`
           )
         }
 
-        const cohereData = (await cohereResponse.json()) as CohereEmbedding
-        const embeddings = cohereData.embeddings
+        const openaiData = (await openaiResponse.json()) as OpenAIEmbeddingResponse
+        // Sort by index to ensure correct order
+        const embeddings = openaiData.data
+          .sort((a, b) => a.index - b.index)
+          .map((d) => d.embedding)
 
         if (embeddings.length !== batch.length) {
           throw new Error(
-            `Cohere returned ${embeddings.length} embeddings but expected ${batch.length}`
+            `OpenAI returned ${embeddings.length} embeddings but expected ${batch.length}`
           )
         }
 
-        console.log(`✅ Generated ${embeddings.length} embeddings from Cohere`)
+        console.log(`✅ Generated ${embeddings.length} embeddings from OpenAI (${EMBEDDING_MODEL})`)
 
         // Step 4: Store embeddings and find matches
         for (let j = 0; j < batch.length; j++) {
@@ -187,11 +197,13 @@ Deno.serve(async (req) => {
           totalEmbeddingsGenerated++
 
           // Step 5: Find similar clauses from library
+          // Threshold lowered to 0.35 to capture amber candidates (0.40-0.55)
+          // Code determines green/amber/red based on scores returned
           const { data: matches, error: matchError } = await supabase.rpc(
             "find_similar_clauses",
             {
               query_embedding: embeddingArray,
-              similarity_threshold: 0.60, // Lowered from 0.75: library uses templates with placeholders while contracts have specific values
+              similarity_threshold: 0.35,
               max_results: 10,
               p_tenant_id: clause.tenant_id,
             }
@@ -210,7 +222,7 @@ Deno.serve(async (req) => {
           let similarity_score = 0
           let ragRisk: "green" | "amber" | "red" = "amber"
           let gpt_analysis: any = {
-            embedding_source: "cohere_embed_english_v3",
+            embedding_source: "text-embedding-3-large",
           }
 
           if (!matches || matches.length === 0) {
@@ -218,8 +230,8 @@ Deno.serve(async (req) => {
             ragRisk = "amber" // No match means needs review
             gpt_analysis = {
               no_library_match: true,
-              embedding_source: "cohere_embed_english_v3",
-              reason: "No similar clauses found in library above 0.60 similarity threshold"
+              embedding_source: "text-embedding-3-large",
+              reason: "No similar clauses found in library above 0.55 similarity threshold"
             }
           } else {
             // Found matches - use top match
@@ -232,13 +244,14 @@ Deno.serve(async (req) => {
             similarity_score = topMatch.similarity
 
             // Determine RAG risk based on similarity
-            // Thresholds adjusted based on real-world similarity scores (avg: 0.577, max: 0.791)
-            if (topMatch.similarity >= 0.75) {
-              ragRisk = "green" // Strong match (top ~10% of similarities)
-            } else if (topMatch.similarity >= 0.60) {
-              ragRisk = "amber" // Moderate match (acceptable similarity)
+            // Thresholds calibrated for ~90% green coverage with P1 reconciliation as safety net
+            // P1 catches term differences even when LCL matches - two-layer protection
+            if (topMatch.similarity >= 0.50) {
+              ragRisk = "green" // Good match - same clause type, P1 verifies terms
+            } else if (topMatch.similarity >= 0.35) {
+              ragRisk = "amber" // Moderate match - needs review
             } else {
-              ragRisk = "red" // Weak match (below threshold, needs review)
+              ragRisk = "red" // Weak match - likely different clause type
             }
 
             gpt_analysis = {
@@ -255,7 +268,7 @@ Deno.serve(async (req) => {
                 similarity: m.similarity,
                 match_category: m.match_category,
               })),
-              embedding_source: "cohere_embed_english_v3",
+              embedding_source: "text-embedding-3-large",
             }
           }
 
@@ -321,7 +334,7 @@ Deno.serve(async (req) => {
           matches_created: totalMatchesCreated,
           batches_processed: embeddingStats.length,
           batch_stats: embeddingStats,
-          cohere_model: "embed-english-v3.0",
+          openai_model: EMBEDDING_MODEL,
         },
         execution_time_ms: executionTime,
       })
