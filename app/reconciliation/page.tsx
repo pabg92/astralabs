@@ -315,6 +315,7 @@ function ReconciliationContent() {
   const [loadError, setLoadError] = useState<string | null>(null)
   const [documentProcessing, setDocumentProcessing] = useState(false) // Document still being processed by worker
   const [processingFailed, setProcessingFailed] = useState<string | null>(null) // Document processing failed with error
+  const [forceRefetchCounter, setForceRefetchCounter] = useState(0) // Trigger refetch when animation completes
   const [loadingMessageIndex, setLoadingMessageIndex] = useState(0) // Fun loading message rotation
   const [exportingText, setExportingText] = useState(false)
   const [exportingJSON, setExportingJSON] = useState(false)
@@ -602,7 +603,7 @@ function ReconciliationContent() {
         clearInterval(pollInterval)
       }
     }
-  }, [dealId])
+  }, [dealId, forceRefetchCounter])
 
   // Phase 11: Fetch redlines and comments
   useEffect(() => {
@@ -1980,7 +1981,8 @@ function ReconciliationContent() {
         <ProcessingThoughts
           isActuallyProcessing={true}
           onComplete={() => {
-            // Animation finished but we're still polling - just let it continue
+            // Animation finished - trigger an immediate refetch to check if processing is done
+            setForceRefetchCounter(prev => prev + 1)
           }}
         />
       </div>

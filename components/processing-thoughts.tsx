@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect, useRef, useCallback } from "react"
 import { cn } from "@/lib/utils"
 import { FileText, Database, Scale, Search, Brain, CheckCircle2, Sparkles, Zap, Eye, BookOpen } from "lucide-react"
 
@@ -118,7 +118,14 @@ export function ProcessingThoughts({
   const [completedSteps, setCompletedSteps] = useState<number[]>([])
   const [displayedText, setDisplayedText] = useState("")
   const [isTyping, setIsTyping] = useState(true)
+  const [animationComplete, setAnimationComplete] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
+
+  // Store onComplete in a ref to avoid stale closures and dependency issues
+  const onCompleteRef = useRef(onComplete)
+  useEffect(() => {
+    onCompleteRef.current = onComplete
+  }, [onComplete])
 
   // Typewriter effect for current text
   useEffect(() => {
@@ -149,7 +156,8 @@ export function ProcessingThoughts({
 
     const step = processingThoughts[currentStep]
     if (!step) {
-      onComplete?.()
+      setAnimationComplete(true)
+      onCompleteRef.current?.()
       return
     }
 
@@ -162,19 +170,25 @@ export function ProcessingThoughts({
         setCurrentSubstep(prev => prev + 1)
       } else {
         // Complete this step and move to next
-        setCompletedSteps(prev => [...prev, currentStep])
+        // BUGFIX: Prevent duplicate steps (was causing 156% progress)
+        setCompletedSteps(prev => {
+          if (prev.includes(currentStep)) return prev
+          return [...prev, currentStep]
+        })
         if (currentStep < processingThoughts.length - 1) {
           setCurrentStep(prev => prev + 1)
           setCurrentSubstep(0)
         } else {
-          // All done
-          onComplete?.()
+          // All steps animated - mark complete and call callback via ref
+          setAnimationComplete(true)
+          onCompleteRef.current?.()
         }
       }
     }, hasSubsteps ? 600 : step.duration)
 
     return () => clearTimeout(timer)
-  }, [isTyping, currentStep, currentSubstep, onComplete])
+    // BUGFIX: Removed onComplete from deps - using ref instead to prevent effect re-runs
+  }, [isTyping, currentStep, currentSubstep])
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -291,22 +305,36 @@ export function ProcessingThoughts({
         <div className="px-6 pb-4">
           <div className="flex items-center justify-between text-xs text-slate-500 mb-2">
             <span>Processing</span>
-            <span>{Math.round((completedSteps.length / processingThoughts.length) * 100)}%</span>
+            <span>{Math.min(100, Math.round((completedSteps.length / processingThoughts.length) * 100))}%</span>
           </div>
           <div className="h-1.5 bg-slate-700 rounded-full overflow-hidden">
             <div
               className="h-full bg-gradient-to-r from-blue-500 to-purple-500 transition-all duration-500 ease-out"
-              style={{ width: `${(completedSteps.length / processingThoughts.length) * 100}%` }}
+              style={{ width: `${Math.min(100, (completedSteps.length / processingThoughts.length) * 100)}%` }}
             />
           </div>
         </div>
 
+        {/* Waiting state - shown when animation finishes but still processing */}
+        {animationComplete && isActuallyProcessing && (
+          <div className="px-6 py-4 bg-blue-500/10 border-t border-slate-700">
+            <div className="flex items-center justify-center gap-3">
+              <div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+              <p className="text-sm text-blue-300">
+                Processing complete. Loading your results...
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Footer hint */}
         <div className="px-6 py-3 bg-slate-800/50 border-t border-slate-700">
           <p className="text-xs text-slate-500 text-center">
-            {isActuallyProcessing
-              ? "This page will automatically refresh when processing completes"
-              : "Preparing your contract review workspace..."
+            {animationComplete && isActuallyProcessing
+              ? "Almost there! Your contract analysis will appear shortly..."
+              : isActuallyProcessing
+                ? "This page will automatically refresh when processing completes"
+                : "Preparing your contract review workspace..."
             }
           </p>
         </div>
