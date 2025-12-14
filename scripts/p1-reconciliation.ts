@@ -5,7 +5,8 @@
 
 import { createClient } from '@supabase/supabase-js'
 
-// ============ RATE LIMITING CONFIGURATION ============
+// ============ MODEL & RATE LIMITING CONFIGURATION ============
+const P1_MODEL = process.env.P1_MODEL || "gpt-5.1"  // Higher-accuracy model for comparisons
 const RATE_LIMIT_DELAY_MS = 100    // Base delay between API calls
 const MAX_RETRIES = 5              // Hard cap on retries
 const BACKOFF_MULTIPLIER = 2       // Exponential backoff multiplier
@@ -64,6 +65,14 @@ interface ClauseMatchResult {
   rag_risk: string
   gpt_analysis: any
 }
+interface LibraryClause {
+  id: string
+  clause_id: string
+  standard_text: string
+  clause_type: string
+  category: string | null
+  risk_level: string | null
+}
 
 interface ComparisonResult {
   matches: boolean
@@ -71,6 +80,36 @@ interface ComparisonResult {
   explanation: string
   key_differences: string[]
   confidence: number
+}
+
+function sanitizeComparisonResult(raw: any): ComparisonResult {
+  const allowedSeverities = new Set(["none", "minor", "major"])
+  const severityRaw = typeof raw?.deviation_severity === "string" ? raw.deviation_severity.toLowerCase() : ""
+  const deviation_severity = allowedSeverities.has(severityRaw) ? (severityRaw as ComparisonResult["deviation_severity"]) : "major"
+
+  const matches = Boolean(raw?.matches)
+  const explanation =
+    typeof raw?.explanation === "string" && raw.explanation.trim()
+      ? raw.explanation.trim().slice(0, 300)
+      : "No explanation provided"
+
+  const key_differences = Array.isArray(raw?.key_differences)
+    ? raw.key_differences
+        .filter((k: any) => typeof k === "string" && k.trim())
+        .slice(0, 5)
+        .map((k: string) => k.trim())
+    : []
+
+  const confidenceNum = typeof raw?.confidence === "number" ? raw.confidence : 0
+  const confidence = Math.min(1, Math.max(0, confidenceNum))
+
+  return {
+    matches,
+    deviation_severity,
+    explanation,
+    key_differences,
+    confidence,
+  }
 }
 
 export async function performP1Reconciliation(
@@ -162,6 +201,30 @@ export async function performP1Reconciliation(
   let updatedCount = 0
   let discrepanciesCreated = 0
 
+  // Fetch library exemplars for matched templates to ground GPT decisions
+  const templateIds = Array.from(
+    new Set(
+      (matchResults || [])
+        .map((m) => m.matched_template_id)
+        .filter((id): id is string => !!id)
+    )
+  )
+  let libraryExemplars = new Map<string, LibraryClause>()
+  if (templateIds.length > 0) {
+    const { data: libraryRows, error: libraryError } = await supabase
+      .from("legal_clause_library")
+      .select("id, clause_id, standard_text, clause_type, category, risk_level")
+      .in("id", templateIds)
+
+    if (libraryError) {
+      console.warn(`   ⚠️ Could not load library exemplars: ${libraryError.message}`)
+    } else if (libraryRows) {
+      libraryExemplars = new Map(
+        libraryRows.map((row: LibraryClause) => [row.id, row])
+      )
+    }
+  }
+
   // Process one clause at a time
   for (const matchResult of matchResults || []) {
     const clause = clauses?.find((c) => c.id === matchResult.clause_boundary_id)
@@ -222,6 +285,10 @@ export async function performP1Reconciliation(
         }
 
         try {
+          const exemplar = matchResult.matched_template_id
+            ? libraryExemplars.get(matchResult.matched_template_id)
+            : null
+
           const openaiResponse = await callWithBackoff(
             async () => {
               const response = await fetch(
@@ -233,7 +300,7 @@ export async function performP1Reconciliation(
                     Authorization: `Bearer ${openaiApiKey}`,
                   },
                   body: JSON.stringify({
-                    model: "gpt-4o-mini",
+                    model: P1_MODEL,
                     messages: [
                       {
                         role: "system",
@@ -248,6 +315,9 @@ Description: ${term.term_description}
 Expected: ${term.expected_value || "N/A"}
 Mandatory: ${term.is_mandatory}
 
+Library exemplar (if provided) represents the normalized clause we expect to align with:
+${exemplar ? exemplar.standard_text.substring(0, 800) : "N/A"}
+
 Contract Clause:
 Type: ${clause.clause_type}
 Content: ${clause.content.substring(0, 800)}
@@ -255,7 +325,8 @@ Content: ${clause.content.substring(0, 800)}
 Match?`,
                       },
                     ],
-                    temperature: 0.2,
+                    temperature: 0,
+                    top_p: 0.1,
                     response_format: { type: "json_object" },
                   }),
                 }
@@ -279,11 +350,87 @@ Match?`,
           // Safe JSON parsing with error handling
           let comparisonResult: ComparisonResult
           try {
-            comparisonResult = JSON.parse(content)
+            comparisonResult = sanitizeComparisonResult(JSON.parse(content))
           } catch (parseErr) {
             console.error(`   ⚠️ JSON parse error for term ${term.id}: ${parseErr}`)
             console.error(`   Content preview: ${content.substring(0, 200)}`)
-            continue // Skip this comparison, don't crash
+            if (term.is_mandatory) {
+              comparisonResult = {
+                matches: false,
+                deviation_severity: "major",
+                explanation: "Primary parse failed; treating mandatory term as non-compliant",
+                key_differences: [],
+                confidence: 0,
+              }
+            } else {
+              continue // Skip this comparison, don't crash
+            }
+          }
+
+          // Optional verifier: re-check mandatory or borderline cases with stricter framing
+          const needsVerification =
+            term.is_mandatory && (comparisonResult.matches || comparisonResult.deviation_severity !== "major")
+
+          if (needsVerification) {
+            const verifyResponse = await callWithBackoff(
+              async () => {
+                const response = await fetch("https://api.openai.com/v1/chat/completions", {
+                  method: "POST",
+                  headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${openaiApiKey}`,
+                  },
+                  body: JSON.stringify({
+                    model: P1_MODEL,
+                    messages: [
+                      {
+                        role: "system",
+                        content: `You are a strict contract compliance verifier. Re-evaluate the prior judgment and only return GREEN if the clause clearly satisfies every mandatory element. Prefer RED if critical elements are missing or ambiguous. Output JSON with the same schema.`,
+                      },
+                      {
+                        role: "user",
+                        content: `Re-evaluate this mandatory term. Use the exemplar as an anchor if provided.
+
+Prior judgment: ${JSON.stringify(comparisonResult)}
+Pre-Agreed Term: ${term.term_category} | ${term.term_description} | Expected: ${term.expected_value || "N/A"}
+Mandatory: ${term.is_mandatory}
+Library exemplar: ${exemplar ? exemplar.standard_text.substring(0, 800) : "N/A"}
+Contract Clause: [${clause.clause_type}] ${clause.content.substring(0, 800)}`,
+                      },
+                    ],
+                    temperature: 0,
+                    top_p: 0.1,
+                    response_format: { type: "json_object" },
+                  }),
+                })
+
+                if (!response.ok) {
+                  const error: any = new Error(`OpenAI verifier error ${response.status}`)
+                  error.status = response.status
+                  throw error
+                }
+                return response
+              },
+              `Verifier for term ${term.id}`
+            )
+
+            const verifyData = await verifyResponse.json()
+            const verifyContent = verifyData.choices[0]?.message?.content
+            if (verifyContent) {
+              try {
+                const verifiedResult = sanitizeComparisonResult(JSON.parse(verifyContent))
+                comparisonResult = verifiedResult
+              } catch (verifyParseErr) {
+                console.error(`   ⚠️ Verifier JSON parse error for term ${term.id}: ${verifyParseErr}`)
+                // If verifier fails, fall back to a conservative stance for mandatory terms
+                comparisonResult = term.is_mandatory
+                  ? { matches: false, deviation_severity: "major", explanation: "Verifier failed; treating as non-compliant", key_differences: [], confidence: 0 }
+                  : comparisonResult
+              }
+            } else if (term.is_mandatory) {
+              // No verifier content returned for mandatory term → conservative stance
+              comparisonResult = { matches: false, deviation_severity: "major", explanation: "Verifier returned empty content; treating as non-compliant", key_differences: [], confidence: 0 }
+            }
           }
 
           let termRagParsing: "green" | "amber" | "red"
@@ -322,6 +469,25 @@ Match?`,
           console.log(`     ${term.term_category}: ${termRagParsing}`)
         } catch (error) {
           console.error(`     Error comparing term ${term.id}:`, error)
+          if (term.is_mandatory) {
+            // If the call itself failed and this is mandatory, default to non-compliant
+            const fallbackResult: ComparisonResult = {
+              matches: false,
+              deviation_severity: "major",
+              explanation: "Comparison failed; treating mandatory term as non-compliant",
+              key_differences: [],
+              confidence: 0,
+            }
+            preAgreedComparisons.push({
+              term_id: term.id,
+              term_category: term.term_category,
+              is_mandatory: term.is_mandatory,
+              comparison_result: fallbackResult,
+              rag_parsing: "red",
+            })
+            // Worst-case rag_parsing
+            rag_parsing = "red"
+          }
         }
       }
     }

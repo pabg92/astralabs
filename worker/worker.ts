@@ -40,6 +40,39 @@ interface QueueMessage {
   vt: string
 }
 
+// Retry configuration
+const RETRY_CONFIG = {
+  maxRetries: 3,
+  initialDelayMs: 2000,  // 2 seconds
+  maxDelayMs: 30000,     // 30 seconds max
+  backoffMultiplier: 2,  // Exponential backoff
+}
+
+// Transient error patterns that should trigger retry
+const TRANSIENT_ERROR_PATTERNS = [
+  /5\d{2}/,              // 5xx server errors (500, 502, 503, 504, 520, etc.)
+  /429/,                 // Rate limiting
+  /ECONNRESET/i,         // Connection reset
+  /ETIMEDOUT/i,          // Timeout
+  /ECONNREFUSED/i,       // Connection refused
+  /EPIPE/i,              // Broken pipe
+  /socket hang up/i,     // Socket hang up
+  /network/i,            // Network errors
+  /timeout/i,            // Timeout errors
+  /temporarily unavailable/i,
+  /service unavailable/i,
+]
+
+function isTransientError(error: any): boolean {
+  const errorString = String(error?.message || error || '')
+  return TRANSIENT_ERROR_PATTERNS.some(pattern => pattern.test(errorString))
+}
+
+function calculateBackoffDelay(attempt: number): number {
+  const delay = RETRY_CONFIG.initialDelayMs * Math.pow(RETRY_CONFIG.backoffMultiplier, attempt)
+  return Math.min(delay, RETRY_CONFIG.maxDelayMs)
+}
+
 class DocumentProcessingWorker {
   private supabase: any
   private isRunning = false
@@ -60,6 +93,7 @@ class DocumentProcessingWorker {
     console.log('🚀 Document Processing Worker initialized')
     console.log(`📦 Queue: document_processing_queue`)
     console.log(`⏱️  Poll interval: ${this.pollInterval}ms`)
+    console.log(`🔄 Retry: ${RETRY_CONFIG.maxRetries} retries, ${RETRY_CONFIG.initialDelayMs}ms initial delay, ${RETRY_CONFIG.backoffMultiplier}x backoff`)
   }
 
   async start() {
@@ -119,8 +153,10 @@ class DocumentProcessingWorker {
         } else {
           console.log(`✅ Message ${msg.msg_id} processed and deleted (document: ${docId})`)
         }
-      } catch (error) {
-        console.error(`❌ Failed to process document ${docId} (msg ${msg.msg_id}):`, error)
+      } catch (error: any) {
+        const wasTransient = isTransientError(error)
+        const errorType = wasTransient ? 'transient (retries exhausted)' : 'non-retryable'
+        console.error(`❌ Failed to process document ${docId} (msg ${msg.msg_id}) - ${errorType}:`, error?.message || error)
 
         // Archive failed message to DLQ
         const { error: archiveError } = await this.supabase.rpc('archive_queue_message', {
@@ -132,7 +168,7 @@ class DocumentProcessingWorker {
           console.error(`🔴 CRITICAL: Failed to archive msg ${msg.msg_id} for document ${docId}:`, archiveError)
           throw new Error(`Queue archive failed for msg ${msg.msg_id}, document ${docId}`)
         } else {
-          console.log(`📦 Message ${msg.msg_id} archived to DLQ (document: ${docId})`)
+          console.log(`📦 Message ${msg.msg_id} archived to DLQ after ${wasTransient ? 'exhausting retries' : 'non-retryable error'} (document: ${docId})`)
         }
       }
     }
@@ -239,23 +275,62 @@ class DocumentProcessingWorker {
 
   private async invokeEdgeFunction(functionName: string, payload: any) {
     const url = `${this.edgeFunctionBaseUrl}/${functionName}`
+    let lastError: Error | null = null
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`,
-        'apikey': process.env.SUPABASE_SERVICE_ROLE_KEY!,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(payload)
-    })
+    for (let attempt = 0; attempt <= RETRY_CONFIG.maxRetries; attempt++) {
+      try {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`,
+            'apikey': process.env.SUPABASE_SERVICE_ROLE_KEY!,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(payload)
+        })
 
-    if (!response.ok) {
-      const error = await response.text()
-      throw new Error(`Edge function ${functionName} failed: ${error}`)
+        if (!response.ok) {
+          const errorText = await response.text()
+          const error = new Error(`Edge function ${functionName} failed (${response.status}): ${errorText}`)
+
+          // Check if this is a retryable error
+          if (isTransientError(error) && attempt < RETRY_CONFIG.maxRetries) {
+            const delay = calculateBackoffDelay(attempt)
+            console.log(`   ⚠️ ${functionName} failed with transient error (attempt ${attempt + 1}/${RETRY_CONFIG.maxRetries + 1}), retrying in ${delay}ms...`)
+            await this.sleep(delay)
+            lastError = error
+            continue
+          }
+
+          throw error
+        }
+
+        // Success - if we had retries, log it
+        if (attempt > 0) {
+          console.log(`   ✅ ${functionName} succeeded after ${attempt + 1} attempts`)
+        }
+
+        return await response.json()
+
+      } catch (error: any) {
+        lastError = error
+
+        // Check if this is a retryable error (network errors, etc.)
+        if (isTransientError(error) && attempt < RETRY_CONFIG.maxRetries) {
+          const delay = calculateBackoffDelay(attempt)
+          console.log(`   ⚠️ ${functionName} failed with transient error (attempt ${attempt + 1}/${RETRY_CONFIG.maxRetries + 1}), retrying in ${delay}ms...`)
+          console.log(`      Error: ${error.message?.substring(0, 100)}...`)
+          await this.sleep(delay)
+          continue
+        }
+
+        // Non-retryable error or max retries exhausted
+        throw error
+      }
     }
 
-    return await response.json()
+    // Should not reach here, but just in case
+    throw lastError || new Error(`${functionName} failed after ${RETRY_CONFIG.maxRetries + 1} attempts`)
   }
 
   private sleep(ms: number) {

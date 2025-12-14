@@ -6,6 +6,7 @@
 import { createClient } from '@supabase/supabase-js'
 
 // ============ CONFIGURATION ============
+const P1_MODEL = process.env.P1_MODEL || "gpt-5.1"  // Higher-accuracy model for comparisons
 const MAX_RETRIES = 3
 const BACKOFF_MULTIPLIER = 2
 const MAX_BACKOFF_MS = 30000
@@ -41,6 +42,8 @@ interface PreAgreedTerm {
   expected_value: string
   is_mandatory: boolean
   related_clause_types: string[] | null
+  normalized_term_category?: string
+  normalized_clause_type?: string
 }
 
 interface ClauseBoundary {
@@ -80,7 +83,6 @@ interface BatchComparison {
   expectedValue: string
   matchReason: 'type_match' | 'fallback_match' | 'semantic_fallback'
   semanticScore: number
-  semanticRelevance: number // How relevant clause content is to PAT terms (dollar amounts, platforms, etc.)
 }
 
 interface BatchResult {
@@ -92,6 +94,15 @@ interface BatchResult {
   confidence: number
 }
 
+interface NormalizedTerm {
+  id: string
+  term_category?: string
+  clause_type_guess?: string
+  description?: string
+  expected_value?: string
+  is_mandatory?: boolean
+}
+
 interface ClauseCandidate {
   clause: ClauseBoundary
   matchResult: ClauseMatchResult
@@ -100,48 +111,7 @@ interface ClauseCandidate {
 
 // ============ TERM CATEGORY → CLAUSE TYPE MAPPING ============
 // Maps PAT term_category to allowed clause_types for targeted matching
-// UPDATED: Added actual PAT categories from deals (CIDER, Milk Makeup)
 const TERM_TO_CLAUSE_MAP: Record<string, { primary: string[], fallback: string[] }> = {
-  // ===== ACTUAL PAT CATEGORIES (from pre_agreed_terms table) =====
-  // Payment & Compensation
-  // FIX: Added usage_rights and general_terms to fallback because fee info sometimes
-  // appears in combined clauses (e.g., "60 days usage... Compensation $4,000 NET 30")
-  // FIX: Added social_platform_tiktok and agreed_in_the_agreement - OpenAI sometimes
-  // types Schedule A content (fees, usage) with these non-standard types
-  "Compensation & Payment Timing": {
-    primary: ["payment_terms"],
-    fallback: ["invoicing_obligation", "timeline_obligation", "usage_rights", "general_terms", "social_platform_tiktok", "agreed_in_the_agreement"]
-  },
-
-  // Content Approvals
-  "Content Approval & Revisions": {
-    primary: ["content_requirement", "deliverables", "deliverable_obligation"],
-    fallback: ["acceptance_mechanism", "general_terms"]
-  },
-
-  // Content Retention
-  // FIX: Removed content_restriction (too broad - includes "no other brands", "no bots")
-  // Content retention is about how long posts must stay up, usually in:
-  // - usage_rights (license duration), term_definition, timeline_obligation
-  "Content Retention & Non-Removal": {
-    primary: ["usage_rights", "term_definition", "timeline_obligation"],
-    fallback: ["deliverables", "general_terms"]
-  },
-
-  // Deliverables
-  "Deliverables & Posting Requirements": {
-    primary: ["deliverables", "deliverable_obligation", "content_requirement"],
-    fallback: ["timeline_obligation", "general_terms"]
-  },
-
-  // Usage Rights & IP
-  // FIX: Added social_platform_tiktok - OpenAI often types usage duration in Schedule A with this type
-  "Usage Rights & Licensing": {
-    primary: ["usage_rights", "intellectual_property"],
-    fallback: ["content_restriction", "general_terms", "social_platform_tiktok", "agreed_in_the_agreement"]
-  },
-
-  // ===== LEGACY MAPPINGS (for backward compatibility) =====
   // Payment
   "Payment Terms": { primary: ["payment_terms"], fallback: [] },
 
@@ -151,33 +121,33 @@ const TERM_TO_CLAUSE_MAP: Record<string, { primary: string[], fallback: string[]
   "Posting Restrictions": { primary: ["exclusivity", "deliverables"], fallback: [] },
 
   // Usage/IP
-  "Usage Rights": { primary: ["intellectual_property", "usage_rights"], fallback: ["deliverables"] },
-  "Usage & Licensing": { primary: ["intellectual_property", "usage_rights"], fallback: ["deliverables"] },
+  "Usage Rights": { primary: ["intellectual_property"], fallback: ["deliverables"] },
+  "Usage & Licensing": { primary: ["intellectual_property"], fallback: ["deliverables"] },
 
   // Approvals
-  "Brand Approval Required": { primary: ["deliverables", "content_requirement"], fallback: ["acceptance_mechanism"] },
-  "Approval & Reshoot Obligation": { primary: ["deliverables", "content_requirement"], fallback: ["acceptance_mechanism"] },
+  "Brand Approval Required": { primary: ["deliverables"], fallback: ["scope_of_work"] },
+  "Approval & Reshoot Obligation": { primary: ["deliverables"], fallback: ["scope_of_work"] },
 
   // Compliance
   "FTC & Disclosure Compliance": { primary: ["compliance"], fallback: ["confidentiality"] },
   "Disclosure Requirements": { primary: ["compliance"], fallback: ["confidentiality"] },
 
   // Content/Deliverables
-  "Content Standards & Lighting": { primary: ["deliverables", "content_requirement"], fallback: ["deliverable_obligation"] },
-  "Brand Tags, Hashtags & Links": { primary: ["deliverables", "content_requirement"], fallback: [] },
-  "Minimum Duration & Feed Placement": { primary: ["deliverables", "content_restriction"], fallback: [] },
-  "Posting Schedule": { primary: ["deliverables", "timeline_obligation"], fallback: ["deliverable_obligation"] },
-  "Creative Requirements": { primary: ["deliverables", "content_requirement"], fallback: ["deliverable_obligation"] },
-  "Delivery Deadline": { primary: ["deliverables", "timeline_obligation"], fallback: ["termination"] },
-  "Pre-Production Requirement": { primary: ["deliverables", "content_requirement"], fallback: ["deliverable_obligation"] },
-  "Clothing & Styling Requirement": { primary: ["deliverables", "content_requirement"], fallback: [] },
-  "Analytics Delivery": { primary: ["deliverables", "reporting_requirements"], fallback: ["deliverable_obligation"] },
+  "Content Standards & Lighting": { primary: ["deliverables"], fallback: ["scope_of_work"] },
+  "Brand Tags, Hashtags & Links": { primary: ["deliverables"], fallback: [] },
+  "Minimum Duration & Feed Placement": { primary: ["deliverables"], fallback: [] },
+  "Posting Schedule": { primary: ["deliverables"], fallback: ["scope_of_work"] },
+  "Creative Requirements": { primary: ["deliverables"], fallback: ["scope_of_work"] },
+  "Delivery Deadline": { primary: ["deliverables"], fallback: ["termination"] },
+  "Pre-Production Requirement": { primary: ["deliverables"], fallback: ["scope_of_work"] },
+  "Clothing & Styling Requirement": { primary: ["deliverables"], fallback: [] },
+  "Analytics Delivery": { primary: ["deliverables"], fallback: ["compliance"] },
 }
 
 // Legacy keyword matching for unmapped term categories
 function keywordMatchClause(term: PreAgreedTerm, clause: ClauseBoundary): boolean {
   const normalizedClauseType = clause.clause_type.replace(/_/g, " ").toLowerCase()
-  const termCategory = term.term_category.toLowerCase()
+  const termCategory = (term.normalized_term_category || term.term_category).toLowerCase()
   const termDescription = term.term_description.toLowerCase()
 
   const keywordMap: Record<string, string[]> = {
@@ -199,73 +169,89 @@ function keywordMatchClause(term: PreAgreedTerm, clause: ClauseBoundary): boolea
   return false
 }
 
-// Calculate semantic relevance between PAT description and clause content
-// This prioritizes clauses that contain the SAME KEY TERMS as the PAT
-// E.g., if PAT mentions "$3,500", prioritize clauses with dollar amounts
-function calculateSemanticRelevance(term: PreAgreedTerm, clause: ClauseBoundary): number {
-  const termDesc = term.term_description.toLowerCase()
-  const clauseContent = clause.content.toLowerCase()
-  let score = 0
+// Normalize PAT terms via GPT to correct typos and map categories/clauses
+async function normalizePatTerms(
+  terms: PreAgreedTerm[],
+  openaiApiKey: string
+): Promise<PreAgreedTerm[]> {
+  if (!terms.length) return terms
 
-  // Extract key terms from PAT description
-  // 1. Dollar amounts - most important for payment terms
-  const patAmounts = termDesc.match(/\$[\d,]+(?:\.\d{2})?/g) || []
-  const clauseAmounts = clauseContent.match(/\$[\d,]+(?:\.\d{2})?/g) || []
-  if (patAmounts.length > 0 && clauseAmounts.length > 0) {
-    score += 50 // High boost if both mention money
-  }
+  const payload = terms.map((t) => ({
+    id: t.id,
+    term_category: t.term_category,
+    description: t.term_description,
+    expected_value: t.expected_value,
+    is_mandatory: t.is_mandatory,
+  }))
 
-  // 2. Platforms (TikTok, Instagram, YouTube, etc.)
-  const platforms = ['tiktok', 'instagram', 'youtube', 'twitter', 'facebook', 'snapchat', 'reels']
-  const patPlatforms = platforms.filter(p => termDesc.includes(p))
-  const clausePlatforms = platforms.filter(p => clauseContent.includes(p))
-  if (patPlatforms.length > 0 && clausePlatforms.length > 0) {
-    score += 40 // Boost for platform match
-  }
+  try {
+    const response = await callWithBackoff(
+      async () => {
+        const res = await fetch("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${openaiApiKey}`,
+          },
+            body: JSON.stringify({
+              // Use lightweight model to avoid rate limits on normalization
+              model: "gpt-4o-mini",
+            messages: [
+              {
+                role: "system",
+                content: `You are a contract term normalizer. Normalize pre-agreed terms (PATs) to reduce typos and map to known categories.
 
-  // 3. Time periods (days, months, etc.)
-  const timePatterns = /(\d+)\s*(day|week|month|year)s?/gi
-  const patHasTime = timePatterns.test(termDesc)
-  timePatterns.lastIndex = 0 // Reset regex
-  const clauseHasTime = timePatterns.test(clauseContent)
-  if (patHasTime && clauseHasTime) {
-    score += 30 // Boost for time period match
-  }
+Return JSON {"results":[{"id":"...","term_category":"<normalized>","clause_type_guess":"<payment_terms|exclusivity|usage_rights|approval|posting_schedule|compliance|content_standards|analytics|delivery_deadline|pre_production|usage_licensing>","description":"<cleaned description>","expected_value":"<cleaned value>","is_mandatory":true/false}]}`,
+              },
+              {
+                role: "user",
+                content: `Normalize these PATs:
+${JSON.stringify(payload, null, 0)}
 
-  // 4. Deliverable counts - flexible pattern to handle "(1) video", "1 video", "one video"
-  // Also match content type words even without numbers
-  const contentTypes = ['video', 'photo', 'tiktok', 'post', 'reel', 'story', 'image', 'asset', 'overlay']
-  const patContentTypes = contentTypes.filter(t => termDesc.includes(t))
-  const clauseContentTypes = contentTypes.filter(t => clauseContent.includes(t))
-  if (patContentTypes.length > 0 && clauseContentTypes.length > 0) {
-    // Check for overlap
-    const overlap = patContentTypes.filter(t => clauseContentTypes.includes(t))
-    score += 15 * overlap.length // Boost per matching content type
-  }
+Use the closest known term_category; leave clause_type_guess empty if unsure; keep unknown fields as-is. Output JSON only.`,
+              },
+            ],
+            temperature: 0,
+            response_format: { type: "json_object" },
+          }),
+        })
+        if (!res.ok) {
+          const err: any = new Error(`OpenAI error ${res.status}`)
+          err.status = res.status
+          throw err
+        }
+        return res
+      },
+      "PAT normalization"
+    )
 
-  // Also check for number + content type patterns more flexibly
-  const deliverablePattern = /\(?\d+\)?\s*[a-z]*\s*(video|photo|tiktok|post|reel|story|image|asset)/gi
-  const patHasDeliverable = deliverablePattern.test(termDesc)
-  deliverablePattern.lastIndex = 0
-  const clauseHasDeliverable = deliverablePattern.test(clauseContent)
-  if (patHasDeliverable && clauseHasDeliverable) {
-    score += 35 // High boost for deliverable count match
-  }
+    const data = await response.json()
+    const content = data.choices?.[0]?.message?.content
+    if (!content) return terms
 
-  // 5. Key action words that indicate the main clause purpose
-  const actionWords = ['fee', 'payment', 'pay', 'paid', 'compensation', 'license', 'rights', 'usage', 'deliverable', 'post', 'publish', 'link in bio']
-  for (const word of actionWords) {
-    if (termDesc.includes(word) && clauseContent.includes(word)) {
-      score += 5
+    const parsed = JSON.parse(content)
+    const normalized: NormalizedTerm[] = parsed.results || parsed || []
+    const normalizedById = new Map<string, NormalizedTerm>()
+    for (const n of normalized) {
+      if (n?.id) normalizedById.set(n.id, n)
     }
-  }
 
-  // 6. Special boost for "link in bio" which is a common deliverable
-  if (termDesc.includes('link in bio') && clauseContent.includes('link in bio')) {
-    score += 20
+    return terms.map((t) => {
+      const n = normalizedById.get(t.id)
+      if (!n) return t
+      return {
+        ...t,
+        normalized_term_category: n.term_category || t.term_category,
+        normalized_clause_type: n.clause_type_guess,
+        term_description: n.description || t.term_description,
+        expected_value: n.expected_value || t.expected_value,
+        is_mandatory: typeof n.is_mandatory === "boolean" ? n.is_mandatory : t.is_mandatory,
+      }
+    })
+  } catch (err) {
+    console.warn("⚠️ PAT normalization failed, using raw terms:", err)
+    return terms
   }
-
-  return score
 }
 
 // Select top 1-3 clauses for a given PAT term using type mapping
@@ -274,7 +260,10 @@ function selectTopClausesForTerm(
   clauses: ClauseBoundary[],
   matchResults: ClauseMatchResult[]
 ): ClauseCandidate[] {
-  const mapping = TERM_TO_CLAUSE_MAP[term.term_category]
+  const category = term.normalized_term_category || term.term_category
+  const mapping = TERM_TO_CLAUSE_MAP[category] || (term.normalized_clause_type
+    ? { primary: [term.normalized_clause_type], fallback: [] }
+    : undefined)
 
   // Step 1: Filter by primary clause types
   let candidates: ClauseCandidate[] = []
@@ -310,27 +299,13 @@ function selectTopClausesForTerm(
     }
   }
 
-  // Step 4: Sort by SEMANTIC RELEVANCE first, then by LCL similarity
-  // FIX: LCL similarity measures template match, not PAT relevance
-  // E.g., "withhold compensation" (penalty) may score higher than "$2,300 fee" (actual payment)
-  // Semantic relevance checks if clause contains same key terms as PAT (amounts, platforms, etc.)
+  // Step 4: Sort by similarity score, take top 3
   return candidates
-    .map(c => ({
-      ...c,
-      semanticRelevance: calculateSemanticRelevance(term, c.clause)
-    }))
-    .sort((a, b) => {
-      // Primary sort: semantic relevance (higher = better match to PAT content)
-      if (b.semanticRelevance !== a.semanticRelevance) {
-        return b.semanticRelevance - a.semanticRelevance
-      }
-      // Secondary sort: LCL similarity (as tiebreaker)
-      return (b.matchResult.similarity_score || 0) - (a.matchResult.similarity_score || 0)
-    })
-    .slice(0, 10)
+    .sort((a, b) => (b.matchResult.similarity_score || 0) - (a.matchResult.similarity_score || 0))
+    .slice(0, 3)
 }
 
-// Build batch comparisons list - term-centric approach (top 10 clauses per PAT)
+// Build batch comparisons list - term-centric approach (top 1-3 clauses per PAT)
 function buildBatchComparisons(
   clauses: ClauseBoundary[],
   matchResults: ClauseMatchResult[],
@@ -347,24 +322,20 @@ function buildBatchComparisons(
 
     const termComparisons: BatchComparison[] = []
 
-    for (const candidate of candidates) {
-      const { clause, matchResult, matchReason } = candidate
-      // Get semantic relevance from candidate (calculated in selectTopClausesForTerm)
-      const semanticRelevance = (candidate as any).semanticRelevance || 0
+    for (const { clause, matchResult, matchReason } of candidates) {
       const comparison: BatchComparison = {
         idx: idx++,
         clauseId: clause.id,
         matchResultId: matchResult.id,
         termId: term.id,
         clauseType: clause.clause_type,
-        termCategory: term.term_category,
+        termCategory: term.normalized_term_category || term.term_category,
         isMandatory: term.is_mandatory,
         clauseContent: clause.content.substring(0, 600), // Truncate for context window
         termDescription: term.term_description,
         expectedValue: term.expected_value || "N/A",
         matchReason,
         semanticScore: matchResult.similarity_score || 0,
-        semanticRelevance, // FIX: Pass semantic relevance for best-match selection
       }
       comparisons.push(comparison)
       termComparisons.push(comparison)
@@ -376,11 +347,7 @@ function buildBatchComparisons(
   return { comparisons, termComparisonMap }
 }
 
-// Select best match per PAT term
-// PRIORITY: Semantic relevance FIRST, then match status
-// Rationale: A clause with high semantic relevance that shows RED is MORE useful than
-// a clause with low relevance that shows GREEN (the latter is just incidental matching)
-// E.g., for fee PAT: "$4,000 fee" clause (RED) > "30 days payment" clause (GREEN)
+// Select best match per PAT term (green > amber > red, then by confidence)
 function selectBestMatchPerTerm(
   termComparisonMap: Map<string, BatchComparison[]>,
   results: Map<number, BatchResult>
@@ -388,85 +355,35 @@ function selectBestMatchPerTerm(
   const bestByTerm = new Map<string, { comparison: BatchComparison, result: BatchResult }>()
 
   for (const [termId, comparisons] of termComparisonMap) {
-    let best: { comparison: BatchComparison, result: BatchResult } | null = null
-
     for (const comparison of comparisons) {
       const result = results.get(comparison.idx)
       if (!result) continue
 
-      if (!best || isBetterMatch(comparison, result, best.comparison, best.result)) {
-        best = { comparison, result }
+      const existing = bestByTerm.get(termId)
+      if (!existing || isBetterResult(result, existing.result)) {
+        bestByTerm.set(termId, { comparison, result })
       }
-    }
-
-    if (best) {
-      bestByTerm.set(termId, best)
     }
   }
 
   return bestByTerm
 }
 
-// Compare matches: prioritize semantic relevance, then match status
-// High relevance (>30) means clause talks about same thing as PAT (fee, usage, platforms)
-function isBetterMatch(
-  compA: BatchComparison, resultA: BatchResult,
-  compB: BatchComparison, resultB: BatchResult
-): boolean {
-  const HIGH_RELEVANCE_THRESHOLD = 30
-
-  const relevanceA = compA.semanticRelevance || 0
-  const relevanceB = compB.semanticRelevance || 0
-  const aIsHighRelevance = relevanceA >= HIGH_RELEVANCE_THRESHOLD
-  const bIsHighRelevance = relevanceB >= HIGH_RELEVANCE_THRESHOLD
-
-  // Case 1: If one has high relevance and other doesn't, prefer high relevance
-  // (even if it's RED - because it's checking the RIGHT thing)
-  if (aIsHighRelevance && !bIsHighRelevance) return true
-  if (!aIsHighRelevance && bIsHighRelevance) return false
-
-  // Case 2: Both have high relevance - this is the key case for talent protection
-  if (aIsHighRelevance && bIsHighRelevance) {
-    // If relevance difference is significant (>15), prefer higher relevance
-    // E.g., fee clause (50) vs timing clause (30) → prefer fee clause
-    if (Math.abs(relevanceA - relevanceB) > 15) {
-      return relevanceA > relevanceB
-    }
-    // If similar relevance, PREFER RED to surface problems!
-    // Talent managers need to see mismatches, not incidental matches
-    // E.g., $2000 fee clause (RED) > 14-30 days timing (GREEN)
-    const aIsRed = !resultA.matches || resultA.severity === "major"
-    const bIsRed = !resultB.matches || resultB.severity === "major"
-    if (aIsRed && !bIsRed) return true   // Prefer RED - surface the problem!
-    if (!aIsRed && bIsRed) return false
-    // Both same color (both RED or both GREEN), use relevance as tiebreaker
-    return relevanceA > relevanceB
-  }
-
-  // Case 3: Both low relevance - use traditional scoring (prefer green)
-  const scoreResult = (r: BatchResult) => {
+// Compare results: green > amber > red, then by confidence
+function isBetterResult(a: BatchResult, b: BatchResult): boolean {
+  const score = (r: BatchResult) => {
     if (r.matches && r.severity === "none") return 3  // green
     if (r.matches && r.severity === "minor") return 2  // amber
     return 1  // red
   }
-
-  const scoreA = scoreResult(resultA)
-  const scoreB = scoreResult(resultB)
-
-  if (scoreA !== scoreB) return scoreA > scoreB
-
-  // Case 4: Same match score - prefer higher semantic relevance
-  if (relevanceA !== relevanceB) return relevanceA > relevanceB
-
-  // Case 5: Same relevance - use confidence as tiebreaker
-  return resultA.confidence > resultB.confidence
+  return score(a) > score(b) || (score(a) === score(b) && a.confidence > b.confidence)
 }
 
 // Execute batched GPT comparison
 async function executeBatchComparison(
   comparisons: BatchComparison[],
   openaiApiKey: string,
-  model: string = "gpt-4o"
+  model: string = P1_MODEL
 ): Promise<Map<number, BatchResult>> {
   const results = new Map<number, BatchResult>()
 
@@ -498,40 +415,26 @@ async function executeBatchComparison(
             messages: [
               {
                 role: "system",
-                content: `You are a contract compliance checker protecting TALENT interests. Compare contract clauses against pre-agreed terms.
+                content: `You are a contract compliance checker comparing contract clauses against pre-agreed terms.
 
-CRITICAL: You are protecting the TALENT (influencer/creator), not the brand. Flag issues that are BAD for talent:
-- Brand gets MORE usage rights than agreed = RED (talent's content used longer)
-- Brand pays LESS fee than agreed = RED (talent earns less)
-- Talent must deliver MORE than agreed = RED (more work for same pay)
+For each comparison, determine if the clause satisfies the term:
 
-For each comparison:
+**GREEN (matches=true, severity="none"):** Clause fully satisfies the term requirements.
+**AMBER (matches=true, severity="minor"):** Clause partially satisfies but has minor deviations:
+  - Timing slightly off (e.g., 45 days vs 30 days)
+  - Amount close but not exact
+  - Scope slightly broader/narrower than expected
+  - Minor wording differences that don't change intent
+**RED (matches=false, severity="major"):** Clause conflicts with term OR term requirements absent:
+  - Contradictory requirements
+  - Missing critical elements specified in the term
+  - Fundamentally different scope/intent
 
-**GREEN (matches=true, severity="none"):** Values match exactly or are BETTER for talent.
-**AMBER (matches=true, severity="minor"):** Minor deviation that's acceptable.
-**RED (matches=false, severity="major"):** Contract differs from agreed terms in ways that HURT talent:
-  - Fee lower than agreed
-  - Usage period longer than agreed
-  - More deliverables than agreed
-  - Less favorable terms
+Use AMBER for close-but-not-exact matches. Use RED only for clear conflicts or missing requirements.
+Be strict for [MANDATORY] terms. Be concise.
 
-ALWAYS COMPARE NUMBERS:
-- If term says "30 days" and clause says "60 days" → RED (brand gets 2x more usage!)
-- If term says "$5,000" and clause says "$4,000" → RED ($1,000 shortfall)
-- If term says "1 video" and clause says "2 videos" → RED (more work required)
-
-EXPLANATION FORMAT - State BOTH values:
-- "Contract: 60 days, Agreed: 30 days - brand gets 30 extra days"
-- "Contract: $4,000, Agreed: $5,500 - $1,500 shortfall"
-
-DIFFERENCES array format:
-- ["contract_usage: 60 days", "agreed_usage: 30 days"]
-- ["contract_fee: $4,000", "agreed_fee: $5,500"]
-
-Be strict for [MANDATORY] terms.
-
-IMPORTANT: Return results for ALL comparisons.
-{"results":[{"idx":0,"matches":true,"severity":"none","explanation":"Matches: $5,000 fee exactly","differences":[],"confidence":0.95},{"idx":1,"matches":false,"severity":"major","explanation":"Contract: 60 days, Agreed: 30 days - brand gets 30 extra days of usage","differences":["contract_usage: 60 days","agreed_usage: 30 days"],"confidence":0.9},...]}`,
+IMPORTANT: Return results for ALL comparisons. Output format:
+{"results":[{"idx":0,"matches":true,"severity":"none","explanation":"<15 words>","differences":[],"confidence":0.95},{"idx":1,...},...]}`,
               },
               {
                 role: "user",
@@ -664,6 +567,9 @@ export async function performP1Reconciliation(
 
   console.log(`   Found ${preAgreedTerms.length} pre-agreed terms`)
 
+  // Normalize PATs to reduce typos and map categories/clauses
+  const normalizedTerms = await normalizePatTerms(preAgreedTerms, openaiApiKey)
+
   // Fetch clauses
   const { data: clauses, error: clausesError } = await supabase
     .from("clause_boundaries")
@@ -685,7 +591,7 @@ export async function performP1Reconciliation(
   const { comparisons, termComparisonMap } = buildBatchComparisons(
     clauses || [],
     matchResults || [],
-    preAgreedTerms
+    normalizedTerms
   )
 
   console.log(`   Built ${comparisons.length} comparisons for ${termComparisonMap.size} PAT terms`)
@@ -695,13 +601,12 @@ export async function performP1Reconciliation(
     return { p1_comparisons_made: 0 }
   }
 
-  // Select model based on context size
+  // Use configured P1 model for higher accuracy
   const estimatedTokens = comparisons.length * 150 // ~150 tokens per comparison
-  const model = estimatedTokens > 100000 ? "gpt-4o" : "gpt-4o"
-  console.log(`   Using model: ${model} (estimated ${estimatedTokens} tokens)`)
+  console.log(`   Using model: ${P1_MODEL} (estimated ${estimatedTokens} tokens)`)
 
   // Execute batched comparison
-  const batchResults = await executeBatchComparison(comparisons, openaiApiKey, model)
+  const batchResults = await executeBatchComparison(comparisons, openaiApiKey, P1_MODEL)
 
   console.log(`   Got ${batchResults.size}/${comparisons.length} results`)
 
@@ -860,14 +765,11 @@ export async function performP1Reconciliation(
   }
 
   // Handle missing mandatory terms
-  // FIX: Build matchedCategories from bestMatchByTerm (actual P1 results), not stale matchResults
-  const matchedCategories = new Set<string>()
-  for (const [termId, { comparison, result }] of bestMatchByTerm) {
-    // A term is "matched" if GPT found a matching clause (matches=true)
-    if (result.matches) {
-      matchedCategories.add(comparison.termCategory)
-    }
-  }
+  const matchedCategories = new Set(
+    matchResults?.flatMap((r: any) => r.gpt_analysis?.pre_agreed_comparisons || [])
+      .filter((c: any) => c.comparison_result?.matches)
+      .map((c: any) => c.term_category)
+  )
 
   const missingTerms = preAgreedTerms.filter(
     (term: PreAgreedTerm) => term.is_mandatory && !matchedCategories.has(term.term_category)

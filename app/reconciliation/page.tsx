@@ -48,6 +48,7 @@ import {
   ChevronRight,
   Sparkles,
 } from "lucide-react"
+import "@/styles/reconciliation.css"
 import type { JSX } from "react/jsx-runtime"
 import { useRouter, useSearchParams } from "next/navigation"
 import { useToast } from "@/hooks/use-toast"
@@ -313,6 +314,8 @@ function ReconciliationContent() {
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [documentProcessing, setDocumentProcessing] = useState(false) // Document still being processed by worker
+  const [processingFailed, setProcessingFailed] = useState<string | null>(null) // Document processing failed with error
+  const [forceRefetchCounter, setForceRefetchCounter] = useState(0) // Trigger refetch when animation completes
   const [loadingMessageIndex, setLoadingMessageIndex] = useState(0) // Fun loading message rotation
   const [exportingText, setExportingText] = useState(false)
   const [exportingJSON, setExportingJSON] = useState(false)
@@ -493,9 +496,24 @@ function ReconciliationContent() {
         // Check if document is still processing
         const docStatus = apiData.document?.processing_status
         const isProcessing = docStatus === 'pending' || docStatus === 'processing'
+        const isFailed = docStatus === 'failed'
         const hasNoClauses = apiClauses.length === 0
 
         if (!mounted) return
+
+        // Handle failed processing status
+        if (isFailed) {
+          const errorMessage = apiData.document?.processing_error || "Contract processing failed. Please try re-uploading the document."
+          setProcessingFailed(errorMessage)
+          setDocumentProcessing(false)
+          setLoading(false)
+          // Stop polling
+          if (pollInterval) {
+            clearInterval(pollInterval)
+            pollInterval = null
+          }
+          return
+        }
 
         // Set clauses and select first one
         if (apiClauses.length > 0) {
@@ -585,7 +603,7 @@ function ReconciliationContent() {
         clearInterval(pollInterval)
       }
     }
-  }, [dealId])
+  }, [dealId, forceRefetchCounter])
 
   // Phase 11: Fetch redlines and comments
   useEffect(() => {
@@ -1276,7 +1294,7 @@ function ReconciliationContent() {
         parts.push(
           <span
             key={`clause-${idx}`}
-            className={`relative cursor-pointer transition-all duration-200 rounded-md px-1 ${
+            className={`relative cursor-pointer transition-all duration-200 rounded-md px-1 recon-inline-highlight ${
               isSelected ? "ring-2 ring-slate-400" : "hover:brightness-95"
             }`}
             onClick={() => handleClauseSelect(clause)}
@@ -1301,7 +1319,7 @@ function ReconciliationContent() {
 
     // Use real API data: render each clause as a separate block with RAG coloring
     return (
-      <div className="space-y-6">
+      <div className="space-y-6 recon-inline-container">
         {clauses.map((clause, idx) => {
           const isSelected = selectedClause?.id === clause.id
           const currentStatus = getClauseStatus(clause)
@@ -1329,7 +1347,7 @@ function ReconciliationContent() {
           return (
             <div
               key={`clause-${clause.id}`}
-              className={`relative cursor-pointer transition-all duration-200 rounded-lg p-4 border-2 ${borderColor} ${
+              className={`relative cursor-pointer transition-all duration-200 rounded-lg p-4 border-2 recon-highlight-card ${borderColor} ${
                 isSelected ? "ring-2 ring-slate-400 ring-offset-2" : "hover:shadow-md"
               }`}
               onClick={() => handleClauseSelect(clause)}
@@ -1342,7 +1360,7 @@ function ReconciliationContent() {
                 <div className="flex items-center gap-2">
                   <Badge
                     variant="outline"
-                    className={`text-xs font-medium ${
+                    className={`text-xs font-medium recon-chip ${
                       currentStatus === "match"
                         ? "bg-green-50 text-green-700 border-green-300"
                         : currentStatus === "review"
@@ -1353,7 +1371,7 @@ function ReconciliationContent() {
                     {clause.clauseType}
                   </Badge>
                   {isRiskAccepted && currentStatus === "match" && (
-                    <Badge variant="outline" className="text-xs bg-orange-50 text-orange-700 border-orange-300">
+                    <Badge variant="outline" className="text-xs recon-chip bg-orange-50 text-orange-700 border-orange-300">
                       <Shield className="w-3 h-3 mr-1" />
                       Risk Accepted
                     </Badge>
@@ -1411,35 +1429,96 @@ function ReconciliationContent() {
     )
   }
 
-  // Calculate page boundaries from clause positions
+  // Calculate page boundaries based on character positions
+  // Since PDF page numbers may be NULL, we estimate pages based on character count
+  // Typical page has ~3500 characters
+  const CHARS_PER_PAGE = 3500
+
   const calculatePageBoundaries = () => {
-    // Group clauses by their start page
-    const pageGroups = new Map<number, Clause[]>()
+    if (!extractedText) return []
 
-    clauses.forEach((clause) => {
-      const page = clause.position?.start || 1
-      if (!pageGroups.has(page)) pageGroups.set(page, [])
-      pageGroups.get(page)!.push(clause)
-    })
+    const textLength = extractedText.length
+    const estimatedPages = Math.max(1, Math.ceil(textLength / CHARS_PER_PAGE))
 
-    // For each page, find min startChar and max endChar
     const boundaries: { page: number; startChar: number; endChar: number }[] = []
 
-    pageGroups.forEach((pageClauses, page) => {
-      const clausesWithChars = pageClauses.filter(
-        (c) => c.startChar != null && c.endChar != null
-      )
-      if (clausesWithChars.length === 0) return
+    for (let i = 0; i < estimatedPages; i++) {
+      const startChar = i * CHARS_PER_PAGE
+      const endChar = Math.min((i + 1) * CHARS_PER_PAGE, textLength)
+      boundaries.push({ page: i + 1, startChar, endChar })
+    }
 
-      const minStart = Math.min(...clausesWithChars.map((c) => c.startChar ?? Infinity))
-      const maxEnd = Math.max(...clausesWithChars.map((c) => c.endChar ?? 0))
-      boundaries.push({ page, startChar: minStart, endChar: maxEnd })
-    })
-
-    return boundaries.sort((a, b) => a.page - b.page)
+    return boundaries
   }
 
-  // Render inline text view with highlighted clauses (page-by-page)
+  // ============ STRUCTURED TEMPLATE HELPERS ============
+
+  // Detect section headers from clause content
+  function detectSectionHeader(content: string): { header: string | null; body: string } {
+    if (!content) return { header: null, body: content }
+
+    // Pattern 1: Numbered sections "1. SCOPE OF WORK\n..." or "1 SCOPE OF WORK\n..."
+    const numberedMatch = content.match(/^(\d+\.?\s*[A-Z][A-Z\s&]+)\n(.*)$/s)
+    if (numberedMatch) {
+      return { header: numberedMatch[1].trim(), body: numberedMatch[2] }
+    }
+
+    // Pattern 2: ALL CAPS header "CONFIDENTIALITY\n..."
+    const allCapsMatch = content.match(/^([A-Z][A-Z\s&]{3,40})\n(.*)$/s)
+    if (allCapsMatch) {
+      return { header: allCapsMatch[1].trim(), body: allCapsMatch[2] }
+    }
+
+    // Pattern 3: Short header line followed by newline "Cost\n...", "Payment terms\n..."
+    const shortHeaderMatch = content.match(/^([A-Z][a-zA-Z\s]{2,35})\n(.+)$/s)
+    if (shortHeaderMatch && shortHeaderMatch[1].trim().length < 40) {
+      return { header: shortHeaderMatch[1].trim(), body: shortHeaderMatch[2] }
+    }
+
+    return { header: null, body: content }
+  }
+
+  // Format clause_type as readable header "payment_terms" -> "Payment Terms"
+  function formatClauseType(type: string): string {
+    if (!type) return 'Clause'
+    return type
+      .split('_')
+      .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+      .join(' ')
+  }
+
+  // Structured section interface
+  interface StructuredSection {
+    id: number
+    header: string
+    headerFromContent: boolean
+    body: string
+    clause: Clause
+    startChar: number
+    endChar: number
+  }
+
+  // Build structured sections from clauses
+  function buildStructuredSections(clauseList: Clause[], fullText: string): StructuredSection[] {
+    return clauseList.map(clause => {
+      const content = clause.text || fullText.slice(clause.startChar ?? 0, clause.endChar ?? 0)
+      const { header, body } = detectSectionHeader(content)
+
+      return {
+        id: clause.id,
+        header: header || formatClauseType(clause.clauseType),
+        headerFromContent: header !== null,
+        body: body,
+        clause,
+        startChar: clause.startChar ?? 0,
+        endChar: clause.endChar ?? 0,
+      }
+    })
+  }
+
+  // ============ END STRUCTURED TEMPLATE HELPERS ============
+
+  // Render inline text view with structured template sections
   const renderInlineTextView = () => {
     if (!extractedText) {
       return (
@@ -1458,8 +1537,6 @@ function ReconciliationContent() {
     }
 
     // Sort clauses by startChar for proper rendering order
-    // Note: This assumes the API returns non-overlapping clause boundaries.
-    // If overlaps occur, earlier clauses take precedence and overlapping portions are skipped.
     const sortedClauses = [...clauses]
       .filter((c) => c.startChar != null && c.endChar != null)
       .sort((a, b) => (a.startChar ?? 0) - (b.startChar ?? 0))
@@ -1490,7 +1567,6 @@ function ReconciliationContent() {
     // Get current page data
     const currentPageData = pageBoundaries[currentPage - 1]
 
-    // If no data for current page, show message
     if (!currentPageData) {
       return (
         <div className="text-center py-8" data-testid="inline-text-container">
@@ -1499,135 +1575,65 @@ function ReconciliationContent() {
       )
     }
 
-    // Get clauses for current page
-    const currentPageClauses = sortedClauses.filter((clause) => {
-      const clausePage = clause.position?.start || 1
-      return clausePage === currentPageData.page
-    })
+    const pageStartChar = currentPageData.startChar
+    const pageEndChar = currentPageData.endChar
 
-    // Calculate page text range with some padding
-    const pageStartChar = Math.max(0, currentPageData.startChar - 100)
-    const pageEndChar = Math.min(extractedText.length, currentPageData.endChar + 100)
+    // Build structured sections from all clauses
+    const allSections = buildStructuredSections(sortedClauses, extractedText)
 
-    // Build parts for current page only
-    let lastIndex = pageStartChar
-    const parts: JSX.Element[] = []
+    // Filter sections that overlap with current page
+    const pageSections = allSections.filter(section =>
+      section.startChar < pageEndChar && section.endChar > pageStartChar
+    )
 
-    currentPageClauses.forEach((clause, idx) => {
-      const startChar = clause.startChar ?? 0
-      const endChar = clause.endChar ?? 0
-
-      // Skip if clause is outside current page range
-      if (startChar < pageStartChar || startChar > pageEndChar) return
-
-      // Skip if this clause overlaps with previously rendered content (handle overlaps gracefully)
-      if (startChar < lastIndex) {
-        console.warn(`Skipping overlapping clause ${clause.id}: startChar ${startChar} < lastIndex ${lastIndex}`)
-        return
-      }
-
-      // Add text before this clause (non-highlighted)
-      if (startChar > lastIndex) {
-        const beforeText = extractedText.slice(lastIndex, startChar)
-        if (beforeText) {
-          parts.push(
-            <span key={`before-${idx}`} className="text-slate-700">
-              {beforeText}
-            </span>
-          )
-        }
-      }
-
-      // Get clause status and colors
-      const currentStatus = getClauseStatus(clause)
+    // Helper to get colors based on clause status
+    const getBackgroundColor = (clause: Clause) => {
+      const status = getClauseStatus(clause)
       const isSelected = selectedClause?.id === clause.id
-      const isHovered = hoveredClauseId === clause.id
       const isRiskAccepted = riskAcceptedClauses.has(clause.id)
 
-      const backgroundColor = isSelected
-        ? "rgba(148, 163, 184, 0.3)"
-        : currentStatus === "match"
-          ? isRiskAccepted
-            ? "rgba(253, 230, 138, 0.6)"
-            : "rgba(200, 250, 204, 0.6)"
-          : currentStatus === "review"
-            ? "rgba(252, 239, 195, 0.6)"
-            : "rgba(248, 196, 196, 0.6)"
-
-      const clauseText = extractedText.slice(startChar, Math.min(endChar, pageEndChar))
-
-      // Render highlighted clause with hover actions
-      parts.push(
-        <span
-          key={`clause-${clause.id}`}
-          className={`relative cursor-pointer transition-all duration-200 rounded px-0.5 ${
-            isSelected ? "ring-2 ring-slate-400 ring-offset-1" : "hover:brightness-95"
-          }`}
-          style={{ backgroundColor }}
-          onClick={() => handleClauseSelect(clause)}
-          onMouseEnter={() => setHoveredClauseId(clause.id)}
-          onMouseLeave={() => setHoveredClauseId(null)}
-          data-testid={`clause-highlight-${clause.id}`}
-          data-clause-id={clause.id}
-        >
-          {clauseText}
-
-          {/* Hover Actions Popover */}
-          {isHovered && (
-            <span
-              className="absolute -top-10 left-1/2 -translate-x-1/2 z-50 flex items-center gap-1 bg-white shadow-lg rounded-lg border border-slate-200 px-2 py-1.5 whitespace-nowrap"
-              onClick={(e) => e.stopPropagation()}
-              data-testid="clause-hover-actions"
-            >
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-6 w-6 p-0 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  handleClauseSelect(clause)
-                  handleApprove(clause)
-                }}
-                title="Approve clause"
-                data-testid="hover-approve-btn"
-              >
-                <ThumbsUp className="w-3.5 h-3.5" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-6 w-6 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  handleClauseSelect(clause)
-                  handleReject(clause)
-                }}
-                title="Flag for review"
-                data-testid="hover-reject-btn"
-              >
-                <ThumbsDown className="w-3.5 h-3.5" />
-              </Button>
-              <span className="text-xs text-slate-500 ml-1 max-w-[100px] truncate">
-                {clause.clauseType}
-              </span>
-            </span>
-          )}
-        </span>
-      )
-
-      lastIndex = Math.min(endChar, pageEndChar)
-    })
-
-    // Add remaining text after last clause on this page
-    if (lastIndex < pageEndChar) {
-      const remainingText = extractedText.slice(lastIndex, pageEndChar)
-      if (remainingText) {
-        parts.push(
-          <span key="remaining" className="text-slate-700">
-            {remainingText}
-          </span>
-        )
+      if (isSelected) return "rgba(148, 163, 184, 0.25)"
+      if (status === "match") {
+        return isRiskAccepted ? "rgba(253, 230, 138, 0.35)" : "rgba(187, 247, 208, 0.35)"
       }
+      if (status === "review") return "rgba(254, 243, 199, 0.40)"
+      return "rgba(254, 202, 202, 0.35)"
+    }
+
+    const getBorderColor = (clause: Clause) => {
+      const status = getClauseStatus(clause)
+      const isSelected = selectedClause?.id === clause.id
+      const isRiskAccepted = riskAcceptedClauses.has(clause.id)
+
+      if (isSelected) return "#94a3b8"
+      if (status === "match") return isRiskAccepted ? "#f59e0b" : "#22c55e"
+      if (status === "review") return "#f59e0b"
+      return "#ef4444"
+    }
+
+    // Render gap text (text between clauses that wasn't extracted)
+    const renderGapsBetweenSections = () => {
+      const gaps: JSX.Element[] = []
+      let lastEnd = pageStartChar
+
+      pageSections.forEach((section, idx) => {
+        const sectionStart = Math.max(section.startChar, pageStartChar)
+
+        // If there's a gap before this section, render it
+        if (sectionStart > lastEnd) {
+          const gapText = extractedText.slice(lastEnd, sectionStart).trim()
+          if (gapText && gapText.length > 10) {
+            gaps.push(
+              <div key={`gap-${idx}`} className="py-3 text-slate-600 text-sm italic border-l-2 border-slate-200 pl-4 my-4">
+                {gapText}
+              </div>
+            )
+          }
+        }
+        lastEnd = Math.min(section.endChar, pageEndChar)
+      })
+
+      return gaps
     }
 
     return (
@@ -1661,24 +1667,127 @@ function ReconciliationContent() {
           </Button>
         </div>
 
-        {/* Page Content */}
+        {/* Document Content - Structured Template */}
         <div
-          className="p-6 bg-white rounded-lg border border-slate-200 shadow-sm"
+          className="bg-[#fdfdfb] rounded-xl border border-slate-200/80 shadow-lg"
           style={{
-            fontFamily: 'Georgia, "Times New Roman", serif',
-            fontSize: '15px',
-            lineHeight: '1.9',
-            letterSpacing: '0.01em',
+            boxShadow: '0 4px 24px rgba(15, 23, 42, 0.08), 0 1px 3px rgba(15, 23, 42, 0.04)',
           }}
         >
-          <div className="whitespace-pre-wrap">
-            {parts}
+          <div className="px-6 py-8">
+            <div className="space-y-6">
+              {pageSections.map((section, idx) => {
+                const isSelected = selectedClause?.id === section.clause.id
+                const isHovered = hoveredClauseId === section.clause.id
+
+                // Extract section number if present (e.g., "1.", "2.", "12.")
+                const numberMatch = section.header.match(/^(\d+)\.?\s*/)
+                const sectionNumber = numberMatch ? numberMatch[1] : null
+                const headerText = sectionNumber
+                  ? section.header.replace(/^\d+\.?\s*/, '').trim()
+                  : section.header
+
+                return (
+                  <div key={section.id} className="relative">
+                    {/* Section Header */}
+                    <h3
+                      className="text-base font-semibold text-slate-800 mb-3 flex items-center gap-2"
+                      style={{ fontFamily: 'Inter, system-ui, sans-serif' }}
+                    >
+                      {sectionNumber && (
+                        <span className="inline-flex items-center justify-center bg-amber-100 text-amber-800 px-2 py-0.5 rounded text-sm font-bold min-w-[28px]">
+                          {sectionNumber}.
+                        </span>
+                      )}
+                      <span className="uppercase tracking-wide">
+                        {headerText || 'Clause'}
+                      </span>
+                    </h3>
+
+                    {/* Section Body with Clause Highlighting */}
+                    <div
+                      className={`relative cursor-pointer rounded-md transition-all duration-150 ${
+                        isSelected ? "ring-2 ring-slate-400 ring-offset-2" : "hover:brightness-[0.98]"
+                      }`}
+                      style={{
+                        backgroundColor: getBackgroundColor(section.clause),
+                        borderLeft: `4px solid ${getBorderColor(section.clause)}`,
+                        padding: '16px 20px',
+                      }}
+                      onClick={() => handleClauseSelect(section.clause)}
+                      onMouseEnter={() => setHoveredClauseId(section.clause.id)}
+                      onMouseLeave={() => setHoveredClauseId(null)}
+                      data-testid={`clause-highlight-${section.clause.id}`}
+                      data-clause-id={section.clause.id}
+                    >
+                      <p style={{
+                        fontFamily: 'Georgia, "Times New Roman", Times, serif',
+                        fontSize: '15px',
+                        lineHeight: '1.8',
+                        color: '#1e293b',
+                        whiteSpace: 'pre-wrap',
+                      }}>
+                        {section.body}
+                      </p>
+
+                      {/* Hover Actions Popover */}
+                      {isHovered && (
+                        <div
+                          className="absolute -top-12 left-1/2 -translate-x-1/2 z-50 flex items-center gap-1 bg-white shadow-lg rounded-lg border border-slate-200 px-3 py-2 whitespace-nowrap"
+                          onClick={(e) => e.stopPropagation()}
+                          data-testid="clause-hover-actions"
+                        >
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 w-7 p-0 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              handleClauseSelect(section.clause)
+                              handleApprove(section.clause)
+                            }}
+                            title="Approve clause"
+                            data-testid="hover-approve-btn"
+                          >
+                            <ThumbsUp className="w-4 h-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 w-7 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              handleClauseSelect(section.clause)
+                              handleReject(section.clause)
+                            }}
+                            title="Flag for review"
+                            data-testid="hover-reject-btn"
+                          >
+                            <ThumbsDown className="w-4 h-4" />
+                          </Button>
+                          <span className="text-xs text-slate-500 ml-2 font-medium">
+                            {section.clause.clauseType}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+
+              {/* Show message if no sections on this page */}
+              {pageSections.length === 0 && (
+                <div className="text-center py-8 text-slate-500">
+                  <p>No clauses on this page.</p>
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
         {/* Page indicator at bottom */}
         <div className="text-center text-xs text-slate-400">
-          Showing page {currentPage} of {totalPages} ({currentPageClauses.length} clauses on this page)
+          Page {currentPage} ({pageSections.length} clauses)
         </div>
       </div>
     )
@@ -1872,9 +1981,31 @@ function ReconciliationContent() {
         <ProcessingThoughts
           isActuallyProcessing={true}
           onComplete={() => {
-            // Animation finished but we're still polling - just let it continue
+            // Animation finished - trigger an immediate refetch to check if processing is done
+            setForceRefetchCounter(prev => prev + 1)
           }}
         />
+      </div>
+    )
+  }
+
+  // Show processing failed state
+  if (processingFailed) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <div className="flex flex-col items-center gap-4 max-w-md text-center p-8">
+          <AlertCircle className="w-16 h-16 text-red-500" />
+          <h2 className="text-xl font-semibold text-slate-800">Contract Processing Failed</h2>
+          <p className="text-slate-600">{processingFailed}</p>
+          <div className="flex gap-3">
+            <Button variant="outline" onClick={() => router.push('/deals')}>
+              Back to Deals
+            </Button>
+            <Button onClick={() => router.push(`/deals/new?dealId=${dealId}`)}>
+              Re-upload Contract
+            </Button>
+          </div>
+        </div>
       </div>
     )
   }
@@ -2235,7 +2366,7 @@ function ReconciliationContent() {
                   variant={activeTab === "overview" ? "default" : "ghost"}
                   size="sm"
                   onClick={() => setActiveTab("overview")}
-                  className="rounded-lg"
+                  className="rounded-lg recon-tab"
                 >
                   Overview
                 </Button>
@@ -2243,7 +2374,7 @@ function ReconciliationContent() {
                   variant={activeTab === "pdf" ? "default" : "ghost"}
                   size="sm"
                   onClick={() => setActiveTab("pdf")}
-                  className="rounded-lg"
+                  className="rounded-lg recon-tab"
                 >
                   PDF
                 </Button>
@@ -2255,7 +2386,7 @@ function ReconciliationContent() {
                       variant={overviewViewMode === "cards" ? "default" : "ghost"}
                       size="sm"
                       onClick={() => setOverviewViewMode("cards")}
-                      className="rounded-lg text-xs"
+                      className="rounded-lg text-xs recon-tab"
                       data-testid="view-toggle-cards"
                     >
                       <LayoutGrid className="w-3 h-3 mr-1" />
@@ -2265,7 +2396,7 @@ function ReconciliationContent() {
                       variant={overviewViewMode === "inline" ? "default" : "ghost"}
                       size="sm"
                       onClick={() => setOverviewViewMode("inline")}
-                      className="rounded-lg text-xs"
+                      className="rounded-lg text-xs recon-tab"
                       disabled={!extractedText}
                       title={!extractedText ? "Full document text not available" : "View as continuous document"}
                       data-testid="view-toggle-inline"
@@ -2282,7 +2413,7 @@ function ReconciliationContent() {
                   variant={showHighlights ? "default" : "outline"}
                   size="sm"
                   onClick={() => setShowHighlights(!showHighlights)}
-                  className="rounded-lg"
+                  className="rounded-lg recon-tab"
                 >
                   <Eye className="w-4 h-4 mr-1" />
                   Highlights
