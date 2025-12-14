@@ -16,66 +16,16 @@ interface PreAgreedTerm {
   id: string
   clauseType: string
   expectedTerm: string
-  notes: string
 }
 
-// Map user-friendly clause types to database clause_type values
-function mapClauseTypeToRelatedTypes(clauseType: string): string[] {
-  const normalized = clauseType.toLowerCase().trim()
-
-  // Payment-related
-  if (/payment|fee|compensation|invoice/.test(normalized)) {
-    return ["payment_terms"]
-  }
-
-  // Usage/Rights-related
-  if (/usage|rights|license/.test(normalized)) {
-    return ["usage_rights"]
-  }
-
-  // Deliverables/Scope
-  if (/deliverable|scope|work|service|content/.test(normalized)) {
-    return ["scope_of_work", "deliverables"]
-  }
-
-  // Exclusivity
-  if (/exclusivity|exclusive|non-compete/.test(normalized)) {
-    return ["exclusivity"]
-  }
-
-  // Approval/Feedback
-  if (/approval|feedback|review/.test(normalized)) {
-    return ["approval_process", "general_terms"]
-  }
-
-  // Confidentiality/NDA
-  if (/confiden|nda|secret/.test(normalized)) {
-    return ["confidentiality"]
-  }
-
-  // Termination/Duration
-  if (/termination|term|duration|cancel|expire/.test(normalized)) {
-    return ["term_and_termination"]
-  }
-
-  // Indemnification/Liability
-  if (/indemn|liabilit|warranty/.test(normalized)) {
-    return ["indemnification"]
-  }
-
-  // Intellectual Property
-  if (/intellectual|ip|copyright|trademark|ownership/.test(normalized)) {
-    return ["intellectual_property"]
-  }
-
-  // Parties/Contact
-  if (/part(y|ies)|contact|address/.test(normalized)) {
-    return ["parties", "contact_information"]
-  }
-
-  // Default: return empty array for generic/custom categories
-  return []
-}
+// Valid PAT categories that map to TERM_TO_CLAUSE_MAP in p1-reconciliation.ts
+const PAT_CATEGORIES = [
+  { value: "Compensation & Payment Timing", label: "Compensation & Payment", description: "Fee amount, payment terms, invoicing" },
+  { value: "Deliverables & Posting Requirements", label: "Deliverables & Posting", description: "Content deliverables, posting schedule" },
+  { value: "Usage Rights & Licensing", label: "Usage Rights & Licensing", description: "Usage duration, platforms, license scope" },
+  { value: "Content Approval & Revisions", label: "Content Approval", description: "Approval process, revision rounds" },
+  { value: "Content Retention & Non-Removal", label: "Content Retention", description: "How long posts must stay up" },
+] as const
 
 interface DealFormData {
   dealName: string
@@ -112,7 +62,7 @@ export default function NewDealPage() {
   const [isDragging, setIsDragging] = useState(false)
 
   // Pre-agreed terms state
-  const [terms, setTerms] = useState<PreAgreedTerm[]>([{ id: "1", clauseType: "", expectedTerm: "", notes: "" }])
+  const [terms, setTerms] = useState<PreAgreedTerm[]>([{ id: "1", clauseType: "", expectedTerm: "" }])
 
   // Form handlers
   const updateFormData = (field: keyof DealFormData, value: string) => {
@@ -158,7 +108,6 @@ export default function NewDealPage() {
       id: Date.now().toString(),
       clauseType: "",
       expectedTerm: "",
-      notes: "",
     }
     setTerms([...terms, newTerm])
   }
@@ -217,9 +166,8 @@ export default function NewDealPage() {
         .map((term) => ({
           term_category: term.clauseType,
           term_description: term.expectedTerm,
-          expected_value: term.notes || null,
+          expected_value: null,
           is_mandatory: true,
-          related_clause_types: mapClauseTypeToRelatedTypes(term.clauseType),
         }))
 
       if (validTerms.length > 0) {
@@ -283,9 +231,8 @@ export default function NewDealPage() {
         .map((term) => ({
           term_category: term.clauseType,
           term_description: term.expectedTerm,
-          expected_value: term.notes || null,
+          expected_value: null,
           is_mandatory: true,
-          related_clause_types: mapClauseTypeToRelatedTypes(term.clauseType),
         }))
 
       if (validTerms.length > 0) {
@@ -604,36 +551,39 @@ export default function NewDealPage() {
               <div className="space-y-4">
                 {/* Table Header */}
                 <div className="grid grid-cols-12 gap-4 pb-3 border-b border-slate-200">
-                  <div className="col-span-3 text-xs font-semibold text-slate-700 uppercase">Clause Type</div>
-                  <div className="col-span-5 text-xs font-semibold text-slate-700 uppercase">Expected Term</div>
-                  <div className="col-span-3 text-xs font-semibold text-slate-700 uppercase">Notes</div>
+                  <div className="col-span-4 text-xs font-semibold text-slate-700 uppercase">Term Category</div>
+                  <div className="col-span-7 text-xs font-semibold text-slate-700 uppercase">What We Agreed</div>
                   <div className="col-span-1"></div>
                 </div>
 
                 {/* Table Rows */}
                 {terms.map((term) => (
                   <div key={term.id} className="grid grid-cols-12 gap-4 items-start">
-                    <div className="col-span-3">
-                      <Input
+                    <div className="col-span-4">
+                      <Select
                         value={term.clauseType}
-                        onChange={(e) => updateTerm(term.id, "clauseType", e.target.value)}
-                        placeholder="e.g., Payment Terms"
-                        className="rounded-lg"
-                      />
+                        onValueChange={(value) => updateTerm(term.id, "clauseType", value)}
+                      >
+                        <SelectTrigger className="rounded-lg">
+                          <SelectValue placeholder="Select category..." />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {PAT_CATEGORIES.map((cat) => (
+                            <SelectItem key={cat.value} value={cat.value}>
+                              <div className="flex flex-col">
+                                <span>{cat.label}</span>
+                                <span className="text-xs text-slate-500">{cat.description}</span>
+                              </div>
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                     </div>
-                    <div className="col-span-5">
+                    <div className="col-span-7">
                       <Textarea
                         value={term.expectedTerm}
                         onChange={(e) => updateTerm(term.id, "expectedTerm", e.target.value)}
-                        placeholder="Describe the expected term..."
-                        className="rounded-lg resize-none h-20"
-                      />
-                    </div>
-                    <div className="col-span-3">
-                      <Textarea
-                        value={term.notes}
-                        onChange={(e) => updateTerm(term.id, "notes", e.target.value)}
-                        placeholder="Additional notes..."
+                        placeholder="e.g., $5,000 fee, NET 30 payment terms"
                         className="rounded-lg resize-none h-20"
                       />
                     </div>
