@@ -82,14 +82,18 @@ Deno.serve(async (req) => {
     // Note: Final success/error log will be written at the end with complete metrics
 
     // Step 1: Fetch clauses without embeddings
+    // When document_id is provided, process ALL clauses for that document (no limit)
+    // When processing all documents, limit to 100 to avoid timeout
     let query = supabase
       .from("clause_boundaries")
       .select("id, content, clause_type, document_id, tenant_id")
       .is("embedding", null)
-      .limit(100) // Process up to 100 clauses per invocation
 
     if (documentId) {
       query = query.eq("document_id", documentId)
+      // No limit for specific document - process all clauses
+    } else {
+      query = query.limit(100) // Only limit when processing all documents
     }
 
     const { data: clauses, error: fetchError } = await query
@@ -275,9 +279,10 @@ Deno.serve(async (req) => {
           }
 
           // Create clause_match_results entry (always, even with no match)
+          // Use upsert to prevent duplicates - clause_boundary_id should be unique per document
           const { error: matchResultError } = await supabase
             .from("clause_match_results")
-            .insert({
+            .upsert({
               document_id: clause.document_id,
               clause_boundary_id: clause.id,
               matched_template_id: matched_template_id,
@@ -285,6 +290,9 @@ Deno.serve(async (req) => {
               rag_risk: ragRisk,
               rag_status: ragRisk, // Initialize overall status with risk
               gpt_analysis: gpt_analysis,
+            }, {
+              onConflict: 'clause_boundary_id',
+              ignoreDuplicates: false // Update if exists
             })
 
           if (matchResultError) {
