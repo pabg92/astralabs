@@ -564,20 +564,22 @@ export default function NewDealPage() {
                         value={term.clauseType}
                         onValueChange={(value) => updateTerm(term.id, "clauseType", value)}
                       >
-                        <SelectTrigger className="rounded-lg">
+                        <SelectTrigger className="rounded-lg h-20">
                           <SelectValue placeholder="Select category..." />
                         </SelectTrigger>
                         <SelectContent>
                           {PAT_CATEGORIES.map((cat) => (
                             <SelectItem key={cat.value} value={cat.value}>
-                              <div className="flex flex-col">
-                                <span>{cat.label}</span>
-                                <span className="text-xs text-slate-500">{cat.description}</span>
-                              </div>
+                              {cat.label}
                             </SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
+                      {term.clauseType && (
+                        <p className="text-xs text-slate-500 mt-1">
+                          {PAT_CATEGORIES.find(c => c.value === term.clauseType)?.description}
+                        </p>
+                      )}
                     </div>
                     <div className="col-span-7">
                       <Textarea
