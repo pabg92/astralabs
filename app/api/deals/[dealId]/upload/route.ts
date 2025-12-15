@@ -25,10 +25,10 @@ export async function POST(
       return NextResponse.json({ error: "file is required" }, { status: 400 })
     }
 
-    // Fetch deal to derive tenant and default author
+    // Fetch deal to derive tenant, author, and current version
     const { data: deal, error: dealError } = await supabaseServer
       .from("deals")
-      .select("id, tenant_id, created_by")
+      .select("id, tenant_id, created_by, version")
       .eq("id", dealId)
       .single()
 
@@ -41,6 +41,8 @@ export async function POST(
 
     const tenantId = deal.tenant_id
     const authorId = createdBy || (deal as any).created_by || demoAuthor
+    const currentVersion = deal.version || 1
+    const newVersion = currentVersion + 1
 
     // Upload to storage
     const path = `${tenantId}/${dealId}/${Date.now()}-${file.name}`
@@ -60,7 +62,7 @@ export async function POST(
       )
     }
 
-    // Create document record (trigger will enqueue for processing)
+    // Create document record with version (trigger will enqueue for processing)
     const { data: document, error: docError } = await supabaseServer
       .from("document_repository")
       .insert({
@@ -72,6 +74,7 @@ export async function POST(
         size_bytes: file.size,
         processing_status: "pending",
         created_by: authorId,
+        version: newVersion,
       })
       .select()
       .single()
@@ -84,12 +87,35 @@ export async function POST(
       )
     }
 
+    // Update deal version
+    const { error: versionError } = await supabaseServer
+      .from("deals")
+      .update({ version: newVersion })
+      .eq("id", dealId)
+
+    if (versionError) {
+      console.error("Version update error:", versionError)
+      // Don't fail the request, document is already created
+    }
+
+    // Clear old clause match results for fresh reconciliation
+    const { error: clearError } = await supabaseServer
+      .from("clause_match_results")
+      .delete()
+      .eq("deal_id", dealId)
+
+    if (clearError) {
+      console.error("Clear clause matches error:", clearError)
+      // Don't fail the request, this is cleanup
+    }
+
     return NextResponse.json({
       success: true,
       data: {
         document,
+        newVersion,
       },
-      message: "File uploaded and queued for processing",
+      message: `File uploaded for v${newVersion} and queued for processing`,
     })
   } catch (error) {
     console.error("Unexpected error in POST /api/deals/[dealId]/upload:", error)

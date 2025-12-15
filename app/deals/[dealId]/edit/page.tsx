@@ -12,6 +12,7 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { ArrowLeft, Plus, Trash2, Save, FileText, Users, CheckCircle2, Loader2, Upload, File, X, Send, Building } from "lucide-react"
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip"
+import { PAT_CATEGORIES } from "@/lib/constants/pat-categories"
 
 interface PreAgreedTerm {
   id: string
@@ -80,8 +81,9 @@ export default function EditDealPage({ params }: { params: Promise<{ dealId: str
     workflowStatus: "internal",
   })
 
-  // Document state
+  // Document and version state
   const [currentDocument, setCurrentDocument] = useState<DocumentInfo | null>(null)
+  const [dealVersion, setDealVersion] = useState<number>(1)
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const demoAuthorId = process.env.NEXT_PUBLIC_DEMO_AUTHOR_ID || "00000000-0000-0000-0000-000000000002"
@@ -136,7 +138,7 @@ export default function EditDealPage({ params }: { params: Promise<{ dealId: str
         throw new Error(result.error || result.details || "Upload failed")
       }
 
-      // Update document info with the new document
+      // Update document info and version with the new document
       if (result.data?.document) {
         setCurrentDocument({
           id: result.data.document.id,
@@ -144,6 +146,9 @@ export default function EditDealPage({ params }: { params: Promise<{ dealId: str
           created_at: result.data.document.created_at,
           file_type: result.data.document.file_type,
         })
+      }
+      if (result.data?.newVersion) {
+        setDealVersion(result.data.newVersion)
       }
     } catch (error) {
       console.error("Document upload error:", error)
@@ -202,6 +207,9 @@ export default function EditDealPage({ params }: { params: Promise<{ dealId: str
           status: deal.status || "draft",
           workflowStatus,
         })
+
+        // Populate version
+        setDealVersion(deal.version || 1)
 
         // Populate document info
         if (deal.latest_document) {
@@ -469,70 +477,86 @@ export default function EditDealPage({ params }: { params: Promise<{ dealId: str
 
             {/* Contract Document */}
             <Card className="p-6 shadow-sm rounded-2xl border-slate-200">
-              <div className="flex items-center gap-3 mb-6">
-                <div className="w-10 h-10 rounded-lg bg-emerald-100 flex items-center justify-center">
-                  <File className="w-5 h-5 text-emerald-600" />
+              <div className="flex items-center justify-between mb-6">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-lg bg-emerald-100 flex items-center justify-center">
+                    <File className="w-5 h-5 text-emerald-600" />
+                  </div>
+                  <div>
+                    <h2 className="text-lg font-semibold text-slate-900">Contract Document</h2>
+                    <p className="text-sm text-slate-500">Upload or replace the contract file</p>
+                  </div>
                 </div>
-                <div>
-                  <h2 className="text-lg font-semibold text-slate-900">Contract Document</h2>
-                  <p className="text-sm text-slate-500">Upload or replace the contract file</p>
+                <div className={`px-3 py-1.5 rounded-full text-sm font-semibold ${
+                  dealVersion >= 3
+                    ? "bg-emerald-100 text-emerald-700"
+                    : dealVersion === 2
+                      ? "bg-blue-100 text-blue-700"
+                      : "bg-slate-100 text-slate-600"
+                }`}>
+                  v{dealVersion}
                 </div>
               </div>
 
               {/* Current Document Display */}
               {currentDocument ? (
-                <div className="mb-4 p-4 bg-slate-50 rounded-lg border border-slate-200">
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-lg bg-blue-100 flex items-center justify-center">
-                        <FileText className="w-5 h-5 text-blue-600" />
+                <>
+                  <div className="mb-4 p-4 bg-slate-50 rounded-lg border border-slate-200">
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-lg bg-blue-100 flex items-center justify-center">
+                          <FileText className="w-5 h-5 text-blue-600" />
+                        </div>
+                        <div>
+                          <p className="font-medium text-slate-900 text-sm">{currentDocument.file_name}</p>
+                          <p className="text-xs text-slate-500">
+                            Uploaded {new Date(currentDocument.created_at).toLocaleDateString("en-GB", {
+                              day: "2-digit",
+                              month: "short",
+                              year: "numeric",
+                            })}
+                            {currentDocument.file_type && ` • ${currentDocument.file_type.toUpperCase()}`}
+                          </p>
+                        </div>
                       </div>
-                      <div>
-                        <p className="font-medium text-slate-900 text-sm">{currentDocument.file_name}</p>
-                        <p className="text-xs text-slate-500">
-                          Uploaded {new Date(currentDocument.created_at).toLocaleDateString("en-GB", {
-                            day: "2-digit",
-                            month: "short",
-                            year: "numeric",
-                          })}
-                          {currentDocument.file_type && ` • ${currentDocument.file_type.toUpperCase()}`}
-                        </p>
-                      </div>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <label className="cursor-pointer">
+                            <input
+                              type="file"
+                              accept=".pdf,.doc,.docx"
+                              className="hidden"
+                              onChange={handleFileSelect}
+                              disabled={uploading}
+                            />
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="text-blue-600 border-blue-200 hover:bg-blue-50"
+                              asChild
+                              disabled={uploading}
+                            >
+                              <span>
+                                {uploading ? (
+                                  <Loader2 className="w-4 h-4 animate-spin" />
+                                ) : (
+                                  <>
+                                    <Upload className="w-4 h-4 mr-1.5" />
+                                    Replace
+                                  </>
+                                )}
+                              </span>
+                            </Button>
+                          </label>
+                        </TooltipTrigger>
+                        <TooltipContent>Upload new contract → creates v{dealVersion + 1}</TooltipContent>
+                      </Tooltip>
                     </div>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <label className="cursor-pointer">
-                          <input
-                            type="file"
-                            accept=".pdf,.doc,.docx"
-                            className="hidden"
-                            onChange={handleFileSelect}
-                            disabled={uploading}
-                          />
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="text-blue-600 border-blue-200 hover:bg-blue-50"
-                            asChild
-                            disabled={uploading}
-                          >
-                            <span>
-                              {uploading ? (
-                                <Loader2 className="w-4 h-4 animate-spin" />
-                              ) : (
-                                <>
-                                  <Upload className="w-4 h-4 mr-1.5" />
-                                  Replace
-                                </>
-                              )}
-                            </span>
-                          </Button>
-                        </label>
-                      </TooltipTrigger>
-                      <TooltipContent>Upload a new version of the contract</TooltipContent>
-                    </Tooltip>
                   </div>
-                </div>
+                  <p className="text-xs text-amber-600 mb-4">
+                    Uploading a new contract will create v{dealVersion + 1} and reset reconciliation progress.
+                  </p>
+                </>
               ) : (
                 <div className="mb-4">
                   <label className="cursor-pointer">
@@ -555,7 +579,7 @@ export default function EditDealPage({ params }: { params: Promise<{ dealId: str
                         <>
                           <Upload className="w-8 h-8 text-slate-400 mx-auto mb-3" />
                           <p className="text-sm font-medium text-slate-700">Click to upload contract</p>
-                          <p className="text-xs text-slate-500 mt-1">PDF, DOC, or DOCX</p>
+                          <p className="text-xs text-slate-500 mt-1">PDF, DOC, or DOCX • Will create v{dealVersion + 1}</p>
                         </>
                       )}
                     </div>
@@ -601,12 +625,26 @@ export default function EditDealPage({ params }: { params: Promise<{ dealId: str
                 {terms.map((term) => (
                   <div key={term.id} className="grid grid-cols-12 gap-4 items-start">
                     <div className="col-span-3">
-                      <Input
+                      <Select
                         value={term.clauseType}
-                        onChange={(e) => updateTerm(term.id, "clauseType", e.target.value)}
-                        placeholder="e.g., Payment Terms"
-                        className="rounded-lg"
-                      />
+                        onValueChange={(value) => updateTerm(term.id, "clauseType", value)}
+                      >
+                        <SelectTrigger className="rounded-lg h-20">
+                          <SelectValue placeholder="Select category..." />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {PAT_CATEGORIES.map((cat) => (
+                            <SelectItem key={cat.value} value={cat.value}>
+                              {cat.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      {term.clauseType && (
+                        <p className="text-xs text-slate-500 mt-1">
+                          {PAT_CATEGORIES.find(c => c.value === term.clauseType)?.description}
+                        </p>
+                      )}
                     </div>
                     <div className="col-span-5">
                       <Textarea
