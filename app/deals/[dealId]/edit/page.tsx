@@ -10,7 +10,8 @@ import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { ArrowLeft, Plus, Trash2, Save, FileText, Users, CheckCircle2, Loader2 } from "lucide-react"
+import { ArrowLeft, Plus, Trash2, Save, FileText, Users, CheckCircle2, Loader2, Upload, File, X, Send, Building } from "lucide-react"
+import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip"
 
 interface PreAgreedTerm {
   id: string
@@ -47,6 +48,14 @@ interface DealFormData {
   exclusivity: string
   fee: string
   status: string
+  workflowStatus: "internal" | "with_us" | "with_brand" | "signed"
+}
+
+interface DocumentInfo {
+  id: string
+  file_name: string
+  created_at: string
+  file_type: string | null
 }
 
 export default function EditDealPage({ params }: { params: Promise<{ dealId: string }> }) {
@@ -68,7 +77,14 @@ export default function EditDealPage({ params }: { params: Promise<{ dealId: str
     exclusivity: "",
     fee: "",
     status: "draft",
+    workflowStatus: "internal",
   })
+
+  // Document state
+  const [currentDocument, setCurrentDocument] = useState<DocumentInfo | null>(null)
+  const [uploading, setUploading] = useState(false)
+  const [uploadError, setUploadError] = useState<string | null>(null)
+  const demoAuthorId = process.env.NEXT_PUBLIC_DEMO_AUTHOR_ID || "00000000-0000-0000-0000-000000000002"
 
   // Pre-agreed terms state
   const [terms, setTerms] = useState<PreAgreedTerm[]>([{ id: "1", clauseType: "", expectedTerm: "", notes: "" }])
@@ -99,6 +115,52 @@ export default function EditDealPage({ params }: { params: Promise<{ dealId: str
     setTerms(terms.map((term) => (term.id === id ? { ...term, [field]: value } : term)))
   }
 
+  // Document upload handler
+  const handleDocumentUpload = async (file: File) => {
+    setUploading(true)
+    setUploadError(null)
+
+    try {
+      const formData = new FormData()
+      formData.append("file", file)
+      formData.append("created_by", demoAuthorId)
+
+      const response = await fetch(`/api/deals/${dealId}/upload`, {
+        method: "POST",
+        body: formData,
+      })
+
+      const result = await response.json()
+
+      if (!response.ok || !result.success) {
+        throw new Error(result.error || result.details || "Upload failed")
+      }
+
+      // Update document info with the new document
+      if (result.data?.document) {
+        setCurrentDocument({
+          id: result.data.document.id,
+          file_name: result.data.document.file_name,
+          created_at: result.data.document.created_at,
+          file_type: result.data.document.file_type,
+        })
+      }
+    } catch (error) {
+      console.error("Document upload error:", error)
+      setUploadError(error instanceof Error ? error.message : "Failed to upload document")
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (file) {
+      handleDocumentUpload(file)
+    }
+    e.target.value = "" // Reset input
+  }
+
   // Fetch deal data
   useEffect(() => {
     async function fetchDeal() {
@@ -115,6 +177,17 @@ export default function EditDealPage({ params }: { params: Promise<{ dealId: str
 
         const deal = result.data
 
+        // Derive workflow status from deal status and document presence
+        const hasDocument = !!deal.latest_document
+        let workflowStatus: DealFormData["workflowStatus"] = "internal"
+        if (deal.status === "signed") {
+          workflowStatus = "signed"
+        } else if (deal.status === "in_review") {
+          workflowStatus = "with_brand"
+        } else if (hasDocument) {
+          workflowStatus = "with_us"
+        }
+
         // Populate form data
         setFormData({
           dealName: deal.title || "",
@@ -127,7 +200,18 @@ export default function EditDealPage({ params }: { params: Promise<{ dealId: str
           exclusivity: "",
           fee: deal.value ? String(deal.value) : "",
           status: deal.status || "draft",
+          workflowStatus,
         })
+
+        // Populate document info
+        if (deal.latest_document) {
+          setCurrentDocument({
+            id: deal.latest_document.id,
+            file_name: deal.latest_document.file_name,
+            created_at: deal.latest_document.created_at,
+            file_type: deal.latest_document.file_type,
+          })
+        }
 
         // Populate terms
         if (deal.pre_agreed_terms && deal.pre_agreed_terms.length > 0) {
@@ -165,12 +249,22 @@ export default function EditDealPage({ params }: { params: Promise<{ dealId: str
       setIsSubmitting(true)
       setSubmitError(null)
 
+      // Map workflow status to database status
+      let dbStatus = "draft"
+      if (formData.workflowStatus === "signed") {
+        dbStatus = "signed"
+      } else if (formData.workflowStatus === "with_brand") {
+        dbStatus = "in_review"
+      } else {
+        dbStatus = "draft"
+      }
+
       // Prepare update payload
       const payload: Record<string, any> = {
         title: formData.dealName,
         talent_name: formData.talent,
         client_name: formData.brand,
-        status: formData.status,
+        status: dbStatus,
       }
 
       if (formData.fee) {
@@ -244,6 +338,7 @@ export default function EditDealPage({ params }: { params: Promise<{ dealId: str
   }
 
   return (
+    <TooltipProvider>
     <div className="min-h-screen bg-slate-50">
       <div className="max-w-7xl mx-auto p-8">
         {/* Header */}
@@ -322,17 +417,39 @@ export default function EditDealPage({ params }: { params: Promise<{ dealId: str
                   </div>
 
                   <div>
-                    <Label htmlFor="status">Status</Label>
-                    <Select value={formData.status} onValueChange={(value) => updateFormData("status", value)}>
+                    <Label htmlFor="workflowStatus">Workflow Status</Label>
+                    <Select value={formData.workflowStatus} onValueChange={(value) => updateFormData("workflowStatus", value as DealFormData["workflowStatus"])}>
                       <SelectTrigger className="rounded-lg">
-                        <SelectValue placeholder="Select status" />
+                        <SelectValue placeholder="Select workflow status" />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="draft">Draft</SelectItem>
-                        <SelectItem value="in_review">In Review</SelectItem>
-                        <SelectItem value="signed">Signed</SelectItem>
+                        <SelectItem value="internal">
+                          <div className="flex items-center gap-2">
+                            <FileText className="w-4 h-4 text-slate-500" />
+                            <span>Internal</span>
+                          </div>
+                        </SelectItem>
+                        <SelectItem value="with_us">
+                          <div className="flex items-center gap-2">
+                            <Building className="w-4 h-4 text-blue-500" />
+                            <span>With Us</span>
+                          </div>
+                        </SelectItem>
+                        <SelectItem value="with_brand">
+                          <div className="flex items-center gap-2">
+                            <Send className="w-4 h-4 text-amber-500" />
+                            <span>With Brand</span>
+                          </div>
+                        </SelectItem>
+                        <SelectItem value="signed">
+                          <div className="flex items-center gap-2">
+                            <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                            <span>Signed</span>
+                          </div>
+                        </SelectItem>
                       </SelectContent>
                     </Select>
+                    <p className="text-xs text-slate-500 mt-1">Where is this contract in the review process?</p>
                   </div>
 
                   <div className="md:col-span-2">
@@ -348,6 +465,109 @@ export default function EditDealPage({ params }: { params: Promise<{ dealId: str
                   </div>
                 </div>
               </div>
+            </Card>
+
+            {/* Contract Document */}
+            <Card className="p-6 shadow-sm rounded-2xl border-slate-200">
+              <div className="flex items-center gap-3 mb-6">
+                <div className="w-10 h-10 rounded-lg bg-emerald-100 flex items-center justify-center">
+                  <File className="w-5 h-5 text-emerald-600" />
+                </div>
+                <div>
+                  <h2 className="text-lg font-semibold text-slate-900">Contract Document</h2>
+                  <p className="text-sm text-slate-500">Upload or replace the contract file</p>
+                </div>
+              </div>
+
+              {/* Current Document Display */}
+              {currentDocument ? (
+                <div className="mb-4 p-4 bg-slate-50 rounded-lg border border-slate-200">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-lg bg-blue-100 flex items-center justify-center">
+                        <FileText className="w-5 h-5 text-blue-600" />
+                      </div>
+                      <div>
+                        <p className="font-medium text-slate-900 text-sm">{currentDocument.file_name}</p>
+                        <p className="text-xs text-slate-500">
+                          Uploaded {new Date(currentDocument.created_at).toLocaleDateString("en-GB", {
+                            day: "2-digit",
+                            month: "short",
+                            year: "numeric",
+                          })}
+                          {currentDocument.file_type && ` • ${currentDocument.file_type.toUpperCase()}`}
+                        </p>
+                      </div>
+                    </div>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <label className="cursor-pointer">
+                          <input
+                            type="file"
+                            accept=".pdf,.doc,.docx"
+                            className="hidden"
+                            onChange={handleFileSelect}
+                            disabled={uploading}
+                          />
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="text-blue-600 border-blue-200 hover:bg-blue-50"
+                            asChild
+                            disabled={uploading}
+                          >
+                            <span>
+                              {uploading ? (
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                              ) : (
+                                <>
+                                  <Upload className="w-4 h-4 mr-1.5" />
+                                  Replace
+                                </>
+                              )}
+                            </span>
+                          </Button>
+                        </label>
+                      </TooltipTrigger>
+                      <TooltipContent>Upload a new version of the contract</TooltipContent>
+                    </Tooltip>
+                  </div>
+                </div>
+              ) : (
+                <div className="mb-4">
+                  <label className="cursor-pointer">
+                    <input
+                      type="file"
+                      accept=".pdf,.doc,.docx"
+                      className="hidden"
+                      onChange={handleFileSelect}
+                      disabled={uploading}
+                    />
+                    <div className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors ${
+                      uploading ? "border-blue-300 bg-blue-50" : "border-slate-300 hover:border-blue-400 hover:bg-blue-50/50"
+                    }`}>
+                      {uploading ? (
+                        <>
+                          <Loader2 className="w-8 h-8 text-blue-500 mx-auto mb-3 animate-spin" />
+                          <p className="text-sm font-medium text-blue-700">Uploading...</p>
+                        </>
+                      ) : (
+                        <>
+                          <Upload className="w-8 h-8 text-slate-400 mx-auto mb-3" />
+                          <p className="text-sm font-medium text-slate-700">Click to upload contract</p>
+                          <p className="text-xs text-slate-500 mt-1">PDF, DOC, or DOCX</p>
+                        </>
+                      )}
+                    </div>
+                  </label>
+                </div>
+              )}
+
+              {uploadError && (
+                <div className="text-xs text-red-600 bg-red-50 p-3 rounded-lg border border-red-200">
+                  {uploadError}
+                </div>
+              )}
             </Card>
 
             {/* Pre-agreed Terms */}
@@ -504,5 +724,6 @@ export default function EditDealPage({ params }: { params: Promise<{ dealId: str
         </div>
       </div>
     </div>
+    </TooltipProvider>
   )
 }
