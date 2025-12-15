@@ -307,6 +307,7 @@ function ReconciliationContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const dealId = searchParams.get("dealId")
+  const resumeAtClauseId = searchParams.get("resumeAt") // Resume at specific clause
   const { toast } = useToast()
 
   // State for clauses loaded from API
@@ -521,11 +522,19 @@ function ReconciliationContent() {
           return
         }
 
-        // Set clauses and select first one
+        // Set clauses and select first one (or resumeAt clause if specified)
         if (apiClauses.length > 0) {
           setClauses(apiClauses)
           // Only set selected clause if none selected (preserve user selection during polling)
-          setSelectedClause(prev => prev || apiClauses[0])
+          setSelectedClause(prev => {
+            if (prev) return prev // Preserve user selection
+            // Check for resumeAt param
+            if (resumeAtClauseId) {
+              const resumeClause = apiClauses.find((c: Clause) => String(c.id) === resumeAtClauseId)
+              if (resumeClause) return resumeClause
+            }
+            return apiClauses[0]
+          })
 
           // Initialize clause statuses and risk-accepted from loaded data
           const initialStatuses: Record<number, ClauseStatus> = {}
@@ -1184,6 +1193,10 @@ function ReconciliationContent() {
     setSelectedClause(clause)
     setCurrentNote(clauseNotes[clause.id] || "")
     setNoteSaved(false)
+    // Save last viewed clause to localStorage for resume functionality
+    if (dealId) {
+      localStorage.setItem(`contractbuddy-last-clause-${dealId}`, String(clause.id))
+    }
   }
 
   useEffect(() => {
