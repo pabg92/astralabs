@@ -315,6 +315,7 @@ function ReconciliationContent() {
   const [loadError, setLoadError] = useState<string | null>(null)
   const [documentProcessing, setDocumentProcessing] = useState(false) // Document still being processed by worker
   const [processingFailed, setProcessingFailed] = useState<string | null>(null) // Document processing failed with error
+  const [isStillProcessing, setIsStillProcessing] = useState(false) // P1 reconciliation still running (show banner, continue polling)
   const [forceRefetchCounter, setForceRefetchCounter] = useState(0) // Trigger refetch when animation completes
   const [loadingMessageIndex, setLoadingMessageIndex] = useState(0) // Fun loading message rotation
   const [exportingText, setExportingText] = useState(false)
@@ -497,15 +498,20 @@ function ReconciliationContent() {
         const docStatus = apiData.document?.processing_status
         const isProcessing = docStatus === 'pending' || docStatus === 'processing'
         const isFailed = docStatus === 'failed'
+        const isCompleted = docStatus === 'completed'
         const hasNoClauses = apiClauses.length === 0
 
         if (!mounted) return
+
+        // Track if P1 reconciliation is still running (for banner + continued polling)
+        setIsStillProcessing(isProcessing)
 
         // Handle failed processing status
         if (isFailed) {
           const errorMessage = apiData.document?.processing_error || "Contract processing failed. Please try re-uploading the document."
           setProcessingFailed(errorMessage)
           setDocumentProcessing(false)
+          setIsStillProcessing(false)
           setLoading(false)
           // Stop polling
           if (pollInterval) {
@@ -518,8 +524,8 @@ function ReconciliationContent() {
         // Set clauses and select first one
         if (apiClauses.length > 0) {
           setClauses(apiClauses)
-          setSelectedClause(apiClauses[0])
-          setDocumentProcessing(false)
+          // Only set selected clause if none selected (preserve user selection during polling)
+          setSelectedClause(prev => prev || apiClauses[0])
 
           // Initialize clause statuses and risk-accepted from loaded data
           const initialStatuses: Record<number, ClauseStatus> = {}
@@ -533,10 +539,21 @@ function ReconciliationContent() {
           setClauseStatuses(initialStatuses)
           setRiskAcceptedClauses(initialRiskAccepted)
 
-          // Stop polling if we were polling
-          if (pollInterval) {
-            clearInterval(pollInterval)
-            pollInterval = null
+          // Hide processing animation once clauses are loaded
+          setDocumentProcessing(false)
+
+          // Only stop polling when processing is COMPLETED (not just when clauses exist)
+          if (isCompleted) {
+            if (pollInterval) {
+              clearInterval(pollInterval)
+              pollInterval = null
+            }
+          } else if (isProcessing && !pollInterval && !isPolling) {
+            // Continue polling for RAG status updates while still processing
+            console.log("Clauses loaded but still processing, continuing poll for RAG updates...")
+            pollInterval = setInterval(() => {
+              fetchReconciliationData(true)
+            }, 3000) // Poll every 3 seconds for faster updates
           }
         } else if (isProcessing || hasNoClauses) {
           // Document is still processing or has no clauses yet
@@ -2170,8 +2187,9 @@ function ReconciliationContent() {
                     variant="ghost"
                     size="sm"
                     onClick={() => router.push(`/reconciliation/complete?dealId=${dealId}`)}
-                    className="text-slate-500 hover:text-slate-700"
-                    title="Skip to completion page"
+                    className="text-slate-500 hover:text-slate-700 disabled:opacity-50"
+                    title={isStillProcessing ? "Please wait for P1 reconciliation to complete" : "Skip to completion page"}
+                    disabled={isStillProcessing}
                   >
                     <SkipForward className="w-4 h-4" />
                   </Button>
@@ -2349,8 +2367,20 @@ function ReconciliationContent() {
             </div>
 
             <div className="mt-6">
-              <Button onClick={handleCompleteReview} className="w-full bg-blue-500 hover:bg-blue-600 rounded-lg">
-                Complete Review →
+              <Button
+                onClick={handleCompleteReview}
+                className="w-full bg-blue-500 hover:bg-blue-600 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+                disabled={isStillProcessing}
+                title={isStillProcessing ? "Please wait for P1 reconciliation to complete" : ""}
+              >
+                {isStillProcessing ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-2" />
+                    Processing...
+                  </>
+                ) : (
+                  "Complete Review →"
+                )}
               </Button>
             </div>
           </div>
@@ -2484,6 +2514,20 @@ function ReconciliationContent() {
             {/* Overview tab */}
             <div className={activeTab === "overview" ? "block" : "hidden"}>
               <div className="max-w-3xl mx-auto">
+                {/* P1 Reconciliation In Progress Banner */}
+                {isStillProcessing && clauses.length > 0 && (
+                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-6 flex items-center gap-3 shadow-sm">
+                    <div className="w-5 h-5 border-2 border-amber-500 border-t-transparent rounded-full animate-spin flex-shrink-0" />
+                    <div>
+                      <p className="text-sm font-medium text-amber-800">
+                        P1 Reconciliation in progress...
+                      </p>
+                      <p className="text-xs text-amber-600 mt-0.5">
+                        Results updating automatically. Clause statuses may change.
+                      </p>
+                    </div>
+                  </div>
+                )}
                 <Card className="p-8 shadow-sm rounded-2xl border-slate-200">
                   <div className="prose prose-slate max-w-none">
                     <div className="text-slate-800 leading-relaxed whitespace-pre-wrap font-serif">
