@@ -5,10 +5,17 @@ import type React from "react"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import Link from "next/link"
 import {
   FileText,
   TrendingUp,
+  TrendingDown,
   CheckCircle2,
   Clock,
   Shield,
@@ -21,10 +28,14 @@ import {
   PlayCircle,
   Loader2,
   AlertCircle,
+  LayoutGrid,
+  LayoutList,
+  Upload,
 } from "lucide-react"
 import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
 import { useUser } from "@clerk/nextjs"
+import { useLayoutPreference } from "@/hooks/use-layout-preference"
 
 interface RecentDeal {
   id: string
@@ -51,6 +62,24 @@ interface DashboardStats {
   recent_deals: RecentDeal[]
 }
 
+// Helper function to format relative time
+function formatRelativeTime(dateString: string | null): string {
+  if (!dateString) return ""
+  const date = new Date(dateString)
+  const now = new Date()
+  const diffMs = now.getTime() - date.getTime()
+  const diffMins = Math.floor(diffMs / 60000)
+  const diffHours = Math.floor(diffMs / 3600000)
+  const diffDays = Math.floor(diffMs / 86400000)
+
+  if (diffMins < 1) return "Just now"
+  if (diffMins < 60) return `${diffMins}m ago`
+  if (diffHours < 24) return `${diffHours}h ago`
+  if (diffDays === 1) return "Yesterday"
+  if (diffDays < 7) return `${diffDays}d ago`
+  return date.toLocaleDateString("en-US", { month: "short", day: "numeric" })
+}
+
 export default function HomePage() {
   const [currentTime, setCurrentTime] = useState("")
   const [stats, setStats] = useState<DashboardStats | null>(null)
@@ -58,6 +87,7 @@ export default function HomePage() {
   const [error, setError] = useState<string | null>(null)
   const router = useRouter()
   const { user, isLoaded: userLoaded } = useUser()
+  const { layout, updateLayout, isLoaded: layoutLoaded } = useLayoutPreference()
 
   // Get user's first name for greeting
   const firstName = user?.firstName || "there"
@@ -111,8 +141,27 @@ export default function HomePage() {
     fetchStats()
   }, [])
 
+  // Keyboard shortcut: Press "N" to start new reconciliation
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't trigger if user is typing in input/textarea
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
+      if (e.key.toLowerCase() === "n" && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        router.push("/deals/new")
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown)
+    return () => window.removeEventListener("keydown", handleKeyDown)
+  }, [router])
+
   const handleReconcileDeal = (dealId: string) => {
-    router.push(`/reconciliation?dealId=${dealId}`)
+    // Check if there's a last viewed clause for this deal
+    const lastClause = localStorage.getItem(`contractbuddy-last-clause-${dealId}`)
+    if (lastClause) {
+      router.push(`/reconciliation?dealId=${dealId}&resumeAt=${lastClause}`)
+    } else {
+      router.push(`/reconciliation?dealId=${dealId}`)
+    }
   }
 
   // Build KPIs from stats
@@ -164,20 +213,19 @@ export default function HomePage() {
 
   const quickActions = [
     {
-      title: "View All Deals",
-      description: "Browse and manage your contracts",
-      icon: Briefcase,
-      href: "/deals",
-      color: "blue",
-      onClick: null,
-    },
-    {
       title: "Start New Reconciliation",
       description: "Upload and review a new contract",
       icon: FileText,
       href: "/deals/new",
+      color: "blue",
+      shortcut: "N",
+    },
+    {
+      title: "View All Deals",
+      description: "Browse and manage your contracts",
+      icon: Briefcase,
+      href: "/deals",
       color: "purple",
-      onClick: null,
     },
     {
       title: "View Reports",
@@ -185,7 +233,6 @@ export default function HomePage() {
       icon: TrendingUp,
       href: "/deals",
       color: "emerald",
-      onClick: null,
     },
   ]
 
@@ -196,6 +243,7 @@ export default function HomePage() {
     stats.clauses_reviewed === 0
 
   return (
+    <TooltipProvider>
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50/30 to-slate-100">
       <div className="container mx-auto px-6 py-8">
         <div className="mb-8">
@@ -226,8 +274,18 @@ export default function HomePage() {
                 </p>
               ) : (
                 <p className="text-xl text-blue-50 mb-6">
-                  You've saved <span className="font-bold text-white">{stats?.hours_saved ?? 0} hours</span> this month.
-                  {(stats?.hours_saved ?? 0) > 0 ? " That's incredible progress!" : " Let's get started!"}
+                  You've saved{" "}
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span className="font-bold text-white cursor-help border-b border-dashed border-white/50">
+                        {stats?.hours_saved ?? 0}h
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent className="bg-slate-900 text-white">
+                      <p>≈ {((stats?.hours_saved ?? 0) / 40).toFixed(1)} weeks of manual work</p>
+                    </TooltipContent>
+                  </Tooltip>{" "}
+                  this month
                 </p>
               )}
               <div className="flex gap-4">
@@ -259,10 +317,41 @@ export default function HomePage() {
           </div>
         )}
 
+        {layout === "standard" && (
         <div className="mb-8">
-          <div className="flex items-center gap-2 mb-4">
-            <Target className="w-5 h-5 text-slate-700" />
-            <h2 className="text-2xl font-semibold text-slate-800">Your Performance</h2>
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <Target className="w-5 h-5 text-slate-700" />
+              <h2 className="text-2xl font-semibold text-slate-800">Your Performance</h2>
+            </div>
+            <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-1">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => updateLayout("standard")}
+                    className={`px-2 ${layout === "standard" ? "bg-white shadow-sm" : ""}`}
+                  >
+                    <LayoutGrid className="w-4 h-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Standard view</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => updateLayout("compact")}
+                    className={`px-2 ${layout === "compact" ? "bg-white shadow-sm" : ""}`}
+                  >
+                    <LayoutList className="w-4 h-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Compact view</TooltipContent>
+              </Tooltip>
+            </div>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4">
             {kpis.map((kpi) => (
@@ -317,6 +406,45 @@ export default function HomePage() {
             ))}
           </div>
         </div>
+        )}
+
+        {/* Compact mode layout toggle - shows in header when compact is active */}
+        {layout === "compact" && (
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <Target className="w-5 h-5 text-slate-700" />
+              <h2 className="text-2xl font-semibold text-slate-800">Dashboard</h2>
+            </div>
+            <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-1">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => updateLayout("standard")}
+                    className={`px-2 ${layout === "standard" ? "bg-white shadow-sm" : ""}`}
+                  >
+                    <LayoutGrid className="w-4 h-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Standard view</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => updateLayout("compact")}
+                    className={`px-2 ${layout === "compact" ? "bg-white shadow-sm" : ""}`}
+                  >
+                    <LayoutList className="w-4 h-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Compact view</TooltipContent>
+              </Tooltip>
+            </div>
+          </div>
+        )}
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
           <Card className="lg:col-span-2 p-6 shadow-lg rounded-xl border-slate-200">
@@ -337,14 +465,18 @@ export default function HomePage() {
                 <Loader2 className="w-8 h-8 text-blue-500 animate-spin" />
               </div>
             ) : recentDeals.length === 0 ? (
-              <div className="text-center py-12">
-                <FileText className="w-12 h-12 text-slate-300 mx-auto mb-4" />
-                <h4 className="text-lg font-medium text-slate-700 mb-2">No deals yet</h4>
-                <p className="text-slate-500 mb-4">Create your first deal to get started</p>
+              <div className="text-center py-16">
+                <div className="w-16 h-16 mx-auto mb-6 bg-blue-100 rounded-full flex items-center justify-center">
+                  <Upload className="w-8 h-8 text-blue-600" />
+                </div>
+                <h4 className="text-xl font-semibold text-slate-800 mb-2">Get Started</h4>
+                <p className="text-slate-500 mb-6 max-w-sm mx-auto">
+                  Upload your first contract to begin reconciliation
+                </p>
                 <Link href="/deals/new">
-                  <Button className="bg-blue-600 hover:bg-blue-700">
-                    <PlayCircle className="w-4 h-4 mr-2" />
-                    Create First Deal
+                  <Button className="bg-blue-600 hover:bg-blue-700 shadow-md">
+                    <Upload className="w-4 h-4 mr-2" />
+                    Upload Contract
                   </Button>
                 </Link>
               </div>
@@ -365,6 +497,11 @@ export default function HomePage() {
                           <div className="text-sm text-slate-600">
                             {deal.client_name} x {deal.talent_name}
                           </div>
+                          {deal.updated_at && (
+                            <div className="text-xs text-slate-400 mt-0.5">
+                              Updated {formatRelativeTime(deal.updated_at)}
+                            </div>
+                          )}
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
@@ -421,58 +558,194 @@ export default function HomePage() {
             )}
           </Card>
 
-          <Card className="p-6 shadow-lg rounded-xl border-slate-200">
-            <div className="flex items-center gap-2 mb-4">
-              <Award className="w-5 h-5 text-slate-700" />
-              <h3 className="text-xl font-semibold text-slate-800">Quick Actions</h3>
-            </div>
-            <div className="space-y-3">
-              {quickActions.map((action, index) => {
-                const content = (
-                  <div
-                    key={index}
-                    className={`p-4 rounded-lg border-2 transition-all duration-200 hover:shadow-md cursor-pointer ${
-                      action.color === "blue"
-                        ? "border-blue-200 hover:border-blue-300 bg-gradient-to-br from-blue-50 to-white"
-                        : action.color === "purple"
-                          ? "border-purple-200 hover:border-purple-300 bg-gradient-to-br from-purple-50 to-white"
-                          : "border-emerald-200 hover:border-emerald-300 bg-gradient-to-br from-emerald-50 to-white"
-                    }`}
-                  >
-                    <div className="flex items-start gap-3">
-                      <div
-                        className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 ${
-                          action.color === "blue"
-                            ? "bg-blue-500 text-white"
-                            : action.color === "purple"
-                              ? "bg-purple-500 text-white"
-                              : "bg-emerald-500 text-white"
-                        }`}
-                      >
-                        <action.icon className="w-5 h-5" />
+          {/* Right sidebar: Quick Actions (standard) or Compact KPIs (compact) */}
+          {layout === "standard" ? (
+            <Card className="p-6 shadow-lg rounded-xl border-slate-200">
+              <div className="flex items-center gap-2 mb-4">
+                <Award className="w-5 h-5 text-slate-700" />
+                <h3 className="text-xl font-semibold text-slate-800">Quick Actions</h3>
+              </div>
+              <div className="space-y-3">
+                {quickActions.map((action) => {
+                  const content = (
+                    <div
+                      className={`p-4 rounded-lg border-2 transition-all duration-200 hover:shadow-md cursor-pointer ${
+                        action.color === "blue"
+                          ? "border-blue-200 hover:border-blue-300 bg-gradient-to-br from-blue-50 to-white"
+                          : action.color === "purple"
+                            ? "border-purple-200 hover:border-purple-300 bg-gradient-to-br from-purple-50 to-white"
+                            : "border-emerald-200 hover:border-emerald-300 bg-gradient-to-br from-emerald-50 to-white"
+                      }`}
+                    >
+                      <div className="flex items-start gap-3">
+                        <div
+                          className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 ${
+                            action.color === "blue"
+                              ? "bg-blue-500 text-white"
+                              : action.color === "purple"
+                                ? "bg-purple-500 text-white"
+                                : "bg-emerald-500 text-white"
+                          }`}
+                        >
+                          <action.icon className="w-5 h-5" />
+                        </div>
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="font-semibold text-slate-900">{action.title}</span>
+                            {"shortcut" in action && action.shortcut && (
+                              <kbd className="px-1.5 py-0.5 text-[10px] font-mono bg-slate-100 border border-slate-300 rounded text-slate-600">
+                                {action.shortcut}
+                              </kbd>
+                            )}
+                          </div>
+                          <div className="text-xs text-slate-600 mt-1">{action.description}</div>
+                        </div>
+                        <ArrowRight className="w-4 h-4 text-slate-400 flex-shrink-0 mt-1" />
                       </div>
-                      <div className="flex-1">
-                        <div className="font-semibold text-slate-900 mb-1">{action.title}</div>
-                        <div className="text-xs text-slate-600">{action.description}</div>
-                      </div>
-                      <ArrowRight className="w-4 h-4 text-slate-400 flex-shrink-0 mt-1" />
                     </div>
-                  </div>
-                )
+                  )
 
-                return action.href ? (
-                  <Link key={action.title} href={action.href}>
-                    {content}
-                  </Link>
-                ) : (
-                  <div key={action.title} onClick={action.onClick || undefined}>
-                    {content}
-                  </div>
-                )
-              })}
-            </div>
-          </Card>
+                  return (
+                    <Link key={action.title} href={action.href}>
+                      {content}
+                    </Link>
+                  )
+                })}
+              </div>
+            </Card>
+          ) : (
+            /* Compact KPIs in sidebar */
+            <Card className="p-6 shadow-lg rounded-xl border-slate-200">
+              <div className="flex items-center gap-2 mb-4">
+                <Target className="w-5 h-5 text-slate-700" />
+                <h3 className="text-xl font-semibold text-slate-800">Metrics</h3>
+              </div>
+              <div className="space-y-3">
+                {kpis.map((kpi) => {
+                  const changeValue = kpi.change.match(/[+-]?\d+/)?.[0] ?? "0"
+                  const isPositive = !kpi.change.startsWith("-")
+                  return (
+                    <div
+                      key={kpi.label}
+                      className={`p-3 rounded-lg border transition-all ${
+                        kpi.color === "blue"
+                          ? "border-blue-200 bg-blue-50/50"
+                          : kpi.color === "emerald"
+                            ? "border-emerald-200 bg-emerald-50/50"
+                            : kpi.color === "purple"
+                              ? "border-purple-200 bg-purple-50/50"
+                              : kpi.color === "amber"
+                                ? "border-amber-200 bg-amber-50/50"
+                                : "border-rose-200 bg-rose-50/50"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <div
+                            className={`w-8 h-8 rounded-md flex items-center justify-center ${
+                              kpi.color === "blue"
+                                ? "bg-blue-500 text-white"
+                                : kpi.color === "emerald"
+                                  ? "bg-emerald-500 text-white"
+                                  : kpi.color === "purple"
+                                    ? "bg-purple-500 text-white"
+                                    : kpi.color === "amber"
+                                      ? "bg-amber-500 text-white"
+                                      : "bg-rose-500 text-white"
+                            }`}
+                          >
+                            <kpi.icon className="w-4 h-4" />
+                          </div>
+                          <div>
+                            <div className="text-xs text-slate-500">
+                              {kpi.label === "Contracts Reconciled" ? "Reconciled" :
+                               kpi.label === "Contracts Signed" ? "Signed" :
+                               kpi.label === "Clauses Reviewed" ? "Reviewed" :
+                               kpi.label === "Hours Saved" ? "Hours" :
+                               "Risk ↓"}
+                            </div>
+                            <div className="text-xl font-bold text-slate-900">
+                              {loading ? "--" : kpi.value}
+                            </div>
+                          </div>
+                        </div>
+                        {/* Trend indicator */}
+                        <div className="flex flex-col items-end">
+                          {loading ? (
+                            <Loader2 className="w-4 h-4 text-slate-400 animate-spin" />
+                          ) : (
+                            <>
+                              {isPositive ? (
+                                <TrendingUp className="w-4 h-4 text-emerald-500" />
+                              ) : (
+                                <TrendingDown className="w-4 h-4 text-red-500" />
+                              )}
+                              <div className={`text-xs font-medium ${isPositive ? "text-emerald-600" : "text-red-600"}`}>
+                                {changeValue}
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </Card>
+          )}
         </div>
+
+        {/* Quick Actions below Recent Deals when in compact mode */}
+        {layout === "compact" && (
+          <div className="mb-8">
+            <Card className="p-6 shadow-lg rounded-xl border-slate-200">
+              <div className="flex items-center gap-2 mb-4">
+                <Award className="w-5 h-5 text-slate-700" />
+                <h3 className="text-xl font-semibold text-slate-800">Quick Actions</h3>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                {quickActions.map((action) => (
+                  <Link key={action.title} href={action.href}>
+                    <div
+                      className={`p-4 rounded-lg border-2 transition-all duration-200 hover:shadow-md cursor-pointer ${
+                        action.color === "blue"
+                          ? "border-blue-200 hover:border-blue-300 bg-gradient-to-br from-blue-50 to-white"
+                          : action.color === "purple"
+                            ? "border-purple-200 hover:border-purple-300 bg-gradient-to-br from-purple-50 to-white"
+                            : "border-emerald-200 hover:border-emerald-300 bg-gradient-to-br from-emerald-50 to-white"
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <div
+                          className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 ${
+                            action.color === "blue"
+                              ? "bg-blue-500 text-white"
+                              : action.color === "purple"
+                                ? "bg-purple-500 text-white"
+                                : "bg-emerald-500 text-white"
+                          }`}
+                        >
+                          <action.icon className="w-5 h-5" />
+                        </div>
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="font-semibold text-slate-900">{action.title}</span>
+                            {"shortcut" in action && action.shortcut && (
+                              <kbd className="px-1.5 py-0.5 text-[10px] font-mono bg-slate-100 border border-slate-300 rounded text-slate-600">
+                                {action.shortcut}
+                              </kbd>
+                            )}
+                          </div>
+                          <div className="text-xs text-slate-600">{action.description}</div>
+                        </div>
+                      </div>
+                    </div>
+                  </Link>
+                ))}
+              </div>
+            </Card>
+          </div>
+        )}
 
         <Card className="p-6 shadow-lg rounded-xl border-slate-200 bg-gradient-to-br from-slate-50 to-white text-center">
           <div className="flex items-center justify-center gap-2 mb-3">
@@ -495,5 +768,6 @@ export default function HomePage() {
         </Card>
       </div>
     </div>
+    </TooltipProvider>
   )
 }
