@@ -11,21 +11,13 @@ import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { ArrowLeft, Plus, Trash2, Upload, Save, ArrowRight, FileText, Users, CheckCircle2, Zap, Info } from "lucide-react"
+import { PAT_CATEGORIES } from "@/lib/constants/pat-categories"
 
 interface PreAgreedTerm {
   id: string
   clauseType: string
   expectedTerm: string
 }
-
-// Valid PAT categories that map to TERM_TO_CLAUSE_MAP in p1-reconciliation.ts
-const PAT_CATEGORIES = [
-  { value: "Compensation & Payment Timing", label: "Compensation & Payment", description: "Fee amount, payment terms, invoicing" },
-  { value: "Deliverables & Posting Requirements", label: "Deliverables & Posting", description: "Content deliverables, posting schedule" },
-  { value: "Usage Rights & Licensing", label: "Usage Rights & Licensing", description: "Usage duration, platforms, license scope" },
-  { value: "Content Approval & Revisions", label: "Content Approval", description: "Approval process, revision rounds" },
-  { value: "Content Retention & Non-Removal", label: "Content Retention", description: "How long posts must stay up" },
-] as const
 
 interface DealFormData {
   dealName: string
