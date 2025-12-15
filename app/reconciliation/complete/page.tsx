@@ -493,7 +493,8 @@ function ResolutionPageContent() {
       }
 
       const result = await response.json()
-      const shareUrl = `${window.location.origin}/share/${result.data.token}?dealId=${dealId}`
+      // Use the new friendly URL format: /review/deal-name-abc12345
+      const shareUrl = `${window.location.origin}/review/${result.data.slug}`
       setShareLink(shareUrl)
 
       // Copy to clipboard
