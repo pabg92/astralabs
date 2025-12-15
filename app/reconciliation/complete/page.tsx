@@ -23,7 +23,29 @@ import {
   Send,
   Loader2,
   Sparkles,
+  ExternalLink,
+  Copy,
+  Link,
+  Share2,
+  Wrench,
 } from "lucide-react"
+import { useToast } from "@/hooks/use-toast"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 
 type ClauseStatus = "match" | "review" | "issue" | "info" | "improve"
 
@@ -35,6 +57,10 @@ interface Clause {
   confidence: number
   clauseType: string
   reviewDecision?: "approved" | "rejected" | null
+  ragParsing?: string | null
+  ragRisk?: string | null
+  gptSummary?: string | null
+  revisedByUser?: boolean
 }
 
 interface PreAgreedTerm {
@@ -42,6 +68,12 @@ interface PreAgreedTerm {
   termCategory: string
   termDescription: string
   relatedClauseTypes: string[]
+}
+
+interface MatchingClause {
+  term: PreAgreedTerm
+  clause: Clause | null
+  isReconciled: boolean
 }
 
 // Fun loading messages for gamification
@@ -64,6 +96,7 @@ function ResolutionPageContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const dealId = searchParams.get("dealId")
+  const { toast } = useToast()
 
   const [clauses, setClauses] = useState<Clause[]>([])
   const [preAgreedTerms, setPreAgreedTerms] = useState<PreAgreedTerm[]>([])
@@ -73,6 +106,9 @@ function ResolutionPageContent() {
   const [error, setError] = useState<string | null>(null)
   const [isDownloading, setIsDownloading] = useState(false)
   const [loadingMessageIndex, setLoadingMessageIndex] = useState(0)
+  const [shareLink, setShareLink] = useState<string | null>(null)
+  const [isGeneratingShareLink, setIsGeneratingShareLink] = useState(false)
+  const [showParsingWarning, setShowParsingWarning] = useState(false)
 
   // Fun loading message rotation
   useEffect(() => {
@@ -157,8 +193,14 @@ function ResolutionPageContent() {
             id: string
             content: string
             clause_type: string
-            match_result?: { similarity_score?: number; rag_status?: string; gpt_summary?: string } | null
-            review?: { decision?: string } | null
+            match_result?: {
+              similarity_score?: number
+              rag_status?: string
+              gpt_summary?: string
+              rag_parsing?: string
+              rag_risk?: string
+            } | null
+            review?: { decision?: string; risk_accepted?: boolean } | null
           }) => {
             // Determine status from RAG status
             let status: ClauseStatus = "review"
@@ -170,6 +212,7 @@ function ResolutionPageContent() {
             else if (ragStatus === "blue") status = "info"
 
             const reviewDecision = boundary.review?.decision as "approved" | "rejected" | null
+            const hasUserRevision = boundary.review?.risk_accepted || reviewDecision === "rejected"
 
             return {
               id: boundary.id,
@@ -179,6 +222,10 @@ function ResolutionPageContent() {
               confidence: Math.round((boundary.match_result?.similarity_score || 0) * 100),
               clauseType: boundary.clause_type || "General",
               reviewDecision,
+              ragParsing: boundary.match_result?.rag_parsing || null,
+              ragRisk: boundary.match_result?.rag_risk || null,
+              gptSummary: boundary.match_result?.gpt_summary || null,
+              revisedByUser: hasUserRevision,
             }
           })
 
@@ -219,6 +266,34 @@ function ResolutionPageContent() {
 
   const overallStatus = getOverallStatus()
 
+  // Check for parsing flags (clauses with parsing issues)
+  const clausesWithParsingFlags = clauses.filter(
+    (c) => c.ragParsing === "amber" || c.ragParsing === "red"
+  )
+  const hasParsingFlags = clausesWithParsingFlags.length > 0
+
+  // Clauses revised by user (rejected or risk accepted)
+  const revisedClauses = clauses.filter((c) => c.revisedByUser)
+
+  // Build pre-agreed terms with matching clause data for side-by-side view
+  const termClauseMatches: MatchingClause[] = preAgreedTerms.map((term) => {
+    const matchingClause = clauses.find((clause) => {
+      const clauseTypeNormalized = clause.clauseType.toLowerCase()
+      const matchesRelatedType = term.relatedClauseTypes.some(
+        (relatedType) => relatedType.toLowerCase() === clauseTypeNormalized
+      )
+      return matchesRelatedType
+    })
+
+    const isReconciled = matchingClause?.reviewDecision === "approved"
+
+    return {
+      term,
+      clause: matchingClause || null,
+      isReconciled,
+    }
+  })
+
   // Calculate pre-agreed terms reconciliation using related_clause_types
   const reconciledTerms = preAgreedTerms.filter((term) => {
     // Find any approved clause that matches one of the term's related clause types
@@ -251,6 +326,8 @@ function ResolutionPageContent() {
   const handleDownloadReport = () => {
     setIsDownloading(true)
 
+    const revisedTag = '<span style="background:#dbeafe; color:#1d4ed8; padding:2px 6px; border-radius:4px; font-size:10px; margin-left:8px; font-weight:500;">REVISED BY USER</span>'
+
     const printContent = `
       <!DOCTYPE html>
       <html>
@@ -268,9 +345,20 @@ function ResolutionPageContent() {
             .accepted { background: #dcfce7; border-color: #22c55e; }
             .rejected { background: #fee2e2; border-color: #ef4444; }
             .pending { background: #fef3c7; border-color: #f59e0b; }
-            .clause-type { font-weight: bold; margin-bottom: 8px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; }
+            .clause-type { font-weight: bold; margin-bottom: 8px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; display: flex; align-items: center; }
             .clause-text { color: #1e293b; font-size: 14px; line-height: 1.5; white-space: pre-wrap; }
             .no-clauses { color: #94a3b8; font-style: italic; padding: 20px; text-align: center; }
+            .pat-section { margin-top: 40px; }
+            .pat-item { padding: 16px; margin: 10px 0; border-radius: 8px; border: 1px solid #e2e8f0; }
+            .pat-reconciled { background: #dcfce7; border-color: #22c55e; }
+            .pat-pending { background: #fef3c7; border-color: #f59e0b; }
+            .pat-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+            .pat-category { font-weight: bold; font-size: 14px; }
+            .pat-status { font-size: 12px; padding: 2px 8px; border-radius: 4px; }
+            .status-reconciled { background: #22c55e; color: white; }
+            .status-pending { background: #f59e0b; color: white; }
+            .pat-description { font-size: 13px; color: #475569; margin-bottom: 8px; }
+            .pat-clause { font-size: 12px; color: #64748b; background: #f8fafc; padding: 8px; border-radius: 4px; margin-top: 8px; }
             @media print { body { padding: 20px; } .clause { page-break-inside: avoid; } }
           </style>
         </head>
@@ -282,6 +370,7 @@ function ResolutionPageContent() {
             <p><strong>Document:</strong> ${contractFileName}</p>
             <p><strong>Date:</strong> ${new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}</p>
             <p><strong>Completion:</strong> ${completionRate}%</p>
+            ${revisedClauses.length > 0 ? `<p><strong>User Revisions:</strong> ${revisedClauses.length} clause(s)</p>` : ''}
           </div>
 
           <div class="stats">
@@ -291,15 +380,37 @@ function ResolutionPageContent() {
             <div class="stat-box" style="background:#fef3c7"><strong>${pendingCount}</strong>Pending</div>
           </div>
 
+          ${preAgreedTerms.length > 0 ? `
+          <div class="pat-section">
+            <h2>Pre-Agreed Terms Reconciliation (${reconciledTerms.length}/${preAgreedTerms.length})</h2>
+            ${termClauseMatches.map(match => `
+              <div class="pat-item ${match.isReconciled ? 'pat-reconciled' : 'pat-pending'}">
+                <div class="pat-header">
+                  <span class="pat-category">${match.term.termCategory}</span>
+                  <span class="pat-status ${match.isReconciled ? 'status-reconciled' : 'status-pending'}">
+                    ${match.isReconciled ? 'Reconciled' : 'Pending'}
+                  </span>
+                </div>
+                <div class="pat-description"><strong>Expected:</strong> ${match.term.termDescription}</div>
+                ${match.clause ? `
+                  <div class="pat-clause">
+                    <strong>Contract Clause:</strong> ${match.clause.summary || match.clause.text.substring(0, 200)}...
+                  </div>
+                ` : '<div class="pat-clause"><em>No matching clause found</em></div>'}
+              </div>
+            `).join('')}
+          </div>
+          ` : ''}
+
           <h2>Accepted Clauses (${acceptedCount})</h2>
           ${acceptedClauses.length === 0
             ? '<p class="no-clauses">No clauses accepted</p>'
-            : acceptedClauses.map(c => `<div class="clause accepted"><div class="clause-type">${c.clauseType}</div><div class="clause-text">${c.text || c.summary}</div></div>`).join('')}
+            : acceptedClauses.map(c => `<div class="clause accepted"><div class="clause-type">${c.clauseType}${c.revisedByUser ? revisedTag : ''}</div><div class="clause-text">${c.text || c.summary}</div></div>`).join('')}
 
           <h2>Rejected Clauses (${rejectedCount})</h2>
           ${rejectedClauses.length === 0
             ? '<p class="no-clauses">No clauses rejected</p>'
-            : rejectedClauses.map(c => `<div class="clause rejected"><div class="clause-type">${c.clauseType}</div><div class="clause-text">${c.text || c.summary}</div></div>`).join('')}
+            : rejectedClauses.map(c => `<div class="clause rejected"><div class="clause-type">${c.clauseType}${revisedTag}</div><div class="clause-text">${c.text || c.summary}</div></div>`).join('')}
 
           <h2>Pending Review (${pendingCount})</h2>
           ${pendingClauses.length === 0
@@ -320,7 +431,18 @@ function ResolutionPageContent() {
   }
 
   const handleFinalise = async () => {
+    // Check for parsing flags first
+    if (hasParsingFlags) {
+      setShowParsingWarning(true)
+      return
+    }
+
+    await doFinalise()
+  }
+
+  const doFinalise = async () => {
     setIsDownloading(true)
+    setShowParsingWarning(false)
 
     try {
       // Update deal status to signed/finalised
@@ -334,14 +456,85 @@ function ResolutionPageContent() {
       handleDownloadReport()
 
       // Show success and redirect
-      alert('Contract reconciliation finalised successfully!')
+      toast({
+        title: "Contract finalized",
+        description: "The reconciliation has been completed and exported.",
+      })
       router.push('/deals')
     } catch (error) {
       console.error('Error finalising:', error)
-      alert('Failed to finalise. Please try again.')
+      toast({
+        title: "Failed to finalize",
+        description: "Please try again.",
+        variant: "destructive",
+      })
     } finally {
       setIsDownloading(false)
     }
+  }
+
+  const handleGenerateShareLink = async () => {
+    if (!dealId) return
+
+    setIsGeneratingShareLink(true)
+
+    try {
+      const response = await fetch(`/api/reconciliation/${dealId}/share`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          expires_in_hours: 168, // 7 days
+          allowed_actions: ['view', 'comment'],
+        }),
+      })
+
+      if (!response.ok) {
+        throw new Error('Failed to generate share link')
+      }
+
+      const result = await response.json()
+      const shareUrl = `${window.location.origin}/share/${result.data.token}?dealId=${dealId}`
+      setShareLink(shareUrl)
+
+      // Copy to clipboard
+      await navigator.clipboard.writeText(shareUrl)
+      toast({
+        title: "Share link generated",
+        description: "Link copied to clipboard. Valid for 7 days.",
+      })
+    } catch (error) {
+      console.error('Error generating share link:', error)
+      toast({
+        title: "Failed to generate link",
+        description: "Please try again.",
+        variant: "destructive",
+      })
+    } finally {
+      setIsGeneratingShareLink(false)
+    }
+  }
+
+  const handleCopyShareLink = async () => {
+    if (!shareLink) return
+
+    try {
+      await navigator.clipboard.writeText(shareLink)
+      toast({
+        title: "Link copied",
+        description: "Share link copied to clipboard.",
+      })
+    } catch {
+      toast({
+        title: "Failed to copy",
+        description: "Please copy the link manually.",
+        variant: "destructive",
+      })
+    }
+  }
+
+  const handleFixClause = (clauseId: string) => {
+    // Navigate to the main reconciliation page with the clause focused
+    router.push(`/reconciliation?dealId=${dealId}&focusClause=${clauseId}`)
   }
 
   const handleGoBack = () => {
@@ -704,82 +897,265 @@ function ResolutionPageContent() {
           </Card>
         </div>
 
-        {/* Pre-Agreed Terms Reconciliation */}
+        {/* Pre-Agreed Terms Reconciliation - Side-by-Side Diff */}
         {preAgreedTerms.length > 0 && (
-          <Card className="p-6 shadow-sm rounded-2xl border-slate-200 mb-8">
-            <div className="flex items-center gap-3 mb-6">
-              <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center">
-                <TrendingUp className="w-5 h-5 text-blue-600" />
+          <TooltipProvider>
+            <Card className="p-6 shadow-sm rounded-2xl border-slate-200 mb-8">
+              <div className="flex items-center justify-between mb-6">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center">
+                    <TrendingUp className="w-5 h-5 text-blue-600" />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-semibold text-slate-900">Pre-Agreed Terms Reconciliation</h3>
+                    <p className="text-sm text-slate-500">
+                      {reconciledTerms.length} of {preAgreedTerms.length} terms successfully reconciled
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 text-xs text-slate-500">
+                  <span className="flex items-center gap-1">
+                    <div className="w-3 h-3 rounded-full bg-emerald-500" />
+                    Reconciled
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <div className="w-3 h-3 rounded-full bg-amber-500" />
+                    Pending
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <div className="w-3 h-3 rounded-full bg-slate-300" />
+                    No Match
+                  </span>
+                </div>
+              </div>
+
+              <div className="mb-4">
+                <Progress value={(reconciledTerms.length / preAgreedTerms.length) * 100} className="h-3" />
+              </div>
+
+              {/* Side-by-side header */}
+              <div className="grid grid-cols-2 gap-4 mb-3">
+                <div className="text-xs font-semibold text-slate-600 uppercase tracking-wide px-2">
+                  Pre-Agreed Term (Expected)
+                </div>
+                <div className="text-xs font-semibold text-slate-600 uppercase tracking-wide px-2">
+                  Contract Clause (Actual)
+                </div>
+              </div>
+
+              {/* Side-by-side comparison */}
+              <div className="space-y-4">
+                {termClauseMatches.map((match) => (
+                  <div
+                    key={match.term.id}
+                    className={`grid grid-cols-2 gap-4 p-4 rounded-xl border-2 transition-all ${
+                      match.isReconciled
+                        ? "bg-emerald-50 border-emerald-200"
+                        : match.clause
+                          ? "bg-amber-50 border-amber-200"
+                          : "bg-slate-50 border-slate-200"
+                    }`}
+                  >
+                    {/* Left side: Pre-Agreed Term */}
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <Badge
+                          variant="outline"
+                          className={`text-xs ${
+                            match.isReconciled
+                              ? "bg-emerald-100 text-emerald-700 border-emerald-300"
+                              : "bg-slate-100 text-slate-700"
+                          }`}
+                        >
+                          {match.term.termCategory}
+                        </Badge>
+                        <div className="flex items-center gap-1">
+                          {match.isReconciled ? (
+                            <>
+                              <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                              <span className="text-xs font-medium text-emerald-600">Reconciled</span>
+                            </>
+                          ) : match.clause ? (
+                            <>
+                              <AlertTriangle className="w-4 h-4 text-amber-600" />
+                              <span className="text-xs font-medium text-amber-600">Pending</span>
+                            </>
+                          ) : (
+                            <>
+                              <AlertCircle className="w-4 h-4 text-slate-400" />
+                              <span className="text-xs font-medium text-slate-500">No Match</span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                      <div className="bg-white rounded-lg p-3 border border-slate-200 min-h-[80px]">
+                        <p className="text-sm text-slate-700 leading-relaxed">
+                          {match.term.termDescription}
+                        </p>
+                      </div>
+                      {match.term.relatedClauseTypes.length > 0 && (
+                        <div className="flex flex-wrap gap-1">
+                          <span className="text-xs text-slate-500">Related:</span>
+                          {match.term.relatedClauseTypes.map((type) => (
+                            <Badge key={type} variant="secondary" className="text-xs px-1.5 py-0">
+                              {type}
+                            </Badge>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Right side: Contract Clause */}
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        {match.clause ? (
+                          <Badge variant="outline" className="text-xs bg-blue-50 text-blue-700 border-blue-200">
+                            {match.clause.clauseType}
+                          </Badge>
+                        ) : (
+                          <Badge variant="outline" className="text-xs bg-slate-100 text-slate-500">
+                            Not Found
+                          </Badge>
+                        )}
+                        {match.clause && !match.isReconciled && (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-7 px-2 text-xs bg-white hover:bg-blue-50"
+                                onClick={() => handleFixClause(match.clause!.id)}
+                              >
+                                <Wrench className="w-3 h-3 mr-1" />
+                                Fix
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              <p>Jump to clause in reconciliation view</p>
+                            </TooltipContent>
+                          </Tooltip>
+                        )}
+                      </div>
+                      <div
+                        className={`rounded-lg p-3 border min-h-[80px] ${
+                          match.clause
+                            ? match.isReconciled
+                              ? "bg-emerald-50 border-emerald-200"
+                              : "bg-white border-amber-200"
+                            : "bg-slate-100 border-slate-200"
+                        }`}
+                      >
+                        {match.clause ? (
+                          <p className="text-sm text-slate-700 leading-relaxed line-clamp-4">
+                            {match.clause.summary || match.clause.text}
+                          </p>
+                        ) : (
+                          <p className="text-sm text-slate-400 italic">
+                            No matching clause found in the contract.
+                          </p>
+                        )}
+                      </div>
+                      {match.clause && (
+                        <div className="flex items-center gap-2 text-xs text-slate-500">
+                          <span>Confidence: {match.clause.confidence}%</span>
+                          {match.clause.revisedByUser && (
+                            <Badge variant="secondary" className="text-xs px-1.5 py-0 bg-blue-100 text-blue-700">
+                              Revised
+                            </Badge>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          </TooltipProvider>
+        )}
+
+        {/* Parsing Flags Warning */}
+        {hasParsingFlags && (
+          <Card className="p-4 shadow-sm rounded-2xl border-amber-200 bg-amber-50 mb-8">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
+              <div>
+                <h4 className="text-sm font-semibold text-amber-900">Parsing Issues Detected</h4>
+                <p className="text-sm text-amber-700 mt-1">
+                  {clausesWithParsingFlags.length} clause{clausesWithParsingFlags.length > 1 ? "s have" : " has"} parsing flags that may indicate extraction issues. Consider reviewing before finalizing.
+                </p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {clausesWithParsingFlags.slice(0, 3).map((clause) => (
+                    <Button
+                      key={clause.id}
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-xs bg-white"
+                      onClick={() => handleFixClause(clause.id)}
+                    >
+                      <Wrench className="w-3 h-3 mr-1" />
+                      {clause.clauseType}
+                    </Button>
+                  ))}
+                  {clausesWithParsingFlags.length > 3 && (
+                    <span className="text-xs text-amber-600 self-center">
+                      +{clausesWithParsingFlags.length - 3} more
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+          </Card>
+        )}
+
+        {/* Share Link Section */}
+        <Card className="p-6 shadow-sm rounded-2xl border-slate-200 mb-8">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-purple-100 flex items-center justify-center">
+                <Share2 className="w-5 h-5 text-purple-600" />
               </div>
               <div>
-                <h3 className="text-lg font-semibold text-slate-900">Pre-Agreed Terms Reconciliation</h3>
-                <p className="text-sm text-slate-500">
-                  {reconciledTerms.length} of {preAgreedTerms.length} terms successfully reconciled
+                <h3 className="text-sm font-semibold text-slate-900">Share with Team</h3>
+                <p className="text-xs text-slate-500">
+                  Generate a guest link for review and comments
                 </p>
               </div>
             </div>
 
-            <div className="mb-4">
-              <Progress value={(reconciledTerms.length / preAgreedTerms.length) * 100} className="h-3" />
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
-              {preAgreedTerms.map((term) => {
-                // Check if any clause matching the related types is approved
-                const isReconciled = clauses.some((clause) => {
-                  const clauseTypeNormalized = clause.clauseType.toLowerCase()
-                  const matchesRelatedType = term.relatedClauseTypes.some(
-                    (relatedType) => relatedType.toLowerCase() === clauseTypeNormalized
-                  )
-                  return matchesRelatedType && clause.reviewDecision === "approved"
-                })
-
-                return (
-                  <div
-                    key={term.id}
-                    className={`p-4 rounded-xl border-2 ${
-                      isReconciled ? "bg-emerald-50 border-emerald-200" : "bg-slate-50 border-slate-200"
-                    }`}
-                  >
-                    <div className="flex items-start justify-between mb-2">
-                      <Badge
-                        variant="outline"
-                        className={`text-xs ${
-                          isReconciled
-                            ? "bg-emerald-100 text-emerald-700 border-emerald-300"
-                            : "bg-slate-100 text-slate-700"
-                        }`}
-                      >
-                        {term.termCategory}
-                      </Badge>
-                      {isReconciled ? (
-                        <div className="flex items-center gap-1">
-                          <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                          <span className="text-xs font-medium text-emerald-600">Reconciled</span>
-                        </div>
-                      ) : (
-                        <div className="flex items-center gap-1">
-                          <AlertTriangle className="w-4 h-4 text-amber-600" />
-                          <span className="text-xs font-medium text-amber-600">Pending</span>
-                        </div>
-                      )}
-                    </div>
-                    <p className="text-xs text-slate-600 line-clamp-2">{term.termDescription}</p>
-                    {term.relatedClauseTypes.length > 0 && (
-                      <div className="mt-2 flex flex-wrap gap-1">
-                        {term.relatedClauseTypes.map((type) => (
-                          <Badge key={type} variant="secondary" className="text-xs px-1.5 py-0">
-                            {type}
-                          </Badge>
-                        ))}
-                      </div>
-                    )}
+            <div className="flex items-center gap-2">
+              {shareLink ? (
+                <>
+                  <div className="flex items-center gap-2 px-3 py-2 bg-slate-100 rounded-lg max-w-xs">
+                    <Link className="w-4 h-4 text-slate-500 flex-shrink-0" />
+                    <span className="text-xs text-slate-600 truncate">{shareLink}</span>
                   </div>
-                )
-              })}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleCopyShareLink}
+                    className="rounded-lg"
+                  >
+                    <Copy className="w-4 h-4" />
+                  </Button>
+                </>
+              ) : (
+                <Button
+                  variant="outline"
+                  onClick={handleGenerateShareLink}
+                  disabled={isGeneratingShareLink}
+                  className="rounded-lg"
+                >
+                  {isGeneratingShareLink ? (
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  ) : (
+                    <Share2 className="w-4 h-4 mr-2" />
+                  )}
+                  Generate Link
+                </Button>
+              )}
             </div>
-          </Card>
-        )}
+          </div>
+        </Card>
 
         {/* Action Buttons */}
         <Card className="p-6 shadow-sm rounded-2xl border-slate-200">
@@ -791,6 +1167,12 @@ function ResolutionPageContent() {
                   ? `You have ${pendingCount} clause${pendingCount > 1 ? "s" : ""} pending review. You can finalise now or go back to review.`
                   : "All clauses have been reviewed. You can now finalise the reconciliation."}
               </p>
+              {hasParsingFlags && (
+                <p className="text-xs text-amber-600 mt-1 flex items-center gap-1">
+                  <AlertTriangle className="w-3 h-3" />
+                  {clausesWithParsingFlags.length} parsing flag{clausesWithParsingFlags.length > 1 ? "s" : ""} detected
+                </p>
+              )}
             </div>
 
             <div className="flex items-center gap-3">
@@ -821,6 +1203,51 @@ function ResolutionPageContent() {
           </div>
         </Card>
       </div>
+
+      {/* Parsing Warning Dialog */}
+      <AlertDialog open={showParsingWarning} onOpenChange={setShowParsingWarning}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="w-5 h-5 text-amber-500" />
+              Parsing Issues Detected
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              <p className="mb-3">
+                There are {clausesWithParsingFlags.length} clause{clausesWithParsingFlags.length > 1 ? "s" : ""} with parsing flags that may indicate extraction issues:
+              </p>
+              <ul className="list-disc list-inside text-sm space-y-1 mb-3">
+                {clausesWithParsingFlags.slice(0, 5).map((clause) => (
+                  <li key={clause.id} className="text-slate-700">
+                    {clause.clauseType}
+                    {clause.ragParsing === "red" && (
+                      <Badge variant="destructive" className="ml-2 text-xs">Critical</Badge>
+                    )}
+                    {clause.ragParsing === "amber" && (
+                      <Badge variant="outline" className="ml-2 text-xs bg-amber-100 text-amber-700">Warning</Badge>
+                    )}
+                  </li>
+                ))}
+                {clausesWithParsingFlags.length > 5 && (
+                  <li className="text-slate-500">...and {clausesWithParsingFlags.length - 5} more</li>
+                )}
+              </ul>
+              <p className="text-sm">
+                Do you want to continue finalizing anyway, or go back to review these clauses?
+              </p>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Review Clauses</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={doFinalise}
+              className="bg-amber-500 hover:bg-amber-600"
+            >
+              Continue Anyway
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }
