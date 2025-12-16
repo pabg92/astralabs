@@ -3615,18 +3615,16 @@ function ReconciliationContent() {
 
       {/* Chat buddy icon removed - now using toolbar button instead */}
 
-      {/* Suggested Redlines Modal */}
-      {selectedClause && selectedClauseRedlines && selectedClauseRedlines.length > 0 && (
-        <SuggestedRedlinesModal
-          open={suggestedRedlinesModalOpen}
-          onOpenChange={setSuggestedRedlinesModalOpen}
-          clauseType={selectedClause.clauseType}
-          originalText={selectedClause.text}
-          redlines={selectedClauseRedlines}
-          onAcceptChanges={handleAcceptRedline}
-          isAccepting={isAcceptingRedline}
-        />
-      )}
+      {/* Suggested Redlines Modal - Always rendered, visibility controlled by open prop */}
+      <SuggestedRedlinesModal
+        open={suggestedRedlinesModalOpen && !!selectedClause && (selectedClauseRedlines?.length || 0) > 0}
+        onOpenChange={setSuggestedRedlinesModalOpen}
+        clauseType={selectedClause?.clauseType || ""}
+        originalText={selectedClause?.text || ""}
+        redlines={selectedClauseRedlines || []}
+        onAcceptChanges={handleAcceptRedline}
+        isAccepting={isAcceptingRedline}
+      />
     </div>
   )
 }
