@@ -114,37 +114,40 @@ export async function GET() {
       avgRiskReduction = Math.round((greenCount / total) * 100)
     }
 
-    // Get clause reviews for progress calculation
-    const { data: allReviews } = await supabaseServer
-      .from("clause_reviews")
-      .select("clause_boundary_id")
+    // Get approved clauses (green RAG status) for progress calculation
+    // This matches how the reconciliation page calculates progress
+    const { data: allMatchResults } = await supabaseServer
+      .from("clause_match_results")
+      .select("clause_boundary_id, rag_status")
 
-    const reviewedClauseIds = new Set(
-      allReviews?.map((r: { clause_boundary_id: string }) => r.clause_boundary_id) ?? []
+    const approvedClauseIds = new Set(
+      allMatchResults
+        ?.filter((r: { rag_status: string }) => r.rag_status === "green")
+        .map((r: { clause_boundary_id: string }) => r.clause_boundary_id) ?? []
     )
 
     // Process recent deals with progress
     const recentDeals: RecentDeal[] = []
     if (recentDealsResult.data) {
       for (const deal of recentDealsResult.data as any[]) {
-        // Count total clauses and reviewed clauses for this deal
+        // Count total clauses and approved (green) clauses for this deal
         let totalClauses = 0
-        let reviewedClauses = 0
+        let approvedClauses = 0
 
         const documents = deal.document_repository || []
         for (const doc of documents) {
           const boundaries = doc.clause_boundaries || []
           totalClauses += boundaries.length
           for (const boundary of boundaries) {
-            if (reviewedClauseIds.has(boundary.id)) {
-              reviewedClauses++
+            if (approvedClauseIds.has(boundary.id)) {
+              approvedClauses++
             }
           }
         }
 
-        // Calculate progress (guard against division by zero)
+        // Calculate progress based on approved (green) clauses
         const progress = totalClauses > 0
-          ? Math.round((reviewedClauses / totalClauses) * 100)
+          ? Math.round((approvedClauses / totalClauses) * 100)
           : 0
 
         // Determine urgency based on status and progress
