@@ -98,7 +98,6 @@ export default function DealsPage() {
 
   const [searchQuery, setSearchQuery] = useState("")
   const [statusFilter, setStatusFilter] = useState<string>("all")
-  const [categoryFilter, setCategoryFilter] = useState<string>("all")
   const [sortBy, setSortBy] = useState<string>("newest")
   const [activeFilterPreset, setActiveFilterPreset] = useState<FilterPresetId | null>(null)
   const [deals, setDeals] = useState<Deal[]>([])
@@ -579,10 +578,24 @@ export default function DealsPage() {
           </div>
         </div>
 
-        {/* Stats Summary Bar */}
+        {/* Stats Summary Bar - Clickable filters */}
         {!loading && deals.length > 0 && (
           <div className="mb-6 grid grid-cols-2 md:grid-cols-4 gap-4">
-            <div className="bg-white rounded-xl border border-gray-200 p-4 flex items-center gap-4">
+            <div
+              className={`bg-white rounded-xl border-2 p-4 flex items-center gap-4 cursor-pointer transition-all hover:shadow-md ${
+                statusFilter === "Pending" && !activeFilterPreset
+                  ? "border-slate-500 bg-slate-50 shadow-md"
+                  : "border-gray-200 hover:border-gray-400"
+              }`}
+              onClick={() => {
+                if (statusFilter === "Pending" && !activeFilterPreset) {
+                  setStatusFilter("")
+                } else {
+                  setStatusFilter("Pending")
+                  setActiveFilterPreset(null)
+                }
+              }}
+            >
               <div className="w-12 h-12 rounded-lg bg-slate-100 flex items-center justify-center">
                 <span className="text-2xl">📋</span>
               </div>
@@ -591,7 +604,21 @@ export default function DealsPage() {
                 <p className="text-sm text-gray-500">Pending</p>
               </div>
             </div>
-            <div className="bg-white rounded-xl border border-amber-200 p-4 flex items-center gap-4">
+            <div
+              className={`bg-white rounded-xl border-2 p-4 flex items-center gap-4 cursor-pointer transition-all hover:shadow-md ${
+                statusFilter === "Redlining" && !activeFilterPreset
+                  ? "border-amber-500 bg-amber-50 shadow-md"
+                  : "border-amber-200 hover:border-amber-400"
+              }`}
+              onClick={() => {
+                if (statusFilter === "Redlining" && !activeFilterPreset) {
+                  setStatusFilter("")
+                } else {
+                  setStatusFilter("Redlining")
+                  setActiveFilterPreset(null)
+                }
+              }}
+            >
               <div className="w-12 h-12 rounded-lg bg-amber-100 flex items-center justify-center">
                 <span className="text-2xl">✏️</span>
               </div>
@@ -600,7 +627,21 @@ export default function DealsPage() {
                 <p className="text-sm text-amber-600">Redlining</p>
               </div>
             </div>
-            <div className="bg-white rounded-xl border border-blue-200 p-4 flex items-center gap-4">
+            <div
+              className={`bg-white rounded-xl border-2 p-4 flex items-center gap-4 cursor-pointer transition-all hover:shadow-md ${
+                statusFilter === "Approved" && !activeFilterPreset
+                  ? "border-blue-500 bg-blue-50 shadow-md"
+                  : "border-blue-200 hover:border-blue-400"
+              }`}
+              onClick={() => {
+                if (statusFilter === "Approved" && !activeFilterPreset) {
+                  setStatusFilter("")
+                } else {
+                  setStatusFilter("Approved")
+                  setActiveFilterPreset(null)
+                }
+              }}
+            >
               <div className="w-12 h-12 rounded-lg bg-blue-100 flex items-center justify-center">
                 <span className="text-2xl">✅</span>
               </div>
@@ -609,7 +650,21 @@ export default function DealsPage() {
                 <p className="text-sm text-blue-600">Approved</p>
               </div>
             </div>
-            <div className="bg-white rounded-xl border border-emerald-200 p-4 flex items-center gap-4">
+            <div
+              className={`bg-white rounded-xl border-2 p-4 flex items-center gap-4 cursor-pointer transition-all hover:shadow-md ${
+                statusFilter === "Signed" && !activeFilterPreset
+                  ? "border-emerald-500 bg-emerald-50 shadow-md"
+                  : "border-emerald-200 hover:border-emerald-400"
+              }`}
+              onClick={() => {
+                if (statusFilter === "Signed" && !activeFilterPreset) {
+                  setStatusFilter("")
+                } else {
+                  setStatusFilter("Signed")
+                  setActiveFilterPreset(null)
+                }
+              }}
+            >
               <div className="w-12 h-12 rounded-lg bg-emerald-100 flex items-center justify-center">
                 <span className="text-2xl">🎉</span>
               </div>
@@ -725,19 +780,6 @@ export default function DealsPage() {
                 </SelectContent>
               </Select>
 
-              <Select value={categoryFilter} onValueChange={setCategoryFilter}>
-                <SelectTrigger className="w-[150px]" data-testid="deals-category-filter">
-                  <SelectValue placeholder="All Categories" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Categories</SelectItem>
-                  <SelectItem value="Fashion">Fashion</SelectItem>
-                  <SelectItem value="Sportswear">Sportswear</SelectItem>
-                  <SelectItem value="Beauty">Beauty</SelectItem>
-                  <SelectItem value="Tech">Tech</SelectItem>
-                </SelectContent>
-              </Select>
-
               <Select value={sortBy} onValueChange={setSortBy}>
                 <SelectTrigger className="w-[150px]" data-testid="deals-sort-select">
                   <SelectValue placeholder="Sort by" />
@@ -783,6 +825,38 @@ export default function DealsPage() {
           </div>
         </div>
 
+        {/* Active Filter Indicator */}
+        {(statusFilter !== "all" || activeFilterPreset || searchQuery) && (
+          <div className="mb-4 flex items-center justify-between text-sm">
+            <span className="text-gray-600">
+              Showing {filteredAndSortedDeals.length} of {deals.length} deals
+              {statusFilter !== "all" && !activeFilterPreset && (
+                <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full bg-blue-100 text-blue-800">
+                  {statusFilter}
+                </span>
+              )}
+              {activeFilterPreset && (
+                <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full bg-purple-100 text-purple-800">
+                  {FILTER_PRESETS.find(p => p.id === activeFilterPreset)?.label}
+                </span>
+              )}
+            </span>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setStatusFilter("all")
+                setActiveFilterPreset(null)
+                setSearchQuery("")
+              }}
+              className="text-gray-500 hover:text-gray-700"
+            >
+              <X className="w-4 h-4 mr-1" />
+              Clear all filters
+            </Button>
+          </div>
+        )}
+
         {/* Bulk Action Toolbar */}
         {selectedDealIds.size > 0 && (
           <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 p-3 flex items-center justify-between">
@@ -817,11 +891,11 @@ export default function DealsPage() {
             <div className="text-6xl">📋</div>
             <h3 className="mt-4 text-xl font-semibold text-gray-900">No deals found</h3>
             <p className="mt-2 text-gray-600">
-              {searchQuery || statusFilter !== "all" || categoryFilter !== "all"
+              {searchQuery || statusFilter !== "all" || activeFilterPreset
                 ? "Try adjusting your filters or search query."
                 : "Create your first deal to begin managing talent contracts and reconciliations."}
             </p>
-            {!searchQuery && statusFilter === "all" && categoryFilter === "all" && (
+            {!searchQuery && statusFilter === "all" && !activeFilterPreset && (
               <Link href="/deals/new">
                 <Button className="mt-6 bg-blue-600 hover:bg-blue-700">Create Your First Deal</Button>
               </Link>
