@@ -47,6 +47,8 @@ import {
   ChevronLeft,
   ChevronRight,
   Sparkles,
+  GitCompare,
+  Loader2,
 } from "lucide-react"
 import "@/styles/reconciliation.css"
 import type { JSX } from "react/jsx-runtime"
@@ -54,6 +56,7 @@ import { useRouter, useSearchParams } from "next/navigation"
 import { useToast } from "@/hooks/use-toast"
 import { RedlineEditor } from "@/components/redlines/redline-editor"
 import { CommentThread } from "@/components/redlines/comment-thread"
+import { SuggestedRedlinesModal } from "@/components/redlines/suggested-redlines-modal"
 import { ProcessingThoughts } from "@/components/processing-thoughts"
 import type { Database } from "@/types/database"
 
@@ -368,6 +371,11 @@ function ReconciliationContent() {
   const [commentDrafts, setCommentDrafts] = useState<Record<string, string>>({})
   const [redlineModalOpen, setRedlineModalOpen] = useState(false)
   const [redlineModalClause, setRedlineModalClause] = useState<Clause | null>(null)
+
+  // Suggested redlines modal state
+  const [suggestedRedlinesModalOpen, setSuggestedRedlinesModalOpen] = useState(false)
+  const [isAcceptingRedline, setIsAcceptingRedline] = useState(false)
+  const [isGeneratingSuggestion, setIsGeneratingSuggestion] = useState(false)
   const chatWindowRef = useRef<HTMLDivElement>(null)
 
   const autoSaveTimeoutRef = useRef<NodeJS.Timeout>()
@@ -805,6 +813,133 @@ function ReconciliationContent() {
       description: error,
       variant: "destructive",
     })
+  }
+
+  // Handle accepting a redline (marks resolved + approves clause)
+  const handleAcceptRedline = async (redlineId: string) => {
+    if (!dealId || !selectedClause) return
+
+    setIsAcceptingRedline(true)
+    try {
+      // 1. Mark redline as resolved
+      const response = await fetch(
+        `/api/reconciliation/${dealId}/redlines/${redlineId}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "resolved" }),
+        }
+      )
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}))
+        throw new Error(errorData.error || "Failed to resolve redline")
+      }
+
+      // 2. Update local redline state
+      const clauseBoundaryId = selectedClause.clauseBoundaryId
+      if (clauseBoundaryId) {
+        setRedlinesByClause((prev) => {
+          const existing = prev[clauseBoundaryId] || []
+          return {
+            ...prev,
+            [clauseBoundaryId]: existing.map((r) =>
+              r.id === redlineId
+                ? { ...r, status: "resolved" as const, resolved_at: new Date().toISOString() }
+                : r
+            ),
+          }
+        })
+      }
+
+      // 3. Approve the clause
+      setClauseStatuses((prev) => ({
+        ...prev,
+        [selectedClause.id]: "match",
+      }))
+      await saveClauseReview(selectedClause, "approved", false)
+
+      // 4. Close modal and show success
+      setSuggestedRedlinesModalOpen(false)
+      toast({
+        title: "Changes Accepted",
+        description: "Redline resolved and clause approved",
+      })
+
+      // 5. Move to next clause
+      setTimeout(() => {
+        const currentIndex = filteredClauses.findIndex((c) => c.id === selectedClause.id)
+        if (currentIndex < filteredClauses.length - 1) {
+          handleClauseSelect(filteredClauses[currentIndex + 1])
+        }
+      }, 300)
+    } catch (error) {
+      console.error("Error accepting redline:", error)
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to accept changes",
+        variant: "destructive",
+      })
+    } finally {
+      setIsAcceptingRedline(false)
+    }
+  }
+
+  // Generate AI suggestion for a clause
+  const handleGenerateSuggestion = async () => {
+    if (!dealId || !selectedClause?.clauseBoundaryId) return
+
+    const matchingTerm = findMatchingTerm(selectedClause)
+
+    setIsGeneratingSuggestion(true)
+    try {
+      const response = await fetch(
+        `/api/reconciliation/${dealId}/redlines/generate`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            clause_boundary_id: selectedClause.clauseBoundaryId,
+            clause_text: selectedClause.text,
+            term_description: matchingTerm?.expectedTerm,
+            expected_value: matchingTerm?.expectedTerm,
+            term_category: matchingTerm?.clauseType,
+          }),
+        }
+      )
+
+      const data = await response.json()
+
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to generate suggestion")
+      }
+
+      if (data.success && data.data) {
+        // Add the generated redline to local state
+        const clauseBoundaryId = selectedClause.clauseBoundaryId
+        setRedlinesByClause((prev) => {
+          const existing = prev[clauseBoundaryId] || []
+          return { ...prev, [clauseBoundaryId]: [...existing, data.data] }
+        })
+
+        toast({
+          title: "Suggestion Generated",
+          description: "AI has proposed a redline for this clause",
+        })
+
+        // Open the modal to show the suggestion
+        setSuggestedRedlinesModalOpen(true)
+      }
+    } catch (error) {
+      console.error("Error generating suggestion:", error)
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to generate suggestion",
+        variant: "destructive",
+      })
+    } finally {
+      setIsGeneratingSuggestion(false)
+    }
   }
 
   const handleAddComment = async (clauseBoundaryId: string) => {
@@ -2849,6 +2984,46 @@ function ReconciliationContent() {
                         <ChevronDown className="w-4 h-4 text-slate-600 transition-transform data-[state=open]:rotate-180" />
                       </CollapsibleTrigger>
                       <CollapsibleContent className="px-5 pb-5">
+                        {/* View Suggested Redlines + Generate Suggestion buttons */}
+                        {selectedClauseRedlines && selectedClauseRedlines.length > 0 ? (
+                          <div className="mb-4">
+                            <Button
+                              variant="outline"
+                              className="w-full border-blue-200 text-blue-700 hover:bg-blue-50"
+                              onClick={() => setSuggestedRedlinesModalOpen(true)}
+                            >
+                              <GitCompare className="w-4 h-4 mr-2" />
+                              View Suggested Redlines ({selectedClauseRedlines.length})
+                            </Button>
+                          </div>
+                        ) : (
+                          <div className="mb-4">
+                            <Button
+                              variant="outline"
+                              className="w-full border-purple-200 text-purple-700 hover:bg-purple-50"
+                              onClick={handleGenerateSuggestion}
+                              disabled={isGeneratingSuggestion}
+                            >
+                              {isGeneratingSuggestion ? (
+                                <>
+                                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                                  Generating...
+                                </>
+                              ) : (
+                                <>
+                                  <Sparkles className="w-4 h-4 mr-2" />
+                                  Generate AI Suggestion
+                                </>
+                              )}
+                            </Button>
+                            <p className="text-xs text-slate-500 mt-2 text-center">
+                              {findMatchingTerm(selectedClause)
+                                ? "AI will suggest changes based on the pre-agreed term"
+                                : "AI will suggest improvements for this clause"}
+                            </p>
+                          </div>
+                        )}
+
                         <p className="text-xs text-slate-500 mb-4">
                           Propose modifications to this clause and optionally add a comment explaining your reasoning.
                         </p>
@@ -3358,6 +3533,19 @@ function ReconciliationContent() {
       )}
 
       {/* Chat buddy icon removed - now using toolbar button instead */}
+
+      {/* Suggested Redlines Modal */}
+      {selectedClause && selectedClauseRedlines && selectedClauseRedlines.length > 0 && (
+        <SuggestedRedlinesModal
+          open={suggestedRedlinesModalOpen}
+          onOpenChange={setSuggestedRedlinesModalOpen}
+          clauseType={selectedClause.clauseType}
+          originalText={selectedClause.text}
+          redlines={selectedClauseRedlines}
+          onAcceptChanges={handleAcceptRedline}
+          isAccepting={isAcceptingRedline}
+        />
+      )}
     </div>
   )
 }

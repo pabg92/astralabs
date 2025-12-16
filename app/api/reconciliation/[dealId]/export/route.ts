@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { supabaseServer } from "@/lib/supabase/server"
 import type { Database } from "@/types/database"
+import { formatDiffForExport } from "@/lib/diff-utils"
 
 type RAGStatus = Database["public"]["Enums"]["rag_status"]
 
@@ -164,6 +165,15 @@ export async function GET(
       }
     })
 
+    // Create clause content map for diff display in redlines
+    const clauseContentMap = new Map<string, { content: string; clauseType: string }>()
+    clauses?.forEach((clause) => {
+      clauseContentMap.set(clause.id, {
+        content: clause.content || '',
+        clauseType: clause.clause_type || 'Unknown'
+      })
+    })
+
     // Calculate statistics
     const stats = {
       total: matchResults?.length || 0,
@@ -307,20 +317,34 @@ export async function GET(
       if (redlines.length > 0) {
         report += "-" .repeat(80) + "\n"
         report += "REDLINES (Suggested Changes)\n"
+        report += "-" .repeat(80) + "\n"
+        report += "Legend: [-deleted text-] [+added text+]\n"
         report += "-" .repeat(80) + "\n\n"
 
         redlines.forEach((redline, index) => {
-          const author = redline.user_profiles?.full_name || redline.user_profiles?.email || "Unknown"
-          report += `Redline ${index + 1} [${redline.status.toUpperCase()}]\n`
-          report += `Clause ID: ${redline.clause_boundary_id}\n`
+          const author = redline.user_profiles?.full_name || redline.user_profiles?.email || "AI Generated"
+          const clauseInfo = clauseContentMap.get(redline.clause_boundary_id)
+          const originalText = clauseInfo?.content || ''
+          const clauseType = clauseInfo?.clauseType || 'Unknown'
+
+          report += `REDLINE ${index + 1} [${redline.status.toUpperCase()}]\n`
+          report += `Clause: ${clauseType}\n`
           report += `Type: ${redline.change_type.toUpperCase()}\n`
           report += `Author: ${author}\n`
           report += `Created: ${new Date(redline.created_at).toLocaleString()}\n`
           if (redline.resolved_at) {
             report += `Resolved: ${new Date(redline.resolved_at).toLocaleString()}\n`
           }
-          report += `\nProposed Text:\n${redline.proposed_text}\n`
-          report += "\n" + "-" .repeat(80) + "\n\n"
+
+          report += `\nORIGINAL TEXT:\n${originalText || "(No original text)"}\n`
+          report += `\nPROPOSED TEXT:\n${redline.proposed_text}\n`
+
+          // Show diff visualization if we have both original and proposed text
+          if (originalText && redline.proposed_text) {
+            report += `\nCHANGES:\n${formatDiffForExport(originalText, redline.proposed_text)}\n`
+          }
+
+          report += "\n" + "─".repeat(50) + "\n\n"
         })
       }
 
