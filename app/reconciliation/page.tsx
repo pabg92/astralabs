@@ -947,12 +947,20 @@ function ReconciliationContent() {
 
   // Generate AI suggestion for a specific clause (used in cards view)
   const handleGenerateSuggestionForClause = async (clause: Clause) => {
-    if (!dealId || !clause.clauseBoundaryId) return
+    console.log("[AI Suggest] Button clicked for clause:", clause.id, clause.clauseType)
+    console.log("[AI Suggest] dealId:", dealId, "clauseBoundaryId:", clause.clauseBoundaryId)
+
+    if (!dealId || !clause.clauseBoundaryId) {
+      console.warn("[AI Suggest] Early return - missing dealId or clauseBoundaryId")
+      return
+    }
 
     const matchingTerm = findMatchingTerm(clause)
+    console.log("[AI Suggest] Matching term:", matchingTerm)
 
     setGeneratingClauseId(clause.id)
     try {
+      console.log("[AI Suggest] Making API call to /api/reconciliation/" + dealId + "/redlines/generate")
       const response = await fetch(
         `/api/reconciliation/${dealId}/redlines/generate`,
         {
@@ -968,13 +976,16 @@ function ReconciliationContent() {
         }
       )
 
+      console.log("[AI Suggest] Response status:", response.status)
       const data = await response.json()
+      console.log("[AI Suggest] Response data:", data)
 
       if (!response.ok) {
         throw new Error(data.error || "Failed to generate suggestion")
       }
 
       if (data.success && data.data) {
+        console.log("[AI Suggest] Success! Opening modal...")
         // Add the generated redline to local state
         const clauseBoundaryId = clause.clauseBoundaryId
         setRedlinesByClause((prev) => {

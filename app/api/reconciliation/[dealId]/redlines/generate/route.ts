@@ -17,8 +17,10 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ dealId: string }> }
 ) {
+  console.log("[Redline Generate API] POST request received")
   try {
     const { dealId } = await params
+    console.log("[Redline Generate API] dealId:", dealId)
 
     if (!dealId) {
       return NextResponse.json(
@@ -28,6 +30,7 @@ export async function POST(
     }
 
     const body = await request.json()
+    console.log("[Redline Generate API] Request body:", JSON.stringify(body, null, 2))
     const {
       clause_boundary_id,
       clause_text,
