@@ -942,6 +942,67 @@ function ReconciliationContent() {
     }
   }
 
+  // State to track which clause is generating (for cards view)
+  const [generatingClauseId, setGeneratingClauseId] = useState<string | null>(null)
+
+  // Generate AI suggestion for a specific clause (used in cards view)
+  const handleGenerateSuggestionForClause = async (clause: Clause) => {
+    if (!dealId || !clause.clauseBoundaryId) return
+
+    const matchingTerm = findMatchingTerm(clause)
+
+    setGeneratingClauseId(clause.id)
+    try {
+      const response = await fetch(
+        `/api/reconciliation/${dealId}/redlines/generate`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            clause_boundary_id: clause.clauseBoundaryId,
+            clause_text: clause.text,
+            term_description: matchingTerm?.expectedTerm,
+            expected_value: matchingTerm?.expectedTerm,
+            term_category: matchingTerm?.clauseType,
+          }),
+        }
+      )
+
+      const data = await response.json()
+
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to generate suggestion")
+      }
+
+      if (data.success && data.data) {
+        // Add the generated redline to local state
+        const clauseBoundaryId = clause.clauseBoundaryId
+        setRedlinesByClause((prev) => {
+          const existing = prev[clauseBoundaryId] || []
+          return { ...prev, [clauseBoundaryId]: [...existing, data.data] }
+        })
+
+        toast({
+          title: "Suggestion Generated",
+          description: "AI has proposed a redline for this clause",
+        })
+
+        // Select the clause and open the modal
+        handleClauseSelect(clause)
+        setSuggestedRedlinesModalOpen(true)
+      }
+    } catch (error) {
+      console.error("Error generating suggestion:", error)
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to generate suggestion",
+        variant: "destructive",
+      })
+    } finally {
+      setGeneratingClauseId(null)
+    }
+  }
+
   const handleAddComment = async (clauseBoundaryId: string) => {
     if (!dealId) return
     const draft = commentDrafts[clauseBoundaryId]?.trim()
@@ -1547,22 +1608,42 @@ function ReconciliationContent() {
                     Pages {clause.position.start}-{clause.position.end} • {Math.round(clause.confidence * 100)}%
                   </span>
                   {clause.clauseBoundaryId ? (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-7 text-xs"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        handleClauseSelect(clause)
-                        setRedlineModalClause(clause)
-                        setRedlineModalOpen(true)
-                      }}
-                      disabled={!dealId}
-                      title={dealId ? "Suggest a change on this clause" : "Connect a deal to enable redlines"}
-                    >
-                      <Pencil className="w-3 h-3 mr-1" />
-                      Suggest change
-                    </Button>
+                    <>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 text-xs"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          handleClauseSelect(clause)
+                          setRedlineModalClause(clause)
+                          setRedlineModalOpen(true)
+                        }}
+                        disabled={!dealId}
+                        title={dealId ? "Suggest a change on this clause" : "Connect a deal to enable redlines"}
+                      >
+                        <Pencil className="w-3 h-3 mr-1" />
+                        Suggest change
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 text-xs border-purple-200 text-purple-700 hover:bg-purple-50"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          handleGenerateSuggestionForClause(clause)
+                        }}
+                        disabled={!dealId || generatingClauseId === clause.id}
+                        title="Generate AI suggestion for this clause"
+                      >
+                        {generatingClauseId === clause.id ? (
+                          <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                        ) : (
+                          <Sparkles className="w-3 h-3 mr-1" />
+                        )}
+                        {generatingClauseId === clause.id ? "Generating..." : "AI Suggest"}
+                      </Button>
+                    </>
                   ) : (
                     <Button variant="outline" size="sm" className="h-7 text-xs" disabled title="No clause ID available">
                       <Pencil className="w-3 h-3 mr-1" />
