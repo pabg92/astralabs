@@ -142,6 +142,223 @@ const TERM_TO_CLAUSE_MAP: Record<string, { primary: string[], fallback: string[]
   "Pre-Production Requirement": { primary: ["deliverables"], fallback: ["scope_of_work"] },
   "Clothing & Styling Requirement": { primary: ["deliverables"], fallback: [] },
   "Analytics Delivery": { primary: ["deliverables"], fallback: ["compliance"] },
+
+  // ============ IDENTITY TERMS ============
+  // These terms require presence/string matching, NOT semantic comparison
+  // They map to definition/preamble clause types where party names appear
+  "Brand Name": { primary: ["term_definition", "scope_of_work"], fallback: ["general_terms"] },
+  "Brand": { primary: ["term_definition", "scope_of_work"], fallback: ["general_terms"] },
+  "Talent Name": { primary: ["term_definition", "scope_of_work"], fallback: ["general_terms"] },
+  "Talent": { primary: ["term_definition", "scope_of_work"], fallback: ["general_terms"] },
+  "Influencer Name": { primary: ["term_definition", "scope_of_work"], fallback: ["general_terms"] },
+  "Influencer": { primary: ["term_definition", "scope_of_work"], fallback: ["general_terms"] },
+  "Agency": { primary: ["term_definition", "scope_of_work"], fallback: ["general_terms"] },
+  "Agency Name": { primary: ["term_definition", "scope_of_work"], fallback: ["general_terms"] },
+  "Client Name": { primary: ["term_definition", "scope_of_work"], fallback: ["general_terms"] },
+  "Client": { primary: ["term_definition", "scope_of_work"], fallback: ["general_terms"] },
+  "Company Name": { primary: ["term_definition", "scope_of_work"], fallback: ["general_terms"] },
+  "Company": { primary: ["term_definition", "scope_of_work"], fallback: ["general_terms"] },
+}
+
+// ============ IDENTITY TERM CATEGORIES ============
+// These terms require presence/string matching, NOT semantic comparison
+// They compare PAT expected_value against contract text directly
+const IDENTITY_TERM_CATEGORIES = new Set([
+  // Standard forms
+  "Brand Name",
+  "Brand",
+  "Talent Name",
+  "Talent",
+  "Influencer Name",
+  "Influencer",
+  "Agency",
+  "Agency Name",
+  "Client Name",
+  "Client",
+  "Company Name",
+  "Company",
+  // Normalized lowercase variants
+  "brand name",
+  "brand",
+  "talent name",
+  "talent",
+  "influencer name",
+  "influencer",
+  "agency",
+  "agency name",
+  "client name",
+  "client",
+  "company name",
+  "company",
+])
+
+/**
+ * Check if a term category is an identity term (requires presence check, not semantic comparison)
+ * @param category - The term category to check
+ * @returns true if this is an identity term category
+ */
+function isIdentityTermCategory(category: string): boolean {
+  return IDENTITY_TERM_CATEGORIES.has(category) ||
+         IDENTITY_TERM_CATEGORIES.has(category.toLowerCase().trim())
+}
+
+/**
+ * Normalize text for identity matching (case-insensitive, whitespace-normalized)
+ * @param text - The text to normalize
+ * @returns Normalized lowercase text with condensed whitespace
+ */
+function normalizeForIdentityMatch(text: string): string {
+  return text.toLowerCase().replace(/\s+/g, ' ').trim()
+}
+
+/**
+ * Result of an identity term match check
+ */
+interface IdentityMatchResult {
+  /** Whether the expected value was found */
+  matches: boolean
+  /** Type of match: exact, normalized, partial, or absent */
+  matchType: 'exact' | 'normalized' | 'partial' | 'absent'
+  /** Confidence score 0-1 */
+  confidence: number
+  /** The value that was found (if any) */
+  foundValue?: string
+}
+
+/**
+ * Result of identity term processing (pre-GPT short-circuit)
+ */
+interface IdentityTermResult {
+  termId: string
+  termCategory: string
+  isMandatory: boolean
+  expectedValue: string
+  matchResult: IdentityMatchResult
+  ragParsing: 'green' | 'amber' | 'red'
+  explanation: string
+}
+
+/**
+ * Check if contract text contains the expected identity value
+ * Uses multiple matching strategies: exact, normalized, and partial
+ *
+ * @param expectedValue - The value expected from the PAT (e.g., "Nike")
+ * @param clauseContent - The content of a specific clause to search
+ * @param fullContractText - Optional full contract text for broader search
+ * @returns IdentityMatchResult with match details
+ */
+function checkIdentityMatch(
+  expectedValue: string,
+  clauseContent: string,
+  fullContractText?: string
+): IdentityMatchResult {
+  // Handle empty/missing expected values
+  if (!expectedValue || expectedValue.trim() === '' || expectedValue === 'N/A') {
+    return { matches: false, matchType: 'absent', confidence: 0 }
+  }
+
+  const normalizedExpected = normalizeForIdentityMatch(expectedValue)
+  const normalizedClause = normalizeForIdentityMatch(clauseContent)
+  const normalizedFullText = fullContractText
+    ? normalizeForIdentityMatch(fullContractText)
+    : normalizedClause
+
+  // Check 1: Exact match in clause content
+  if (normalizedClause.includes(normalizedExpected)) {
+    return {
+      matches: true,
+      matchType: 'exact',
+      confidence: 1.0,
+      foundValue: expectedValue
+    }
+  }
+
+  // Check 2: Exact match in full contract text (if provided)
+  if (fullContractText && normalizedFullText.includes(normalizedExpected)) {
+    return {
+      matches: true,
+      matchType: 'exact',
+      confidence: 0.95,
+      foundValue: expectedValue
+    }
+  }
+
+  // Check 3: Partial/fuzzy match (e.g., "Nike" matches in "Nike Inc" or "Nike Corporation")
+  // Only check significant words (length > 2 to skip articles)
+  const expectedWords = normalizedExpected.split(' ').filter(w => w.length > 2)
+  if (expectedWords.length > 0) {
+    const foundWords = expectedWords.filter(w => normalizedFullText.includes(w))
+    const matchRatio = foundWords.length / expectedWords.length
+
+    // Require at least 70% word match for partial
+    if (matchRatio >= 0.7) {
+      return {
+        matches: true,
+        matchType: 'partial',
+        confidence: matchRatio * 0.8, // Reduce confidence for partial matches
+        foundValue: foundWords.join(' ')
+      }
+    }
+  }
+
+  // No match found
+  return { matches: false, matchType: 'absent', confidence: 0 }
+}
+
+/**
+ * Determine RAG status for an identity term match
+ * - Exact/normalized match → GREEN
+ * - Partial match → AMBER (needs human review)
+ * - Absent + mandatory → RED
+ * - Absent + non-mandatory → AMBER
+ *
+ * @param match - The identity match result
+ * @param isMandatory - Whether this term is mandatory
+ * @returns RAG status color
+ */
+function determineIdentityRag(
+  match: IdentityMatchResult,
+  isMandatory: boolean
+): 'green' | 'amber' | 'red' {
+  switch (match.matchType) {
+    case 'exact':
+      return 'green'
+    case 'normalized':
+      return 'green'
+    case 'partial':
+      return 'amber' // Partial match needs human review
+    case 'absent':
+      return isMandatory ? 'red' : 'amber'
+    default:
+      return 'amber'
+  }
+}
+
+/**
+ * Generate a human-readable explanation for an identity term match
+ *
+ * @param match - The identity match result
+ * @param expectedValue - The expected value from the PAT
+ * @param category - The term category (e.g., "Brand Name")
+ * @returns Explanation string (max 15 words to match GPT output format)
+ */
+function generateIdentityExplanation(
+  match: IdentityMatchResult,
+  expectedValue: string,
+  category: string
+): string {
+  switch (match.matchType) {
+    case 'exact':
+      return `${category} "${expectedValue}" found in contract`
+    case 'normalized':
+      return `${category} "${expectedValue}" found (case-insensitive)`
+    case 'partial':
+      return `Partial match: expected "${expectedValue}", found "${match.foundValue}"`
+    case 'absent':
+      return `${category} "${expectedValue}" not found in contract`
+    default:
+      return `Unable to verify ${category}`
+  }
 }
 
 // Legacy keyword matching for unmapped term categories
@@ -305,18 +522,70 @@ function selectTopClausesForTerm(
     .slice(0, 3)
 }
 
-// Build batch comparisons list - term-centric approach (top 1-3 clauses per PAT)
+/**
+ * Build batch comparisons list - term-centric approach (top 1-3 clauses per PAT)
+ *
+ * IDENTITY TERM SHORT-CIRCUIT:
+ * Identity terms (Brand Name, Talent Name, Agency, etc.) are handled via direct
+ * string matching against the contract text, bypassing GPT comparison. This:
+ * - Reduces GPT API calls and latency
+ * - Eliminates false negatives from semantic comparison of referential data
+ * - Provides instant GREEN/RED determination based on presence check
+ *
+ * @param clauses - Extracted clause boundaries from the contract
+ * @param matchResults - LCL match results for each clause
+ * @param preAgreedTerms - Pre-agreed terms to compare against
+ * @param fullContractText - Optional full contract text for identity term matching
+ * @returns Comparisons for GPT, term map, and pre-resolved identity results
+ */
 function buildBatchComparisons(
   clauses: ClauseBoundary[],
   matchResults: ClauseMatchResult[],
-  preAgreedTerms: PreAgreedTerm[]
-): { comparisons: BatchComparison[], termComparisonMap: Map<string, BatchComparison[]> } {
+  preAgreedTerms: PreAgreedTerm[],
+  fullContractText?: string
+): {
+  comparisons: BatchComparison[],
+  termComparisonMap: Map<string, BatchComparison[]>,
+  identityResults: Map<string, IdentityTermResult>
+} {
   const comparisons: BatchComparison[] = []
   const termComparisonMap = new Map<string, BatchComparison[]>()
+  const identityResults = new Map<string, IdentityTermResult>()
   let idx = 0
 
-  // For each PAT term, find top 1-3 relevant clauses
+  // For each PAT term, either short-circuit (identity) or build GPT comparison
   for (const term of preAgreedTerms) {
+    const category = term.normalized_term_category || term.term_category
+
+    // ============ IDENTITY TERM SHORT-CIRCUIT ============
+    // Identity terms (Brand Name, Talent Name, etc.) use direct string matching
+    // instead of GPT semantic comparison
+    if (isIdentityTermCategory(category)) {
+      const expectedValue = term.expected_value || ''
+      const identityMatch = checkIdentityMatch(
+        expectedValue,
+        '', // No specific clause - check against full contract
+        fullContractText
+      )
+
+      const ragParsing = determineIdentityRag(identityMatch, term.is_mandatory)
+      const explanation = generateIdentityExplanation(identityMatch, expectedValue, category)
+
+      identityResults.set(term.id, {
+        termId: term.id,
+        termCategory: category,
+        isMandatory: term.is_mandatory,
+        expectedValue,
+        matchResult: identityMatch,
+        ragParsing,
+        explanation,
+      })
+
+      // Skip GPT comparison for identity terms
+      continue
+    }
+
+    // ============ SEMANTIC TERMS → GPT COMPARISON ============
     const candidates = selectTopClausesForTerm(term, clauses, matchResults)
     if (candidates.length === 0) continue
 
@@ -329,7 +598,7 @@ function buildBatchComparisons(
         matchResultId: matchResult.id,
         termId: term.id,
         clauseType: clause.clause_type,
-        termCategory: term.normalized_term_category || term.term_category,
+        termCategory: category,
         isMandatory: term.is_mandatory,
         clauseContent: clause.content.substring(0, 600), // Truncate for context window
         termDescription: term.term_description,
@@ -344,7 +613,7 @@ function buildBatchComparisons(
     termComparisonMap.set(term.id, termComparisons)
   }
 
-  return { comparisons, termComparisonMap }
+  return { comparisons, termComparisonMap, identityResults }
 }
 
 // Select best match per PAT term (green > amber > red, then by confidence)
@@ -417,6 +686,9 @@ async function executeBatchComparison(
                 role: "system",
                 content: `You are a contract compliance checker comparing contract clauses against pre-agreed terms.
 
+IMPORTANT: This comparison is for SEMANTIC/LEGAL terms only (payments, exclusivity, deliverables, etc.).
+Identity terms (Brand Name, Talent Name, Agency) are handled separately and will NOT appear in this batch.
+
 For each comparison, determine if the clause satisfies the term:
 
 **GREEN (matches=true, severity="none"):** Clause fully satisfies the term requirements.
@@ -429,6 +701,9 @@ For each comparison, determine if the clause satisfies the term:
   - Contradictory requirements
   - Missing critical elements specified in the term
   - Fundamentally different scope/intent
+
+PLACEHOLDER HANDLING: Ignore template placeholders like [PARTY A], [PARTY B], [BRAND NAME], [AMOUNT] in
+library clauses. Focus on the semantic meaning and legal obligations, not exact party identifiers.
 
 Use AMBER for close-but-not-exact matches. Use RED only for clear conflicts or missing requirements.
 Be strict for [MANDATORY] terms. Be concise.
@@ -536,16 +811,19 @@ export async function performP1Reconciliation(
     }
   }
 
-  // Fetch document metadata
+  // Fetch document metadata including extracted_text for identity term matching
   const { data: document, error: docError } = await supabase
     .from("document_repository")
-    .select("id, deal_id, tenant_id")
+    .select("id, deal_id, tenant_id, extracted_text")
     .eq("id", documentId)
     .single()
 
   if (docError || !document) {
     throw new Error(`Document not found: ${docError?.message}`)
   }
+
+  // Full contract text for identity term matching (presence check across entire document)
+  const fullContractText = document.extracted_text || ''
 
   if (!document.deal_id) {
     console.log(`   ℹ️ No deal_id, skipping P1 comparison`)
@@ -588,17 +866,115 @@ export async function performP1Reconciliation(
   if (matchError) throw matchError
 
   // Build all comparisons upfront (term-centric: top 1-3 clauses per PAT)
-  const { comparisons, termComparisonMap } = buildBatchComparisons(
+  // Identity terms are short-circuited and returned in identityResults
+  const { comparisons, termComparisonMap, identityResults } = buildBatchComparisons(
     clauses || [],
     matchResults || [],
-    normalizedTerms
+    normalizedTerms,
+    fullContractText
   )
 
-  console.log(`   Built ${comparisons.length} comparisons for ${termComparisonMap.size} PAT terms`)
+  console.log(`   Built ${comparisons.length} GPT comparisons, ${identityResults.size} identity short-circuits for ${termComparisonMap.size + identityResults.size} PAT terms`)
 
+  // Track matched categories (include identity terms that matched)
+  const matchedCategoriesFromIdentity = new Set<string>()
+
+  // ============ PROCESS IDENTITY TERM RESULTS (PRE-GPT) ============
+  // Identity terms (Brand Name, Talent Name, etc.) are resolved via direct
+  // string matching - no GPT call needed
+  let identityUpdatedCount = 0
+  let identityDiscrepanciesCreated = 0
+
+  for (const [termId, identityResult] of identityResults) {
+    // Track matched identity terms to prevent false "missing term" flags
+    if (identityResult.matchResult.matches) {
+      matchedCategoriesFromIdentity.add(identityResult.termCategory)
+    }
+
+    // Create a virtual clause_match_result for identity terms
+    // These don't link to a specific clause but track the identity verification
+    const { data: virtualMatch, error: virtualError } = await supabase
+      .from("clause_match_results")
+      .insert({
+        document_id: documentId,
+        clause_boundary_id: null, // Identity terms check full document, not specific clause
+        matched_template_id: null,
+        similarity_score: identityResult.matchResult.confidence,
+        rag_parsing: identityResult.ragParsing,
+        rag_risk: 'green', // Identity doesn't use library risk assessment
+        rag_status: identityResult.ragParsing,
+        discrepancy_count: identityResult.ragParsing === 'red' ? 1 : 0,
+        gpt_analysis: {
+          identity_term_check: {
+            term_id: termId,
+            term_category: identityResult.termCategory,
+            expected_value: identityResult.expectedValue,
+            match_type: identityResult.matchResult.matchType,
+            found_value: identityResult.matchResult.foundValue,
+            confidence: identityResult.matchResult.confidence,
+          },
+          pre_agreed_comparisons: [{
+            term_id: termId,
+            term_category: identityResult.termCategory,
+            is_mandatory: identityResult.isMandatory,
+            match_metadata: {
+              match_reason: 'identity_short_circuit',
+              identity_match_type: identityResult.matchResult.matchType,
+            },
+            comparison_result: {
+              matches: identityResult.matchResult.matches,
+              deviation_severity: identityResult.ragParsing === 'green' ? 'none' :
+                                 identityResult.ragParsing === 'amber' ? 'minor' : 'major',
+              explanation: identityResult.explanation,
+              key_differences: [],
+              confidence: identityResult.matchResult.confidence,
+            },
+            rag_parsing: identityResult.ragParsing,
+          }],
+          reconciliation_timestamp: new Date().toISOString(),
+        },
+      })
+      .select()
+      .single()
+
+    if (virtualError) {
+      console.error(`   ⚠️ Failed to create identity match result for ${identityResult.termCategory}: ${virtualError.message}`)
+      continue
+    }
+
+    identityUpdatedCount++
+
+    // Create discrepancy for RED identity terms
+    if (identityResult.ragParsing === 'red' && virtualMatch) {
+      const { error: discError } = await supabase.from("discrepancies").insert({
+        match_result_id: virtualMatch.id,
+        document_id: documentId,
+        discrepancy_type: identityResult.matchResult.matchType === 'absent' ? 'missing' : 'conflicting',
+        severity: identityResult.isMandatory ? 'critical' : 'error',
+        description: identityResult.explanation,
+        suggested_action: `Verify ${identityResult.termCategory}: expected "${identityResult.expectedValue}"`,
+      })
+
+      if (!discError || discError.code === "23505") {
+        identityDiscrepanciesCreated++
+      }
+    }
+
+    console.log(`   📋 Identity: ${identityResult.termCategory} = ${identityResult.ragParsing.toUpperCase()} (${identityResult.matchResult.matchType})`)
+  }
+
+  // If only identity terms and all processed, we may have no GPT comparisons
   if (comparisons.length === 0) {
-    console.log(`   ℹ️ No relevant clause-term matches found`)
-    return { p1_comparisons_made: 0 }
+    const elapsedMs = Date.now() - startTime
+    console.log(`   ✅ P1 complete in ${(elapsedMs / 1000).toFixed(1)}s: ${identityResults.size} identity terms processed, no semantic comparisons needed`)
+    return {
+      p1_comparisons_made: 0,
+      identity_terms_processed: identityResults.size,
+      clauses_updated: identityUpdatedCount,
+      discrepancies_created: identityDiscrepanciesCreated,
+      missing_terms: 0,
+      execution_time_ms: elapsedMs,
+    }
   }
 
   // Use configured P1 model for higher accuracy
@@ -765,14 +1141,21 @@ export async function performP1Reconciliation(
   }
 
   // Handle missing mandatory terms
-  const matchedCategories = new Set(
+  // Combine GPT-matched categories with identity-matched categories
+  const matchedCategoriesFromGPT = new Set(
     matchResults?.flatMap((r: any) => r.gpt_analysis?.pre_agreed_comparisons || [])
       .filter((c: any) => c.comparison_result?.matches)
       .map((c: any) => c.term_category)
   )
 
+  // Merge both sets to avoid false "missing term" flags for identity terms
+  const allMatchedCategories = new Set([
+    ...matchedCategoriesFromGPT,
+    ...matchedCategoriesFromIdentity
+  ])
+
   const missingTerms = preAgreedTerms.filter(
-    (term: PreAgreedTerm) => term.is_mandatory && !matchedCategories.has(term.term_category)
+    (term: PreAgreedTerm) => term.is_mandatory && !allMatchedCategories.has(term.term_category)
   )
 
   for (const missingTerm of missingTerms) {
@@ -817,12 +1200,16 @@ export async function performP1Reconciliation(
   }
 
   const elapsedMs = Date.now() - startTime
-  console.log(`   ✅ P1 complete in ${(elapsedMs / 1000).toFixed(1)}s: ${comparisons.length} comparisons, ${updatedCount} updated, ${discrepanciesCreated} discrepancies`)
+  const totalUpdated = updatedCount + identityUpdatedCount
+  const totalDiscrepancies = discrepanciesCreated + identityDiscrepanciesCreated
+
+  console.log(`   ✅ P1 complete in ${(elapsedMs / 1000).toFixed(1)}s: ${comparisons.length} GPT comparisons, ${identityResults.size} identity checks, ${totalUpdated} updated, ${totalDiscrepancies} discrepancies`)
 
   return {
     p1_comparisons_made: comparisons.length,
-    clauses_updated: updatedCount,
-    discrepancies_created: discrepanciesCreated,
+    identity_terms_processed: identityResults.size,
+    clauses_updated: totalUpdated,
+    discrepancies_created: totalDiscrepancies,
     missing_terms: missingTerms.length,
     execution_time_ms: elapsedMs,
   }
