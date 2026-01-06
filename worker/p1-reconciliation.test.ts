@@ -5,6 +5,14 @@
  */
 
 import { describe, it, expect } from 'vitest'
+import {
+  IDENTITY_TERM_CATEGORIES,
+  isIdentityTermCategory,
+  normalizeForIdentityMatch,
+  checkIdentityMatch,
+  determineIdentityRag,
+  type IdentityMatchResult,
+} from './p1-reconciliation.js'
 
 // ============ Issue #8: Keyword Matching Types and Logic ============
 
@@ -1086,105 +1094,7 @@ describe('P1 Direction Validation (Issue #10)', () => {
 })
 
 // ============ Identity Term Handling Tests ============
-
-/**
- * Identity term categories that require string presence check instead of GPT comparison
- * Mirrors IDENTITY_TERM_CATEGORIES from p1-reconciliation.ts
- */
-const IDENTITY_TERM_CATEGORIES = new Set([
-  "Brand Name", "Brand", "Talent Name", "Talent", "Influencer Name", "Influencer",
-  "Agency", "Agency Name", "Client Name", "Client", "Company Name", "Company",
-  // Lowercase variants
-  "brand name", "brand", "talent name", "talent", "influencer name", "influencer",
-  "agency", "agency name", "client name", "client", "company name", "company",
-])
-
-/**
- * Check if a term category is an identity term
- */
-function isIdentityTermCategory(category: string): boolean {
-  return IDENTITY_TERM_CATEGORIES.has(category) ||
-         IDENTITY_TERM_CATEGORIES.has(category.toLowerCase().trim())
-}
-
-/**
- * Normalize text for identity matching
- */
-function normalizeForIdentityMatch(text: string): string {
-  return text.toLowerCase().replace(/\s+/g, ' ').trim()
-}
-
-/**
- * Result of an identity term match check
- */
-interface IdentityMatchResult {
-  matches: boolean
-  matchType: 'exact' | 'normalized' | 'partial' | 'absent'
-  confidence: number
-  foundValue?: string
-}
-
-/**
- * Check if contract text contains the expected identity value
- */
-function checkIdentityMatch(
-  expectedValue: string,
-  clauseContent: string,
-  fullContractText?: string
-): IdentityMatchResult {
-  if (!expectedValue || expectedValue.trim() === '' || expectedValue === 'N/A') {
-    return { matches: false, matchType: 'absent', confidence: 0 }
-  }
-
-  const normalizedExpected = normalizeForIdentityMatch(expectedValue)
-  const normalizedClause = normalizeForIdentityMatch(clauseContent)
-  const normalizedFullText = fullContractText
-    ? normalizeForIdentityMatch(fullContractText)
-    : normalizedClause
-
-  // Check 1: Exact match in clause content
-  if (normalizedClause.includes(normalizedExpected)) {
-    return { matches: true, matchType: 'exact', confidence: 1.0, foundValue: expectedValue }
-  }
-
-  // Check 2: Exact match in full contract text
-  if (fullContractText && normalizedFullText.includes(normalizedExpected)) {
-    return { matches: true, matchType: 'exact', confidence: 0.95, foundValue: expectedValue }
-  }
-
-  // Check 3: Partial match
-  const expectedWords = normalizedExpected.split(' ').filter(w => w.length > 2)
-  if (expectedWords.length > 0) {
-    const foundWords = expectedWords.filter(w => normalizedFullText.includes(w))
-    const matchRatio = foundWords.length / expectedWords.length
-    if (matchRatio >= 0.7) {
-      return {
-        matches: true,
-        matchType: 'partial',
-        confidence: matchRatio * 0.8,
-        foundValue: foundWords.join(' ')
-      }
-    }
-  }
-
-  return { matches: false, matchType: 'absent', confidence: 0 }
-}
-
-/**
- * Determine RAG status for an identity term match
- */
-function determineIdentityRag(
-  match: IdentityMatchResult,
-  isMandatory: boolean
-): 'green' | 'amber' | 'red' {
-  switch (match.matchType) {
-    case 'exact': return 'green'
-    case 'normalized': return 'green'
-    case 'partial': return 'amber'
-    case 'absent': return isMandatory ? 'red' : 'amber'
-    default: return 'amber'
-  }
-}
+// Functions imported from ./p1-reconciliation.js
 
 describe('P1 Identity Term Handling', () => {
 

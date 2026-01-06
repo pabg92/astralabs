@@ -163,7 +163,7 @@ const TERM_TO_CLAUSE_MAP: Record<string, { primary: string[], fallback: string[]
 // ============ IDENTITY TERM CATEGORIES ============
 // These terms require presence/string matching, NOT semantic comparison
 // They compare PAT expected_value against contract text directly
-const IDENTITY_TERM_CATEGORIES = new Set([
+export const IDENTITY_TERM_CATEGORIES = new Set([
   // Standard forms
   "Brand Name",
   "Brand",
@@ -197,7 +197,7 @@ const IDENTITY_TERM_CATEGORIES = new Set([
  * @param category - The term category to check
  * @returns true if this is an identity term category
  */
-function isIdentityTermCategory(category: string): boolean {
+export function isIdentityTermCategory(category: string): boolean {
   return IDENTITY_TERM_CATEGORIES.has(category) ||
          IDENTITY_TERM_CATEGORIES.has(category.toLowerCase().trim())
 }
@@ -207,14 +207,14 @@ function isIdentityTermCategory(category: string): boolean {
  * @param text - The text to normalize
  * @returns Normalized lowercase text with condensed whitespace
  */
-function normalizeForIdentityMatch(text: string): string {
+export function normalizeForIdentityMatch(text: string): string {
   return text.toLowerCase().replace(/\s+/g, ' ').trim()
 }
 
 /**
  * Result of an identity term match check
  */
-interface IdentityMatchResult {
+export interface IdentityMatchResult {
   /** Whether the expected value was found */
   matches: boolean
   /** Type of match: exact, normalized, partial, or absent */
@@ -228,7 +228,7 @@ interface IdentityMatchResult {
 /**
  * Result of identity term processing (pre-GPT short-circuit)
  */
-interface IdentityTermResult {
+export interface IdentityTermResult {
   termId: string
   termCategory: string
   isMandatory: boolean
@@ -247,7 +247,7 @@ interface IdentityTermResult {
  * @param fullContractText - Optional full contract text for broader search
  * @returns IdentityMatchResult with match details
  */
-function checkIdentityMatch(
+export function checkIdentityMatch(
   expectedValue: string,
   clauseContent: string,
   fullContractText?: string
@@ -316,7 +316,7 @@ function checkIdentityMatch(
  * @param isMandatory - Whether this term is mandatory
  * @returns RAG status color
  */
-function determineIdentityRag(
+export function determineIdentityRag(
   match: IdentityMatchResult,
   isMandatory: boolean
 ): 'green' | 'amber' | 'red' {
@@ -342,7 +342,7 @@ function determineIdentityRag(
  * @param category - The term category (e.g., "Brand Name")
  * @returns Explanation string (max 15 words to match GPT output format)
  */
-function generateIdentityExplanation(
+export function generateIdentityExplanation(
   match: IdentityMatchResult,
   expectedValue: string,
   category: string
