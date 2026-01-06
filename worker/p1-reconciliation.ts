@@ -387,13 +387,38 @@ function keywordMatchClause(term: PreAgreedTerm, clause: ClauseBoundary): boolea
 }
 
 // Normalize PAT terms via GPT to correct typos and map categories/clauses
+// Uses timestamp-based caching to avoid redundant GPT calls
 async function normalizePatTerms(
   terms: PreAgreedTerm[],
-  openaiApiKey: string
+  openaiApiKey: string,
+  supabase?: any  // Optional: pass supabase client to enable caching
 ): Promise<PreAgreedTerm[]> {
   if (!terms.length) return terms
 
-  const payload = terms.map((t) => ({
+  // Check which terms need normalization (no cache or term modified after last normalization)
+  const needsNormalization = terms.filter(t => {
+    if (!t.normalized_at) return true  // Never normalized
+    const updatedAt = new Date(t.updated_at)
+    const normalizedAt = new Date(t.normalized_at)
+    return updatedAt > normalizedAt  // Modified after last normalization
+  })
+
+  // Use cached values for already-normalized terms
+  const cachedTerms = terms.filter(t => !needsNormalization.includes(t))
+  const cachedResults = cachedTerms.map(t => ({
+    ...t,
+    normalized_term_category: t.normalized_value || t.term_category,
+    normalized_clause_type: undefined,  // Not cached currently
+  }))
+
+  if (needsNormalization.length === 0) {
+    console.log(`   ✓ All ${terms.length} PATs using cached normalization`)
+    return cachedResults
+  }
+
+  console.log(`   Normalizing ${needsNormalization.length}/${terms.length} PATs (${cachedTerms.length} cached)`)
+
+  const payload = needsNormalization.map((t) => ({
     id: t.id,
     term_category: t.term_category,
     description: t.term_description,
@@ -453,7 +478,24 @@ Use the closest known term_category; leave clause_type_guess empty if unsure; ke
       if (n?.id) normalizedById.set(n.id, n)
     }
 
-    return terms.map((t) => {
+    // Cache normalized values if supabase client provided
+    if (supabase) {
+      const now = new Date().toISOString()
+      for (const n of normalized) {
+        if (n?.id && n?.term_category) {
+          await supabase
+            .from("pre_agreed_terms")
+            .update({
+              normalized_value: n.term_category,
+              normalized_at: now,
+            })
+            .eq("id", n.id)
+        }
+      }
+    }
+
+    // Build results for freshly normalized terms
+    const freshResults = needsNormalization.map((t) => {
       const n = normalizedById.get(t.id)
       if (!n) return t
       return {
@@ -465,6 +507,9 @@ Use the closest known term_category; leave clause_type_guess empty if unsure; ke
         is_mandatory: typeof n.is_mandatory === "boolean" ? n.is_mandatory : t.is_mandatory,
       }
     })
+
+    // Merge cached + fresh results
+    return [...cachedResults, ...freshResults]
   } catch (err) {
     console.warn("⚠️ PAT normalization failed, using raw terms:", err)
     return terms
@@ -512,6 +557,23 @@ function selectTopClausesForTerm(
       const matchResult = matchResults.find(m => m.clause_boundary_id === clause.id)
       if (matchResult) {
         candidates.push({ clause, matchResult, matchReason: 'semantic_fallback' })
+      }
+    }
+  }
+
+  // Step 3.5: Embedding similarity fallback - use existing similarity_score from matchResults
+  // NO new API calls needed - reuses data from generate-embeddings phase
+  if (candidates.length === 0) {
+    const CLAUSE_SELECTION_THRESHOLD = 0.60
+    const embeddingCandidates = matchResults
+      .filter(m => m.similarity_score && m.similarity_score >= CLAUSE_SELECTION_THRESHOLD)
+      .sort((a, b) => (b.similarity_score || 0) - (a.similarity_score || 0))
+      .slice(0, 3)
+
+    for (const matchResult of embeddingCandidates) {
+      const clause = clauses.find(c => c.id === matchResult.clause_boundary_id)
+      if (clause) {
+        candidates.push({ clause, matchResult, matchReason: 'embedding_similarity' })
       }
     }
   }
@@ -616,7 +678,16 @@ function buildBatchComparisons(
   return { comparisons, termComparisonMap, identityResults }
 }
 
-// Select best match per PAT term (green > amber > red, then by confidence)
+// Match reason weights for selecting best match
+// Higher weight = more reliable match
+const MATCH_REASON_WEIGHTS: Record<string, number> = {
+  'primary_type': 1.0,    // Matched via primary clause type (most reliable)
+  'fallback_type': 0.8,   // Matched via fallback clause type
+  'embedding_similarity': 0.7,  // Matched via embedding similarity
+  'keyword': 0.5,         // Matched via keyword search (least reliable)
+}
+
+// Select best match per PAT term (green > amber > red, then by match reason weight, then by confidence)
 function selectBestMatchPerTerm(
   termComparisonMap: Map<string, BatchComparison[]>,
   results: Map<number, BatchResult>
@@ -629,7 +700,10 @@ function selectBestMatchPerTerm(
       if (!result) continue
 
       const existing = bestByTerm.get(termId)
-      if (!existing || isBetterResult(result, existing.result)) {
+      if (!existing || isBetterMatch(
+        { result, matchReason: comparison.matchReason },
+        { result: existing.result, matchReason: existing.comparison.matchReason }
+      )) {
         bestByTerm.set(termId, { comparison, result })
       }
     }
@@ -638,14 +712,34 @@ function selectBestMatchPerTerm(
   return bestByTerm
 }
 
-// Compare results: green > amber > red, then by confidence
-function isBetterResult(a: BatchResult, b: BatchResult): boolean {
-  const score = (r: BatchResult) => {
+// Compare matches: green > amber > red, then by match reason weight, then by confidence
+function isBetterMatch(
+  a: { result: BatchResult, matchReason: string },
+  b: { result: BatchResult, matchReason: string }
+): boolean {
+  const ragScore = (r: BatchResult) => {
     if (r.matches && r.severity === "none") return 3  // green
     if (r.matches && r.severity === "minor") return 2  // amber
     return 1  // red
   }
-  return score(a) > score(b) || (score(a) === score(b) && a.confidence > b.confidence)
+
+  const scoreA = ragScore(a.result)
+  const scoreB = ragScore(b.result)
+
+  // First compare RAG score
+  if (scoreA !== scoreB) {
+    return scoreA > scoreB
+  }
+
+  // Then compare match reason weight
+  const weightA = MATCH_REASON_WEIGHTS[a.matchReason] ?? 0.5
+  const weightB = MATCH_REASON_WEIGHTS[b.matchReason] ?? 0.5
+  if (weightA !== weightB) {
+    return weightA > weightB
+  }
+
+  // Finally compare confidence
+  return a.result.confidence > b.result.confidence
 }
 
 // Execute batched GPT comparison
@@ -846,7 +940,8 @@ export async function performP1Reconciliation(
   console.log(`   Found ${preAgreedTerms.length} pre-agreed terms`)
 
   // Normalize PATs to reduce typos and map categories/clauses
-  const normalizedTerms = await normalizePatTerms(preAgreedTerms, openaiApiKey)
+  // Pass supabase client to enable caching of normalized values
+  const normalizedTerms = await normalizePatTerms(preAgreedTerms, openaiApiKey, supabase)
 
   // Fetch clauses
   const { data: clauses, error: clausesError } = await supabase
@@ -876,8 +971,9 @@ export async function performP1Reconciliation(
 
   console.log(`   Built ${comparisons.length} GPT comparisons, ${identityResults.size} identity short-circuits for ${termComparisonMap.size + identityResults.size} PAT terms`)
 
-  // Track matched categories (include identity terms that matched)
-  const matchedCategoriesFromIdentity = new Set<string>()
+  // Track matched term IDs (include identity terms that matched)
+  // Using term_id instead of term_category to handle multiple terms with same category correctly
+  const matchedTermIdsFromIdentity = new Set<string>()
 
   // ============ PROCESS IDENTITY TERM RESULTS (PRE-GPT) ============
   // Identity terms (Brand Name, Talent Name, etc.) are resolved via direct
@@ -886,9 +982,9 @@ export async function performP1Reconciliation(
   let identityDiscrepanciesCreated = 0
 
   for (const [termId, identityResult] of identityResults) {
-    // Track matched identity terms to prevent false "missing term" flags
+    // Track matched identity terms by ID to prevent false "missing term" flags
     if (identityResult.matchResult.matches) {
-      matchedCategoriesFromIdentity.add(identityResult.termCategory)
+      matchedTermIdsFromIdentity.add(termId)
     }
 
     // Create a virtual clause_match_result for identity terms
@@ -1041,9 +1137,26 @@ export async function performP1Reconciliation(
     })
   }
 
-  // Process results and update database
+  // Process results and prepare batch update
   let updatedCount = 0
   let discrepanciesCreated = 0
+
+  // First pass: calculate all updates and prepare batch
+  const batchUpdates: Array<{
+    id: string
+    rag_parsing: string
+    rag_status: string
+    gpt_analysis: any
+    discrepancy_count: number
+  }> = []
+
+  const processedClauses: Array<{
+    matchResult: ClauseMatchResult
+    clause: ClauseBoundary
+    patComparisons: any[]
+    rag_parsing: string
+    rag_status: string
+  }> = []
 
   for (const [matchResultId, { matchResult, clause, patComparisons }] of clauseUpdates) {
     // Calculate worst-case rag_parsing from PAT comparisons
@@ -1070,24 +1183,51 @@ export async function performP1Reconciliation(
       rag_status = "amber"
     }
 
-    // Update database
-    const { error: updateError } = await supabase
-      .from("clause_match_results")
-      .update({
-        rag_parsing,
-        rag_status,
-        gpt_analysis: {
-          ...(matchResult.gpt_analysis || {}),
-          pre_agreed_comparisons: patComparisons,
-          reconciliation_timestamp: new Date().toISOString(),
-        },
-        discrepancy_count: rag_status === "red" ? 1 : 0,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", matchResult.id)
+    // Add to batch
+    batchUpdates.push({
+      id: matchResult.id,
+      rag_parsing,
+      rag_status,
+      gpt_analysis: {
+        ...(matchResult.gpt_analysis || {}),
+        pre_agreed_comparisons: patComparisons,
+        reconciliation_timestamp: new Date().toISOString(),
+      },
+      discrepancy_count: rag_status === "red" ? 1 : 0,
+    })
 
-    if (!updateError) updatedCount++
+    // Store for second pass (side effects)
+    processedClauses.push({ matchResult, clause, patComparisons, rag_parsing, rag_status })
+  }
 
+  // Execute batch update (single DB round-trip instead of N)
+  if (batchUpdates.length > 0) {
+    const { data: batchResult, error: batchError } = await supabase
+      .rpc('batch_update_clause_match_results', { updates: batchUpdates })
+
+    if (batchError) {
+      console.error(`   ⚠️ Batch update failed, falling back to sequential:`, batchError)
+      // Fallback to sequential updates if RPC not available
+      for (const update of batchUpdates) {
+        const { error } = await supabase
+          .from("clause_match_results")
+          .update({
+            rag_parsing: update.rag_parsing,
+            rag_status: update.rag_status,
+            gpt_analysis: update.gpt_analysis,
+            discrepancy_count: update.discrepancy_count,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", update.id)
+        if (!error) updatedCount++
+      }
+    } else {
+      updatedCount = batchResult?.[0]?.updated_count || batchUpdates.length
+    }
+  }
+
+  // Second pass: handle side effects (admin_review_queue, discrepancies)
+  for (const { matchResult, clause, patComparisons, rag_parsing, rag_status } of processedClauses) {
     // Flag low-confidence matches for LCL growth
     const similarityScore = matchResult.similarity_score || 0
     if (similarityScore < 0.85 && similarityScore > 0) {
@@ -1141,21 +1281,22 @@ export async function performP1Reconciliation(
   }
 
   // Handle missing mandatory terms
-  // Combine GPT-matched categories with identity-matched categories
-  const matchedCategoriesFromGPT = new Set(
+  // Combine GPT-matched term IDs with identity-matched term IDs
+  // Using term_id instead of term_category to handle multiple terms with same category correctly
+  const matchedTermIdsFromGPT = new Set(
     matchResults?.flatMap((r: any) => r.gpt_analysis?.pre_agreed_comparisons || [])
       .filter((c: any) => c.comparison_result?.matches)
-      .map((c: any) => c.term_category)
+      .map((c: any) => c.term_id)
   )
 
   // Merge both sets to avoid false "missing term" flags for identity terms
-  const allMatchedCategories = new Set([
-    ...matchedCategoriesFromGPT,
-    ...matchedCategoriesFromIdentity
+  const allMatchedTermIds = new Set([
+    ...matchedTermIdsFromGPT,
+    ...matchedTermIdsFromIdentity
   ])
 
   const missingTerms = preAgreedTerms.filter(
-    (term: PreAgreedTerm) => term.is_mandatory && !allMatchedCategories.has(term.term_category)
+    (term: PreAgreedTerm) => term.is_mandatory && !allMatchedTermIds.has(term.id)
   )
 
   for (const missingTerm of missingTerms) {

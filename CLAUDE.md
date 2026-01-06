@@ -34,7 +34,7 @@ pnpm test:e2e:report      # View HTML report
 
 - **Frontend**: Next.js 15 (App Router), React 19, TypeScript, Tailwind CSS 4, shadcn/ui
 - **Backend**: Supabase (PostgreSQL 15 with pgvector, pgmq)
-- **AI**: OpenAI GPT-4o (clause extraction), Cohere (embeddings)
+- **AI**: OpenAI GPT-4o (clause extraction), OpenAI text-embedding-3-large (embeddings)
 - **Auth**: Clerk
 - **Edge Functions**: Deno (Supabase)
 
@@ -44,7 +44,7 @@ pnpm test:e2e:report      # View HTML report
 ┌─────────────────────────────────────┐
 │ TIER 1: LCL (Legal Clause Library)  │
 │ - 300+ base clauses with variants   │
-│ - Vector embeddings (1024-dim)      │
+│ - Vector embeddings (3072-dim)      │
 │ - Example: LCL-001a, LCL-001b       │
 └─────────────┬───────────────────────┘
               │ Links via clause_ids[]
@@ -63,7 +63,7 @@ pnpm test:e2e:report      # View HTML report
 2. **Contract Upload** → Auto-enqueue via pgmq trigger
 3. **Worker Processing** (polls queue, invokes Edge Functions):
    - `extract-clauses` → LLM extracts clauses with [GREEN][AMBER][RED] markup
-   - `generate-embeddings` → Cohere 1024-dim vectors
+   - `generate-embeddings` → OpenAI text-embedding-3-large 3072-dim vectors
    - `match-and-reconcile` → pgvector similarity search (top 3 matches)
    - P1 Reconciliation → GPT comparison against pre-agreed terms
 4. **UI Display** → Text-based highlighting, clause detail panel
