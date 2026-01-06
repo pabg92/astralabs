@@ -44,6 +44,10 @@ interface PreAgreedTerm {
   related_clause_types: string[] | null
   normalized_term_category?: string
   normalized_clause_type?: string
+  // PAT normalization caching (from migration 20260106000001)
+  normalized_value?: string
+  normalized_at?: string
+  updated_at?: string
 }
 
 interface ClauseBoundary {
@@ -81,7 +85,7 @@ interface BatchComparison {
   clauseContent: string
   termDescription: string
   expectedValue: string
-  matchReason: 'type_match' | 'fallback_match' | 'semantic_fallback'
+  matchReason: 'type_match' | 'fallback_match' | 'semantic_fallback' | 'embedding_similarity'
   semanticScore: number
 }
 
@@ -106,7 +110,7 @@ interface NormalizedTerm {
 interface ClauseCandidate {
   clause: ClauseBoundary
   matchResult: ClauseMatchResult
-  matchReason: 'type_match' | 'fallback_match' | 'semantic_fallback'
+  matchReason: 'type_match' | 'fallback_match' | 'semantic_fallback' | 'embedding_similarity'
 }
 
 // ============ TERM CATEGORY → CLAUSE TYPE MAPPING ============
@@ -398,6 +402,7 @@ async function normalizePatTerms(
   // Check which terms need normalization (no cache or term modified after last normalization)
   const needsNormalization = terms.filter(t => {
     if (!t.normalized_at) return true  // Never normalized
+    if (!t.updated_at) return true  // No updated_at, normalize to be safe
     const updatedAt = new Date(t.updated_at)
     const normalizedAt = new Date(t.normalized_at)
     return updatedAt > normalizedAt  // Modified after last normalization
@@ -742,6 +747,22 @@ function isBetterMatch(
   return a.result.confidence > b.result.confidence
 }
 
+// ============ TIMEOUT CONFIGURATION (Issue #10) ============
+const BASE_TIMEOUT_MS = 30000  // 30s base timeout
+const PER_COMPARISON_MS = 2000 // 2s per comparison
+const MAX_TIMEOUT_MS = 120000  // 2 minute cap
+
+/**
+ * Calculate timeout based on batch size (Issue #10)
+ * Scales with number of comparisons to handle larger batches
+ */
+function calculateTimeout(comparisonCount: number): number {
+  return Math.min(
+    BASE_TIMEOUT_MS + (comparisonCount * PER_COMPARISON_MS),
+    MAX_TIMEOUT_MS
+  )
+}
+
 // Execute batched GPT comparison
 async function executeBatchComparison(
   comparisons: BatchComparison[],
@@ -765,20 +786,28 @@ async function executeBatchComparison(
       clause: `[${c.clauseType}] ${c.clauseContent}`,
     }))
 
-    const response = await callWithBackoff(
-      async () => {
-        const res = await fetch("https://api.openai.com/v1/chat/completions", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${openaiApiKey}`,
-          },
-          body: JSON.stringify({
-            model,
-            messages: [
-              {
-                role: "system",
-                content: `You are a contract compliance checker comparing contract clauses against pre-agreed terms.
+    // Issue #10: Add timeout to prevent hanging on slow GPT responses
+    const timeout = calculateTimeout(batch.length)
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), timeout)
+
+    let response: Response
+    try {
+      response = await callWithBackoff(
+        async () => {
+          const res = await fetch("https://api.openai.com/v1/chat/completions", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${openaiApiKey}`,
+            },
+            signal: controller.signal,
+            body: JSON.stringify({
+              model,
+              messages: [
+                {
+                  role: "system",
+                  content: `You are a contract compliance checker comparing contract clauses against pre-agreed terms.
 
 IMPORTANT: This comparison is for SEMANTIC/LEGAL terms only (payments, exclusivity, deliverables, etc.).
 Identity terms (Brand Name, Talent Name, Agency) are handled separately and will NOT appear in this batch.
@@ -804,30 +833,33 @@ Be strict for [MANDATORY] terms. Be concise.
 
 IMPORTANT: Return results for ALL comparisons. Output format:
 {"results":[{"idx":0,"matches":true,"severity":"none","explanation":"<15 words>","differences":[],"confidence":0.95},{"idx":1,...},...]}`,
-              },
-              {
-                role: "user",
-                content: `Compare these ${batch.length} clause-term pairs and return a result for EACH one:
+                },
+                {
+                  role: "user",
+                  content: `Compare these ${batch.length} clause-term pairs and return a result for EACH one:
 
 ${JSON.stringify(comparisonInputs, null, 0)}
 
 Return JSON {"results":[...]} with exactly ${batch.length} result objects, one for each idx (0 to ${batch.length - 1}).`,
-              },
-            ],
-            temperature: 0.1,
-            response_format: { type: "json_object" },
-          }),
-        })
+                },
+              ],
+              temperature: 0.1,
+              response_format: { type: "json_object" },
+            }),
+          })
 
-        if (!res.ok) {
-          const error: any = new Error(`OpenAI error ${res.status}`)
-          error.status = res.status
-          throw error
-        }
-        return res
-      },
-      `Batch ${batchNum} comparison`
-    )
+          if (!res.ok) {
+            const error: any = new Error(`OpenAI error ${res.status}`)
+            error.status = res.status
+            throw error
+          }
+          return res
+        },
+        `Batch ${batchNum} comparison`
+      )
+    } finally {
+      clearTimeout(timeoutId)
+    }
 
     const data = await response.json()
     const content = data.choices[0]?.message?.content
@@ -885,16 +917,23 @@ export async function performP1Reconciliation(
   const startTime = Date.now()
   console.log(`   4️⃣ P1: Comparing against pre-agreed terms (batched)...`)
 
-  // ============ IDEMPOTENCY CHECK ============
-  const { data: existingP1, error: p1CheckError } = await supabase
-    .from("clause_match_results")
-    .select("id, gpt_analysis")
-    .eq("document_id", documentId)
-    .not("gpt_analysis->pre_agreed_comparisons", "is", null)
-    .limit(1)
+  // Fetch document metadata including extracted_text for identity term matching
+  // Also includes p1_completed_at for idempotency check (Issue #3)
+  const { data: document, error: docError } = await supabase
+    .from("document_repository")
+    .select("id, deal_id, tenant_id, extracted_text, p1_completed_at")
+    .eq("id", documentId)
+    .single()
 
-  if (!p1CheckError && existingP1?.length > 0) {
-    console.log(`   ℹ️ P1 already completed for document ${documentId}, skipping`)
+  if (docError || !document) {
+    throw new Error(`Document not found: ${docError?.message}`)
+  }
+
+  // ============ IDEMPOTENCY CHECK (Issue #3) ============
+  // Use p1_completed_at column instead of checking JSONB presence
+  // This correctly handles partial P1 failures - only skip if fully completed
+  if (document.p1_completed_at) {
+    console.log(`   ℹ️ P1 already completed at ${document.p1_completed_at}, skipping`)
     return {
       skipped: true,
       reason: "already_processed",
@@ -903,17 +942,6 @@ export async function performP1Reconciliation(
       discrepancies_created: 0,
       missing_terms: 0,
     }
-  }
-
-  // Fetch document metadata including extracted_text for identity term matching
-  const { data: document, error: docError } = await supabase
-    .from("document_repository")
-    .select("id, deal_id, tenant_id, extracted_text")
-    .eq("id", documentId)
-    .single()
-
-  if (docError || !document) {
-    throw new Error(`Document not found: ${docError?.message}`)
   }
 
   // Full contract text for identity term matching (presence check across entire document)

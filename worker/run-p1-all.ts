@@ -72,7 +72,7 @@ async function main() {
     const documentId = row.id
     console.log(`\n▶️  Processing document ${documentId}`)
     try {
-      const result = await performP1Reconciliation(documentId, supabase, OPENAI_API_KEY)
+      const result = await performP1Reconciliation(documentId, supabase, OPENAI_API_KEY!)
       console.log(`   Result:`, result)
     } catch (err) {
       console.error(`   ❌ Error processing ${documentId}:`, err)
