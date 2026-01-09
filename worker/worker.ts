@@ -197,6 +197,9 @@ class DocumentProcessingWorker {
 
       console.log(`   ✅ Extracted ${extractResult.clauses_extracted || 0} clauses`)
 
+      // Heartbeat: Extend visibility timeout after step 1
+      await this.extendVisibilityTimeout(msg.msg_id)
+
       // Step 2: Generate embeddings
       console.log('   2️⃣ Generating embeddings...')
       const embeddingResult = await this.invokeEdgeFunction('generate-embeddings', {
@@ -208,6 +211,9 @@ class DocumentProcessingWorker {
       }
 
       console.log(`   ✅ Generated ${embeddingResult.embeddings_generated || 0} embeddings`)
+
+      // Heartbeat: Extend visibility timeout after step 2
+      await this.extendVisibilityTimeout(msg.msg_id)
 
       // Step 3: Match and reconcile (LCL)
       console.log('   3️⃣ Matching against Legal Clause Library...')
@@ -222,8 +228,15 @@ class DocumentProcessingWorker {
 
       console.log(`   ✅ Matched ${matchResult.clauses_reconciled || 0} clauses against LCL`)
 
+      // Heartbeat: Extend visibility timeout after step 3
+      await this.extendVisibilityTimeout(msg.msg_id)
+
       // Step 4: P1 Reconciliation (batched GPT comparison)
+      // Issue #2: Track P1 status separately from document processing status
       const openaiApiKey = process.env.OPENAI_API_KEY
+      let p1Status: 'completed' | 'failed' | 'skipped' = 'skipped'
+      let p1Error: string | null = null
+
       if (openaiApiKey) {
         try {
           const p1Result = await performP1Reconciliation(
@@ -233,22 +246,30 @@ class DocumentProcessingWorker {
           )
           if (p1Result.skipped) {
             console.log(`   ℹ️ P1: ${p1Result.reason}`)
+            p1Status = 'skipped'
           } else {
             console.log(`   ✅ P1: ${p1Result.p1_comparisons_made} comparisons in ${((p1Result.execution_time_ms || 0) / 1000).toFixed(1)}s`)
+            p1Status = 'completed'
           }
-        } catch (p1Error) {
-          console.error(`   ⚠️ P1 comparison failed (non-fatal):`, p1Error)
-          // Don't throw - P1 is enhancement, not required
+        } catch (err: any) {
+          console.error(`   ⚠️ P1 comparison failed (non-fatal):`, err)
+          p1Status = 'failed'
+          p1Error = err?.message || String(err)
+          // Don't throw - P1 is enhancement, not required for document processing
         }
       } else {
         console.log(`   ℹ️ Skipping P1: OPENAI_API_KEY not set`)
+        p1Status = 'skipped'
       }
 
-      // Step 5: Update document status to completed
+      // Step 5: Update document status to completed (including P1 status)
       const { error: updateError } = await this.supabase
         .from('document_repository')
         .update({
-          processing_status: 'completed'
+          processing_status: 'completed',
+          p1_status: p1Status,
+          p1_completed_at: p1Status === 'completed' ? new Date().toISOString() : null,
+          p1_error: p1Error
         })
         .eq('id', document_id)
 
@@ -335,6 +356,22 @@ class DocumentProcessingWorker {
 
   private sleep(ms: number) {
     return new Promise(resolve => setTimeout(resolve, ms))
+  }
+
+  /**
+   * Extend message visibility timeout (heartbeat pattern)
+   * Call after each major processing step to prevent message redelivery
+   * Issue #1: Race condition on redelivery
+   */
+  private async extendVisibilityTimeout(msgId: bigint, extensionSec: number = 120) {
+    const { error } = await this.supabase.rpc('extend_message_visibility', {
+      p_msg_id: msgId,
+      p_extension_seconds: extensionSec
+    })
+    if (error) {
+      // Log but don't fail - worker can continue, just risk redelivery
+      console.warn(`   ⚠️ Failed to extend VT for msg ${msgId}:`, error.message)
+    }
   }
 }
 

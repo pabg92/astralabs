@@ -6,7 +6,9 @@
   "type": "module",
   "scripts": {
     "start": "tsx worker.ts",
-    "dev": "tsx watch worker.ts"
+    "dev": "tsx watch worker.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.78.0",
@@ -15,6 +17,7 @@
   "devDependencies": {
     "@types/node": "^22",
     "tsx": "^4.20.6",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^2.1.0"
   }
 }

@@ -125,6 +125,8 @@ Deno.serve(async (req) => {
     let totalEmbeddingsGenerated = 0
     let totalMatchesCreated = 0
     const embeddingStats: { batch: number; clauses: number; time_ms: number }[] = []
+    // Issue #9: Track failed clauses for better error reporting
+    const failedClauses: { batch: number; clause_id?: string; error: string }[] = []
 
     for (let i = 0; i < clauses.length; i += batchSize) {
       const batchStart = Date.now()
@@ -315,8 +317,21 @@ Deno.serve(async (req) => {
         console.log(
           `Batch ${batchNum} complete: ${batchTime}ms (${(batchTime / batch.length).toFixed(0)}ms per clause)`
         )
-      } catch (batchError) {
+      } catch (batchError: any) {
         console.error(`Error processing batch ${batchNum}:`, batchError)
+        // Issue #9: Track failed batches with clause IDs for debugging
+        failedClauses.push({
+          batch: batchNum,
+          error: batchError?.message || String(batchError),
+        })
+        // Also track individual clause IDs from this batch for more granular debugging
+        for (const clause of batch) {
+          failedClauses.push({
+            batch: batchNum,
+            clause_id: clause.id,
+            error: `Batch ${batchNum} failed: ${batchError?.message || 'Unknown error'}`,
+          })
+        }
         // Continue with next batch
       }
     }
@@ -331,12 +346,14 @@ Deno.serve(async (req) => {
     )
 
     // Log successful completion to database
+    // Issue #9: Include failure information in logs
     const executionTime = Date.now() - functionStartTime
+    const hasFailures = failedClauses.length > 0
     if (documentId && supabase) {
       await supabase.from("edge_function_logs").insert({
         document_id: documentId,
         stage: "embed",
-        status: "success",
+        status: hasFailures ? "partial_success" : "success",
         clause_count: totalEmbeddingsGenerated,
         raw_payload: {
           clauses_found: clauses.length,
@@ -346,15 +363,24 @@ Deno.serve(async (req) => {
           batch_stats: embeddingStats,
           embedding_model: EMBEDDING_MODEL,
           embedding_dimensions: EMBEDDING_DIMENSIONS,
+          // Issue #9: Track failures in logs
+          failed_count: failedClauses.length,
+          failed_clauses: failedClauses.slice(0, 20), // Keep logs smaller
         },
         execution_time_ms: executionTime,
       })
     }
 
+    // Issue #9: Determine success status based on failures
+    const isPartialSuccess = hasFailures && totalEmbeddingsGenerated > 0
+
     return new Response(
       JSON.stringify({
-        success: true,
-        message: "Embeddings generated and matches created",
+        success: !hasFailures,
+        partial_success: isPartialSuccess,
+        message: hasFailures
+          ? `Embeddings generated with ${failedClauses.length} failures`
+          : "Embeddings generated and matches created",
         clauses_found: clauses.length,
         embeddings_generated: totalEmbeddingsGenerated,
         matches_created: totalMatchesCreated,
@@ -362,6 +388,9 @@ Deno.serve(async (req) => {
         total_time_ms: totalTime,
         avg_time_per_clause_ms: Math.round(avgTimePerClause),
         batch_stats: embeddingStats,
+        // Issue #9: Include failure details for debugging
+        failed_count: failedClauses.length,
+        failed_clauses: failedClauses.slice(0, 50), // Limit to first 50 to avoid huge response
       }),
       {
         headers: { ...corsHeaders, "Content-Type": "application/json" },

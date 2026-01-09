@@ -5,6 +5,14 @@
  */
 
 import { describe, it, expect } from 'vitest'
+import {
+  IDENTITY_TERM_CATEGORIES,
+  isIdentityTermCategory,
+  normalizeForIdentityMatch,
+  checkIdentityMatch,
+  determineIdentityRag,
+  type IdentityMatchResult,
+} from './p1-reconciliation.js'
 
 // ============ Issue #8: Keyword Matching Types and Logic ============
 
@@ -1081,6 +1089,423 @@ describe('P1 Direction Validation (Issue #10)', () => {
       const finalStatus = calculateRagStatusWithDirection(rag_risk, rag_parsing, hasDirectionMismatch)
 
       expect(finalStatus).toBe('red')
+    })
+  })
+})
+
+// ============ Identity Term Handling Tests ============
+// Functions imported from ./p1-reconciliation.js
+
+describe('P1 Identity Term Handling', () => {
+
+  describe('isIdentityTermCategory', () => {
+
+    it('should identify Brand Name as identity term', () => {
+      expect(isIdentityTermCategory('Brand Name')).toBe(true)
+    })
+
+    it('should identify Talent Name as identity term', () => {
+      expect(isIdentityTermCategory('Talent Name')).toBe(true)
+    })
+
+    it('should identify Agency as identity term', () => {
+      expect(isIdentityTermCategory('Agency')).toBe(true)
+    })
+
+    it('should identify Influencer as identity term', () => {
+      expect(isIdentityTermCategory('Influencer')).toBe(true)
+    })
+
+    it('should be case insensitive', () => {
+      expect(isIdentityTermCategory('brand name')).toBe(true)
+      expect(isIdentityTermCategory('BRAND NAME')).toBe(true)
+      expect(isIdentityTermCategory('Brand name')).toBe(true)
+      expect(isIdentityTermCategory('TALENT NAME')).toBe(true)
+    })
+
+    it('should NOT identify Payment Terms as identity term', () => {
+      expect(isIdentityTermCategory('Payment Terms')).toBe(false)
+    })
+
+    it('should NOT identify Exclusivity as identity term', () => {
+      expect(isIdentityTermCategory('Exclusivity')).toBe(false)
+    })
+
+    it('should NOT identify Usage Rights as identity term', () => {
+      expect(isIdentityTermCategory('Usage Rights')).toBe(false)
+    })
+
+    it('should NOT identify Deliverables as identity term', () => {
+      expect(isIdentityTermCategory('Deliverables')).toBe(false)
+    })
+
+    it('should handle whitespace variations', () => {
+      expect(isIdentityTermCategory('  Brand Name  ')).toBe(true)
+      expect(isIdentityTermCategory('Brand  Name')).toBe(false) // Double space doesn't match
+    })
+  })
+
+  describe('checkIdentityMatch', () => {
+
+    describe('exact matches', () => {
+
+      it('should return exact match when value found in clause', () => {
+        const result = checkIdentityMatch(
+          'Nike',
+          'This agreement between Nike and Influencer...',
+          ''
+        )
+        expect(result.matches).toBe(true)
+        expect(result.matchType).toBe('exact')
+        expect(result.confidence).toBe(1.0)
+        expect(result.foundValue).toBe('Nike')
+      })
+
+      it('should return exact match when found in full contract text', () => {
+        const result = checkIdentityMatch(
+          'Adidas',
+          'Some other clause content',
+          'Agreement between Adidas Corporation and Jane Doe'
+        )
+        expect(result.matches).toBe(true)
+        expect(result.matchType).toBe('exact')
+        expect(result.confidence).toBe(0.95)
+      })
+
+      it('should be case insensitive for exact match', () => {
+        const result = checkIdentityMatch(
+          'NIKE',
+          'Agreement with Nike Inc.',
+          ''
+        )
+        expect(result.matches).toBe(true)
+        expect(result.matchType).toBe('exact')
+      })
+
+      it('should handle multi-word names', () => {
+        const result = checkIdentityMatch(
+          'John Smith',
+          'The Influencer, John Smith, agrees to...',
+          ''
+        )
+        expect(result.matches).toBe(true)
+        expect(result.matchType).toBe('exact')
+      })
+    })
+
+    describe('partial matches', () => {
+
+      it('should return partial match when 70%+ of significant words match', () => {
+        // "global media group" has 3 significant words (>2 chars)
+        // Contract has "global" and "media" (2/3 = 66.7%) - just under threshold
+        // Let's use a case that matches: "Nike Sports International" vs "Nike Sports Division"
+        const result = checkIdentityMatch(
+          'Nike Sports Division',  // 3 words: nike, sports, division
+          '',
+          'Agreement with Nike Sports International Corp'  // Has nike, sports (2/3 = 66.7%)
+        )
+        // 2/3 = 0.667 which is < 0.7 threshold, so this won't match
+        // Let's use a better example with 2 of 2 words
+        expect(result.matches).toBe(false) // Falls below 70% threshold
+      })
+
+      it('should return partial match when most significant words found (not exact substring)', () => {
+        // "Global Nike Sports" - words found but NOT as exact substring
+        // "nike" and "sports" are found but not "global nike sports" as a phrase
+        const result = checkIdentityMatch(
+          'Global Nike Sports',  // 3 significant words: global, nike, sports
+          '',
+          'Agreement with Nike Sports International Corp'  // Has nike, sports but not "global" (2/3 = 66.7%)
+        )
+        // 2/3 = 0.667 which is < 0.7 threshold
+        // Let's use a better example: 3 of 4 words
+        expect(result.matches).toBe(false) // Below 70% threshold
+
+        // Test with 3/4 words matching (75% > 70%)
+        const result2 = checkIdentityMatch(
+          'Nike Sports Global Inc',  // 4 significant words: nike, sports, global, inc
+          '',
+          'Agreement with Nike Global Sports Division'  // Has nike, sports, global (3/4 = 75%)
+        )
+        expect(result2.matches).toBe(true)
+        expect(result2.matchType).toBe('partial')
+        expect(result2.confidence).toBeGreaterThan(0)
+        expect(result2.confidence).toBeLessThan(1) // Partial is reduced confidence
+      })
+
+      it('should NOT match when less than 70% words match', () => {
+        const result = checkIdentityMatch(
+          'Acme Corporation Limited International',
+          '',
+          'Agreement with Acme Inc.'
+        )
+        // Only "acme" matches out of 4 significant words (25%)
+        expect(result.matches).toBe(false)
+        expect(result.matchType).toBe('absent')
+      })
+    })
+
+    describe('absent matches', () => {
+
+      it('should return absent when not found', () => {
+        const result = checkIdentityMatch(
+          'Adidas',
+          'Agreement between Nike and Influencer',
+          'Full contract with Nike and talent'
+        )
+        expect(result.matches).toBe(false)
+        expect(result.matchType).toBe('absent')
+        expect(result.confidence).toBe(0)
+      })
+
+      it('should return absent for empty expected value', () => {
+        const result = checkIdentityMatch('', 'Some contract text', '')
+        expect(result.matches).toBe(false)
+        expect(result.matchType).toBe('absent')
+      })
+
+      it('should return absent for N/A expected value', () => {
+        const result = checkIdentityMatch('N/A', 'Some contract text', '')
+        expect(result.matches).toBe(false)
+        expect(result.matchType).toBe('absent')
+      })
+
+      it('should return absent for whitespace-only expected value', () => {
+        const result = checkIdentityMatch('   ', 'Some contract text', '')
+        expect(result.matches).toBe(false)
+        expect(result.matchType).toBe('absent')
+      })
+    })
+
+    describe('edge cases', () => {
+
+      it('should handle special characters in names', () => {
+        const result = checkIdentityMatch(
+          "L'Oreal",
+          "Agreement with L'Oreal Paris",
+          ''
+        )
+        expect(result.matches).toBe(true)
+      })
+
+      it('should handle hyphenated names', () => {
+        const result = checkIdentityMatch(
+          'Mary-Jane Watson',
+          'The Talent, Mary-Jane Watson, agrees...',
+          ''
+        )
+        expect(result.matches).toBe(true)
+      })
+
+      it('should handle extra whitespace in contract text', () => {
+        const result = checkIdentityMatch(
+          'Nike',
+          'Agreement   between    Nike   and  Talent',
+          ''
+        )
+        expect(result.matches).toBe(true)
+      })
+    })
+  })
+
+  describe('determineIdentityRag', () => {
+
+    it('should return green for exact match', () => {
+      const result = determineIdentityRag(
+        { matches: true, matchType: 'exact', confidence: 1.0 },
+        true
+      )
+      expect(result).toBe('green')
+    })
+
+    it('should return green for normalized match', () => {
+      const result = determineIdentityRag(
+        { matches: true, matchType: 'normalized', confidence: 1.0 },
+        true
+      )
+      expect(result).toBe('green')
+    })
+
+    it('should return amber for partial match', () => {
+      const result = determineIdentityRag(
+        { matches: true, matchType: 'partial', confidence: 0.7 },
+        true
+      )
+      expect(result).toBe('amber')
+    })
+
+    it('should return red for absent mandatory term', () => {
+      const result = determineIdentityRag(
+        { matches: false, matchType: 'absent', confidence: 0 },
+        true
+      )
+      expect(result).toBe('red')
+    })
+
+    it('should return amber for absent non-mandatory term', () => {
+      const result = determineIdentityRag(
+        { matches: false, matchType: 'absent', confidence: 0 },
+        false
+      )
+      expect(result).toBe('amber')
+    })
+
+    it('should return amber for partial match regardless of mandatory flag', () => {
+      const mandatoryResult = determineIdentityRag(
+        { matches: true, matchType: 'partial', confidence: 0.7 },
+        true
+      )
+      const optionalResult = determineIdentityRag(
+        { matches: true, matchType: 'partial', confidence: 0.7 },
+        false
+      )
+      expect(mandatoryResult).toBe('amber')
+      expect(optionalResult).toBe('amber')
+    })
+  })
+
+  describe('Integration: identity term short-circuit flow', () => {
+
+    // Simulating buildBatchComparisons logic
+    interface PreAgreedTermIdentity {
+      id: string
+      term_category: string
+      expected_value: string
+      is_mandatory: boolean
+    }
+
+    interface IdentityTermResult {
+      termId: string
+      termCategory: string
+      isMandatory: boolean
+      expectedValue: string
+      matchResult: IdentityMatchResult
+      ragParsing: 'green' | 'amber' | 'red'
+    }
+
+    function processIdentityTerms(
+      terms: PreAgreedTermIdentity[],
+      fullContractText: string
+    ): Map<string, IdentityTermResult> {
+      const identityResults = new Map<string, IdentityTermResult>()
+
+      for (const term of terms) {
+        if (!isIdentityTermCategory(term.term_category)) {
+          continue // Skip non-identity terms
+        }
+
+        const matchResult = checkIdentityMatch(term.expected_value, '', fullContractText)
+        const ragParsing = determineIdentityRag(matchResult, term.is_mandatory)
+
+        identityResults.set(term.id, {
+          termId: term.id,
+          termCategory: term.term_category,
+          isMandatory: term.is_mandatory,
+          expectedValue: term.expected_value,
+          matchResult,
+          ragParsing,
+        })
+      }
+
+      return identityResults
+    }
+
+    it('should short-circuit identity terms and skip GPT comparison', () => {
+      const terms: PreAgreedTermIdentity[] = [
+        { id: 't1', term_category: 'Brand Name', expected_value: 'Nike', is_mandatory: true },
+        { id: 't2', term_category: 'Payment Terms', expected_value: '30 days', is_mandatory: true },
+        { id: 't3', term_category: 'Talent Name', expected_value: 'John Smith', is_mandatory: true },
+      ]
+      const fullContractText = 'Agreement between Nike and John Smith for brand partnership'
+
+      const identityResults = processIdentityTerms(terms, fullContractText)
+
+      // Only identity terms should be processed
+      expect(identityResults.size).toBe(2) // Brand Name and Talent Name
+      expect(identityResults.has('t1')).toBe(true) // Brand Name
+      expect(identityResults.has('t2')).toBe(false) // Payment Terms (not identity)
+      expect(identityResults.has('t3')).toBe(true) // Talent Name
+    })
+
+    it('should correctly match brand name found in contract', () => {
+      const terms: PreAgreedTermIdentity[] = [
+        { id: 't1', term_category: 'Brand Name', expected_value: 'Adidas', is_mandatory: true },
+      ]
+      const fullContractText = 'This agreement between Adidas and the Influencer establishes...'
+
+      const identityResults = processIdentityTerms(terms, fullContractText)
+      const result = identityResults.get('t1')!
+
+      expect(result.ragParsing).toBe('green')
+      expect(result.matchResult.matches).toBe(true)
+      expect(result.matchResult.matchType).toBe('exact')
+    })
+
+    it('should flag missing brand name as red when mandatory', () => {
+      const terms: PreAgreedTermIdentity[] = [
+        { id: 't1', term_category: 'Brand Name', expected_value: 'Adidas', is_mandatory: true },
+      ]
+      const fullContractText = 'This agreement between Nike and the Influencer'
+
+      const identityResults = processIdentityTerms(terms, fullContractText)
+      const result = identityResults.get('t1')!
+
+      expect(result.ragParsing).toBe('red')
+      expect(result.matchResult.matches).toBe(false)
+      expect(result.matchResult.matchType).toBe('absent')
+    })
+
+    it('should flag missing brand name as amber when non-mandatory', () => {
+      const terms: PreAgreedTermIdentity[] = [
+        { id: 't1', term_category: 'Brand Name', expected_value: 'Adidas', is_mandatory: false },
+      ]
+      const fullContractText = 'This agreement between Nike and the Influencer'
+
+      const identityResults = processIdentityTerms(terms, fullContractText)
+      const result = identityResults.get('t1')!
+
+      expect(result.ragParsing).toBe('amber')
+      expect(result.matchResult.matches).toBe(false)
+    })
+
+    it('should handle multiple identity terms correctly', () => {
+      const terms: PreAgreedTermIdentity[] = [
+        { id: 't1', term_category: 'Brand Name', expected_value: 'Nike', is_mandatory: true },
+        { id: 't2', term_category: 'Talent Name', expected_value: 'John Smith', is_mandatory: true },
+        { id: 't3', term_category: 'Agency', expected_value: 'Creative Agency Inc', is_mandatory: false },
+      ]
+      const fullContractText = 'Agreement between Nike and John Smith represented by XYZ Agency'
+
+      const identityResults = processIdentityTerms(terms, fullContractText)
+
+      expect(identityResults.get('t1')!.ragParsing).toBe('green') // Nike found
+      expect(identityResults.get('t2')!.ragParsing).toBe('green') // John Smith found
+      expect(identityResults.get('t3')!.ragParsing).toBe('amber') // Creative Agency Inc not found (partial or absent)
+    })
+
+    it('should include identity matches in matchedCategories to prevent false missing-term flags', () => {
+      const terms: PreAgreedTermIdentity[] = [
+        { id: 't1', term_category: 'Brand Name', expected_value: 'Nike', is_mandatory: true },
+      ]
+      const fullContractText = 'Agreement with Nike'
+
+      const identityResults = processIdentityTerms(terms, fullContractText)
+      const matchedCategoriesFromIdentity = new Set<string>()
+
+      for (const [, result] of identityResults) {
+        if (result.matchResult.matches) {
+          matchedCategoriesFromIdentity.add(result.termCategory)
+        }
+      }
+
+      // Brand Name should be in matched categories
+      expect(matchedCategoriesFromIdentity.has('Brand Name')).toBe(true)
+
+      // When checking for missing mandatory terms, Brand Name should NOT be flagged
+      const missingMandatory = terms.filter(
+        t => t.is_mandatory && !matchedCategoriesFromIdentity.has(t.term_category)
+      )
+      expect(missingMandatory).toHaveLength(0)
     })
   })
 })

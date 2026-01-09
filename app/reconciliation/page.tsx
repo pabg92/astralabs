@@ -49,7 +49,12 @@ import {
   Sparkles,
   GitCompare,
   Loader2,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
 } from "lucide-react"
+import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from "@/components/ui/resizable"
 import "@/styles/reconciliation.css"
 import type { JSX } from "react/jsx-runtime"
 import { useRouter, useSearchParams } from "next/navigation"
@@ -330,6 +335,7 @@ function ReconciliationContent() {
   const [overviewViewMode, setOverviewViewMode] = useState<"cards" | "inline">("cards")
   const [extractedText, setExtractedText] = useState<string | null>(null)
   const [hoveredClauseId, setHoveredClauseId] = useState<number | null>(null)
+  const [popoverPosition, setPopoverPosition] = useState<{ x: number; y: number } | null>(null)
   const [currentPage, setCurrentPage] = useState(1)
   const [totalPages, setTotalPages] = useState(1)
 
@@ -338,6 +344,8 @@ function ReconciliationContent() {
   const [showHighlights, setShowHighlights] = useState(true)
   const [activeTab, setActiveTab] = useState<"overview" | "pdf">("overview") // Changed initial state to "overview"
   const [rightTab, setRightTab] = useState<"review" | "comments" | "library" | "terms">("review")
+  const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(true) // Start collapsed - slide out on demand
+  const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false)
   const [pdfZoom, setPdfZoom] = useState<"fit" | "page" | 50 | 75 | 100 | 125 | 150 | 200>("fit") // Phase 9: Shared zoom state
   const [clauseStatuses, setClauseStatuses] = useState<Record<number, ClauseStatus>>({})
   const [clauseNotes, setClauseNotes] = useState<Record<number, string>>({})
@@ -1708,74 +1716,149 @@ function ReconciliationContent() {
     return boundaries
   }
 
-  // ============ STRUCTURED TEMPLATE HELPERS ============
+  // ============ TEXT SEGMENTATION HELPERS ============
 
-  // Detect section headers from clause content
-  function detectSectionHeader(content: string): { header: string | null; body: string } {
-    if (!content) return { header: null, body: content }
-
-    // Pattern 1: Numbered sections "1. SCOPE OF WORK\n..." or "1 SCOPE OF WORK\n..."
-    const numberedMatch = content.match(/^(\d+\.?\s*[A-Z][A-Z\s&]+)\n(.*)$/s)
-    if (numberedMatch) {
-      return { header: numberedMatch[1].trim(), body: numberedMatch[2] }
-    }
-
-    // Pattern 2: ALL CAPS header "CONFIDENTIALITY\n..."
-    const allCapsMatch = content.match(/^([A-Z][A-Z\s&]{3,40})\n(.*)$/s)
-    if (allCapsMatch) {
-      return { header: allCapsMatch[1].trim(), body: allCapsMatch[2] }
-    }
-
-    // Pattern 3: Short header line followed by newline "Cost\n...", "Payment terms\n..."
-    const shortHeaderMatch = content.match(/^([A-Z][a-zA-Z\s]{2,35})\n(.+)$/s)
-    if (shortHeaderMatch && shortHeaderMatch[1].trim().length < 40) {
-      return { header: shortHeaderMatch[1].trim(), body: shortHeaderMatch[2] }
-    }
-
-    return { header: null, body: content }
+  // Segment interface for continuous text rendering
+  interface Segment {
+    id: string | number
+    start: number
+    end: number
+    type: 'clause' | 'plain'
+    clause: Clause | null
+    text: string
   }
 
-  // Format clause_type as readable header "payment_terms" -> "Payment Terms"
-  function formatClauseType(type: string): string {
-    if (!type) return 'Clause'
-    return type
-      .split('_')
-      .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
-      .join(' ')
-  }
+  // Build text segments from clauses - divides extractedText into clause and plain text segments
+  function buildTextSegments(clauseList: Clause[], fullText: string): Segment[] {
+    const segments: Segment[] = []
 
-  // Structured section interface
-  interface StructuredSection {
-    id: number
-    header: string
-    headerFromContent: boolean
-    body: string
-    clause: Clause
-    startChar: number
-    endChar: number
-  }
+    // Filter and sort clauses by startChar
+    const validClauses = clauseList
+      .filter((c) => c.startChar != null && c.endChar != null)
+      .sort((a, b) => (a.startChar ?? 0) - (b.startChar ?? 0))
 
-  // Build structured sections from clauses
-  function buildStructuredSections(clauseList: Clause[], fullText: string): StructuredSection[] {
-    return clauseList.map(clause => {
-      const content = clause.text || fullText.slice(clause.startChar ?? 0, clause.endChar ?? 0)
-      const { header, body } = detectSectionHeader(content)
+    if (validClauses.length === 0) {
+      // No valid clauses - return entire text as plain
+      return [{
+        id: 'full-text',
+        start: 0,
+        end: fullText.length,
+        type: 'plain',
+        clause: null,
+        text: fullText
+      }]
+    }
 
-      return {
-        id: clause.id,
-        header: header || formatClauseType(clause.clauseType),
-        headerFromContent: header !== null,
-        body: body,
-        clause,
-        startChar: clause.startChar ?? 0,
-        endChar: clause.endChar ?? 0,
+    let currentPos = 0
+
+    for (const clause of validClauses) {
+      const clauseStart = clause.startChar!
+      const clauseEnd = clause.endChar!
+
+      // Handle overlapping clauses - skip if this starts before current position
+      if (clauseStart < currentPos) {
+        continue
       }
-    })
+
+      // Add plain text segment before this clause (if any gap)
+      if (clauseStart > currentPos) {
+        segments.push({
+          id: `plain-${currentPos}`,
+          start: currentPos,
+          end: clauseStart,
+          type: 'plain',
+          clause: null,
+          text: fullText.slice(currentPos, clauseStart)
+        })
+      }
+
+      // Add clause segment
+      segments.push({
+        id: clause.id,
+        start: clauseStart,
+        end: clauseEnd,
+        type: 'clause',
+        clause: clause,
+        text: fullText.slice(clauseStart, clauseEnd)
+      })
+
+      currentPos = clauseEnd
+    }
+
+    // Add trailing plain text (if any)
+    if (currentPos < fullText.length) {
+      segments.push({
+        id: `plain-${currentPos}`,
+        start: currentPos,
+        end: fullText.length,
+        type: 'plain',
+        clause: null,
+        text: fullText.slice(currentPos)
+      })
+    }
+
+    return segments
   }
 
-  // ============ END STRUCTURED TEMPLATE HELPERS ============
+  // Slice segments for a specific page - handles segments that cross page boundaries
+  function sliceSegmentsForPage(
+    segments: Segment[],
+    pageStart: number,
+    pageEnd: number
+  ): Segment[] {
+    const result: Segment[] = []
 
-  // Render inline text view with structured template sections
+    for (const segment of segments) {
+      // Skip segments entirely outside this page
+      if (segment.end <= pageStart || segment.start >= pageEnd) {
+        continue
+      }
+
+      // Segment overlaps with page - slice if needed
+      const sliceStart = Math.max(segment.start, pageStart)
+      const sliceEnd = Math.min(segment.end, pageEnd)
+
+      // Calculate offsets into the segment's text
+      const textStart = sliceStart - segment.start
+      const textEnd = sliceEnd - segment.start
+
+      result.push({
+        ...segment,
+        id: segment.start === sliceStart ? segment.id : `${segment.id}-slice-${pageStart}`,
+        start: sliceStart,
+        end: sliceEnd,
+        text: segment.text.slice(textStart, textEnd)
+      })
+    }
+
+    return result
+  }
+
+  // ============ END TEXT SEGMENTATION HELPERS ============
+
+  // Memoize segments for performance - only recalculate when clauses or extractedText change
+  const allSegments = useMemo(() => {
+    if (!extractedText) return []
+    return buildTextSegments(clauses, extractedText)
+  }, [clauses, extractedText])
+
+  // Handle mouse enter on clause spans - calculate position for fixed popover
+  const handleClauseMouseEnter = (e: React.MouseEvent, clause: Clause) => {
+    const rect = e.currentTarget.getBoundingClientRect()
+    setPopoverPosition({
+      x: rect.left + rect.width / 2,
+      y: rect.top - 10
+    })
+    setHoveredClauseId(clause.id)
+  }
+
+  // Handle mouse leave on clause spans
+  const handleClauseMouseLeave = () => {
+    setPopoverPosition(null)
+    setHoveredClauseId(null)
+  }
+
+  // Render inline text view with continuous text and highlighted clause spans
   const renderInlineTextView = () => {
     if (!extractedText) {
       return (
@@ -1793,13 +1876,9 @@ function ReconciliationContent() {
       )
     }
 
-    // Sort clauses by startChar for proper rendering order
-    const sortedClauses = [...clauses]
-      .filter((c) => c.startChar != null && c.endChar != null)
-      .sort((a, b) => (a.startChar ?? 0) - (b.startChar ?? 0))
-
-    // Handle case where no clauses have character positions
-    if (sortedClauses.length === 0) {
+    // Check if any segments have clauses
+    const hasClauseSegments = allSegments.some(s => s.type === 'clause')
+    if (!hasClauseSegments) {
       return (
         <div className="text-center py-8" data-testid="inline-text-container">
           <p className="text-slate-500 mb-4">
@@ -1835,217 +1914,162 @@ function ReconciliationContent() {
     const pageStartChar = currentPageData.startChar
     const pageEndChar = currentPageData.endChar
 
-    // Build structured sections from all clauses
-    const allSections = buildStructuredSections(sortedClauses, extractedText)
+    // Slice segments for current page
+    const pageSegments = sliceSegmentsForPage(allSegments, pageStartChar, pageEndChar)
 
-    // Filter sections that overlap with current page
-    const pageSections = allSections.filter(section =>
-      section.startChar < pageEndChar && section.endChar > pageStartChar
-    )
+    // Count clause segments on this page
+    const clauseCount = pageSegments.filter(s => s.type === 'clause').length
 
-    // Helper to get colors based on clause status
+    // Helper to get colors based on clause status - muted, professional palette
     const getBackgroundColor = (clause: Clause) => {
       const status = getClauseStatus(clause)
       const isSelected = selectedClause?.id === clause.id
       const isRiskAccepted = riskAcceptedClauses.has(clause.id)
 
-      if (isSelected) return "rgba(148, 163, 184, 0.25)"
+      // Soft blue for selection
+      if (isSelected) return "rgba(59, 130, 246, 0.18)"
       if (status === "match") {
-        return isRiskAccepted ? "rgba(253, 230, 138, 0.35)" : "rgba(187, 247, 208, 0.35)"
+        return isRiskAccepted ? "rgba(250, 240, 200, 0.4)" : "rgba(220, 245, 225, 0.35)"
       }
-      if (status === "review") return "rgba(254, 243, 199, 0.40)"
-      return "rgba(254, 202, 202, 0.35)"
+      if (status === "review") return "rgba(252, 246, 228, 0.4)"
+      return "rgba(255, 238, 238, 0.35)"
     }
 
-    const getBorderColor = (clause: Clause) => {
+    // Muted underline colors for professional appearance
+    const getUnderlineColor = (clause: Clause) => {
       const status = getClauseStatus(clause)
       const isSelected = selectedClause?.id === clause.id
       const isRiskAccepted = riskAcceptedClauses.has(clause.id)
 
-      if (isSelected) return "#94a3b8"
-      if (status === "match") return isRiskAccepted ? "#f59e0b" : "#22c55e"
-      if (status === "review") return "#f59e0b"
-      return "#ef4444"
+      if (isSelected) return "#3b82f6"
+      if (status === "match") return isRiskAccepted ? "#d4a21a" : "#5b9a67"
+      if (status === "review") return "#c9960a"
+      return "#c45050"
     }
 
-    // Render gap text (text between clauses that wasn't extracted)
-    const renderGapsBetweenSections = () => {
-      const gaps: JSX.Element[] = []
-      let lastEnd = pageStartChar
+    // Find the currently hovered clause for the popover
+    const hoveredClause = hoveredClauseId
+      ? clauses.find(c => c.id === hoveredClauseId)
+      : null
 
-      pageSections.forEach((section, idx) => {
-        const sectionStart = Math.max(section.startChar, pageStartChar)
-
-        // If there's a gap before this section, render it
-        if (sectionStart > lastEnd) {
-          const gapText = extractedText.slice(lastEnd, sectionStart).trim()
-          if (gapText && gapText.length > 10) {
-            gaps.push(
-              <div key={`gap-${idx}`} className="py-3 text-slate-600 text-sm italic border-l-2 border-slate-200 pl-4 my-4">
-                {gapText}
-              </div>
-            )
-          }
-        }
-        lastEnd = Math.min(section.endChar, pageEndChar)
-      })
-
-      return gaps
+    // Helper to get CSS class for clause status
+    const getClauseHighlightClass = (clause: Clause) => {
+      const status = getClauseStatus(clause)
+      const isSelected = selectedClause?.id === clause.id
+      let className = 'clause-highlight'
+      if (status === 'match') className += ' clause-highlight--green'
+      else if (status === 'review') className += ' clause-highlight--amber'
+      else className += ' clause-highlight--red'
+      if (isSelected) className += ' clause-highlight--selected'
+      return className
     }
 
     return (
-      <div data-testid="inline-text-container" className="space-y-4">
+      <div data-testid="inline-text-container" className="doc-viewer">
         {/* Pagination Controls */}
-        <div className="flex items-center justify-between p-3 bg-slate-50 rounded-lg border border-slate-200 sticky top-0 z-10">
-          <Button
-            variant="outline"
-            size="sm"
+        <div className="doc-pagination">
+          <button
+            className="doc-pagination__btn"
             disabled={currentPage === 1}
             onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
             data-testid="page-nav-prev"
           >
-            <ChevronLeft className="w-4 h-4 mr-1" />
+            <ChevronLeft className="w-4 h-4" />
             Previous
-          </Button>
+          </button>
 
-          <span className="text-sm font-medium text-slate-600" data-testid="page-indicator">
+          <span className="doc-pagination__info" data-testid="page-indicator">
             Page {currentPage} of {totalPages}
           </span>
 
-          <Button
-            variant="outline"
-            size="sm"
+          <button
+            className="doc-pagination__btn"
             disabled={currentPage === totalPages}
             onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
             data-testid="page-nav-next"
           >
             Next
-            <ChevronRight className="w-4 h-4 ml-1" />
-          </Button>
+            <ChevronRight className="w-4 h-4" />
+          </button>
         </div>
 
-        {/* Document Content - Structured Template */}
-        <div
-          className="bg-[#fdfdfb] rounded-xl border border-slate-200/80 shadow-lg"
-          style={{
-            boxShadow: '0 4px 24px rgba(15, 23, 42, 0.08), 0 1px 3px rgba(15, 23, 42, 0.04)',
-          }}
-        >
-          <div className="px-6 py-8">
-            <div className="space-y-6">
-              {pageSections.map((section, idx) => {
-                const isSelected = selectedClause?.id === section.clause.id
-                const isHovered = hoveredClauseId === section.clause.id
-
-                // Extract section number if present (e.g., "1.", "2.", "12.")
-                const numberMatch = section.header.match(/^(\d+)\.?\s*/)
-                const sectionNumber = numberMatch ? numberMatch[1] : null
-                const headerText = sectionNumber
-                  ? section.header.replace(/^\d+\.?\s*/, '').trim()
-                  : section.header
-
+        {/* Document Content - Continuous Text with Highlighted Clauses */}
+        <div className="doc-viewer__paper">
+          <div className="doc-viewer__content" style={{ whiteSpace: 'pre-wrap' }}>
+            {pageSegments.map((segment) => {
+              if (segment.type === 'plain') {
                 return (
-                  <div key={section.id} className="relative">
-                    {/* Section Header */}
-                    <h3
-                      className="text-base font-semibold text-slate-800 mb-3 flex items-center gap-2"
-                      style={{ fontFamily: 'Inter, system-ui, sans-serif' }}
-                    >
-                      {sectionNumber && (
-                        <span className="inline-flex items-center justify-center bg-amber-100 text-amber-800 px-2 py-0.5 rounded text-sm font-bold min-w-[28px]">
-                          {sectionNumber}.
-                        </span>
-                      )}
-                      <span className="uppercase tracking-wide">
-                        {headerText || 'Clause'}
-                      </span>
-                    </h3>
-
-                    {/* Section Body with Clause Highlighting */}
-                    <div
-                      className={`relative cursor-pointer rounded-md transition-all duration-150 ${
-                        isSelected ? "ring-2 ring-slate-400 ring-offset-2" : "hover:brightness-[0.98]"
-                      }`}
-                      style={{
-                        backgroundColor: getBackgroundColor(section.clause),
-                        borderLeft: `4px solid ${getBorderColor(section.clause)}`,
-                        padding: '16px 20px',
-                      }}
-                      onClick={() => handleClauseSelect(section.clause)}
-                      onMouseEnter={() => setHoveredClauseId(section.clause.id)}
-                      onMouseLeave={() => setHoveredClauseId(null)}
-                      data-testid={`clause-highlight-${section.clause.id}`}
-                      data-clause-id={section.clause.id}
-                    >
-                      <p style={{
-                        fontFamily: 'Georgia, "Times New Roman", Times, serif',
-                        fontSize: '15px',
-                        lineHeight: '1.8',
-                        color: '#1e293b',
-                        whiteSpace: 'pre-wrap',
-                      }}>
-                        {section.body}
-                      </p>
-
-                      {/* Hover Actions Popover */}
-                      {isHovered && (
-                        <div
-                          className="absolute -top-12 left-1/2 -translate-x-1/2 z-50 flex items-center gap-1 bg-white shadow-lg rounded-lg border border-slate-200 px-3 py-2 whitespace-nowrap"
-                          onClick={(e) => e.stopPropagation()}
-                          data-testid="clause-hover-actions"
-                        >
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-7 w-7 p-0 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50"
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              handleClauseSelect(section.clause)
-                              handleApprove(section.clause)
-                            }}
-                            title="Approve clause"
-                            data-testid="hover-approve-btn"
-                          >
-                            <ThumbsUp className="w-4 h-4" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-7 w-7 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              handleClauseSelect(section.clause)
-                              handleReject(section.clause)
-                            }}
-                            title="Flag for review"
-                            data-testid="hover-reject-btn"
-                          >
-                            <ThumbsDown className="w-4 h-4" />
-                          </Button>
-                          <span className="text-xs text-slate-500 ml-2 font-medium">
-                            {section.clause.clauseType}
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                  </div>
+                  <span key={segment.id} data-testid="plain-text-segment">
+                    {segment.text}
+                  </span>
                 )
-              })}
+              }
 
-              {/* Show message if no sections on this page */}
-              {pageSections.length === 0 && (
-                <div className="text-center py-8 text-slate-500">
-                  <p>No clauses on this page.</p>
-                </div>
-              )}
-            </div>
+              const clause = segment.clause!
+
+              return (
+                <span
+                  key={segment.id}
+                  className={getClauseHighlightClass(clause)}
+                  onClick={() => handleClauseSelect(clause)}
+                  onMouseEnter={(e) => handleClauseMouseEnter(e, clause)}
+                  onMouseLeave={handleClauseMouseLeave}
+                  data-testid={`clause-highlight-${clause.id}`}
+                  data-clause-id={clause.id}
+                >
+                  {segment.text}
+                </span>
+              )
+            })}
+
+            {pageSegments.length === 0 && (
+              <div className="text-center py-8" style={{ color: 'var(--doc-text-muted)' }}>
+                <p>No content on this page.</p>
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Page indicator at bottom */}
-        <div className="text-center text-xs text-slate-400">
-          Page {currentPage} ({pageSections.length} clauses)
-        </div>
+        {/* Hover Actions Popover */}
+        {hoveredClause && popoverPosition && (
+          <div
+            className="clause-popover"
+            style={{ left: popoverPosition.x, top: popoverPosition.y }}
+            onClick={(e) => e.stopPropagation()}
+            onMouseEnter={() => setHoveredClauseId(hoveredClause.id)}
+            onMouseLeave={handleClauseMouseLeave}
+            data-testid="clause-hover-actions"
+          >
+            <button
+              className="clause-popover__btn clause-popover__btn--approve"
+              onClick={(e) => {
+                e.stopPropagation()
+                handleClauseSelect(hoveredClause)
+                handleApprove(hoveredClause)
+              }}
+              title="Approve clause"
+              data-testid="hover-approve-btn"
+            >
+              <ThumbsUp className="w-4 h-4" />
+            </button>
+            <button
+              className="clause-popover__btn clause-popover__btn--reject"
+              onClick={(e) => {
+                e.stopPropagation()
+                handleClauseSelect(hoveredClause)
+                handleReject(hoveredClause)
+              }}
+              title="Flag for review"
+              data-testid="hover-reject-btn"
+            >
+              <ThumbsDown className="w-4 h-4" />
+            </button>
+            <div className="clause-popover__divider" />
+            <span className="clause-popover__type">
+              {hoveredClause.clauseType}
+            </span>
+          </div>
+        )}
       </div>
     )
   }
@@ -2415,35 +2439,42 @@ function ReconciliationContent() {
         </DialogContent>
       </Dialog>
 
-      <div className="flex h-screen">
-        {/* Left Column - Progress & Filters */}
-        <div className="w-[28%] border-r border-slate-200 bg-white p-6 overflow-y-auto">
-          <div className="sticky top-0">
-            <Card className="p-6 shadow-sm rounded-2xl border-slate-200">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-lg font-semibold text-slate-900">Contract Review Progress</h2>
-                <div className="flex items-center gap-2">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => router.push(`/reconciliation/complete?dealId=${dealId}`)}
-                    className="text-slate-500 hover:text-slate-700 disabled:opacity-50"
-                    title={isStillProcessing ? "Please wait for P1 reconciliation to complete" : "Skip to completion page"}
-                    disabled={isStillProcessing}
-                  >
-                    <SkipForward className="w-4 h-4" />
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handleReset}
-                    className="rounded-lg bg-transparent"
-                    title="Reset all settings"
-                  >
-                    <RotateCcw className="w-4 h-4" />
-                  </Button>
-                </div>
-              </div>
+      {/* Main Layout - Flex container for drawer + content */}
+      <div className="flex h-screen overflow-hidden">
+        {/* Left Drawer - Progress & Filters (pushes content) */}
+        <div className={`left-drawer ${leftPanelCollapsed ? 'left-drawer--collapsed' : 'left-drawer--expanded'}`}>
+        <div className="left-drawer__panel">
+          <div className="left-drawer__header">
+            <h2 className="left-drawer__title">Progress</h2>
+            <div className="flex items-center gap-1">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => router.push(`/reconciliation/complete?dealId=${dealId}`)}
+                className="text-slate-500 hover:text-slate-700 disabled:opacity-50"
+                title={isStillProcessing ? "Please wait for P1 reconciliation to complete" : "Skip to completion page"}
+                disabled={isStillProcessing}
+              >
+                <SkipForward className="w-4 h-4" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleReset}
+                title="Reset all settings"
+              >
+                <RotateCcw className="w-4 h-4" />
+              </Button>
+              <button
+                onClick={() => setLeftPanelCollapsed(true)}
+                className="left-drawer__close"
+                title="Close panel"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+          <div className="left-drawer__content">
 
               {contractFileName && (
                 <div className="mb-4 p-3 bg-blue-50 rounded-lg border border-blue-200">
@@ -2533,7 +2564,6 @@ function ReconciliationContent() {
                   </span>
                 </div>
               </div>
-            </Card>
 
             <div className="mt-6">
               <h3 className="text-sm font-medium text-slate-700 mb-3">Filter by Status</h3>
@@ -2625,13 +2655,27 @@ function ReconciliationContent() {
             </div>
           </div>
         </div>
+      </div>
 
-        {/* Center Column - PDF Viewer */}
-        <div className="w-[44%] flex flex-col bg-white">
+        {/* Main Content Area with Resizable Panels */}
+        <ResizablePanelGroup direction="horizontal" className="flex-1 h-full">
+        {/* Center Panel - Document Viewer */}
+        <ResizablePanel defaultSize={rightPanelCollapsed ? 97 : 70} minSize={40} className="recon-panel recon-panel--center flex flex-col">
           {/* Toolbar */}
           <div className="border-b border-slate-200 p-4">
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-1">
+                {/* Progress Drawer Toggle */}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setLeftPanelCollapsed(!leftPanelCollapsed)}
+                  className={`drawer-toggle mr-2 ${!leftPanelCollapsed ? 'drawer-toggle--active' : ''}`}
+                  title={leftPanelCollapsed ? "Show progress panel" : "Hide progress panel"}
+                >
+                  {leftPanelCollapsed ? <PanelLeftOpen className="w-4 h-4" /> : <PanelLeftClose className="w-4 h-4" />}
+                </Button>
+
                 <Button
                   variant={activeTab === "overview" ? "default" : "ghost"}
                   size="sm"
@@ -2753,7 +2797,7 @@ function ReconciliationContent() {
           <div className="flex-1 overflow-y-auto p-8">
             {/* Overview tab */}
             <div className={activeTab === "overview" ? "block" : "hidden"}>
-              <div className="max-w-3xl mx-auto">
+              <div className="w-full">
                 {/* P1 Reconciliation In Progress Banner */}
                 {isStillProcessing && clauses.length > 0 && (
                   <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-6 flex items-center gap-3 shadow-sm">
@@ -2768,7 +2812,7 @@ function ReconciliationContent() {
                     </div>
                   </div>
                 )}
-                <Card className="p-8 shadow-sm rounded-2xl border-slate-200">
+                <Card className="p-4 shadow-sm rounded-2xl border-slate-200">
                   <div className="prose prose-slate max-w-none">
                     <div className="text-slate-800 leading-relaxed whitespace-pre-wrap font-serif">
                       {overviewViewMode === "inline"
@@ -2817,49 +2861,68 @@ function ReconciliationContent() {
               )}
             </div>
           </div>
-        </div>
+        </ResizablePanel>
 
-        {/* Right Column - Clause Review */}
-        <div className="w-[28%] border-l border-slate-200 bg-white flex flex-col">
-          {/* Tabs */}
-          <div className="border-b border-slate-200 p-4">
-            <div className="flex items-center gap-1">
-              <Button
-                variant={rightTab === "review" ? "default" : "ghost"}
-                size="sm"
+        <ResizableHandle withHandle />
+
+        {/* Right Panel - Clause Review */}
+        <ResizablePanel
+          defaultSize={rightPanelCollapsed ? 3 : 24}
+          minSize={3}
+          maxSize={40}
+          collapsible={true}
+          collapsedSize={3}
+          onCollapse={() => setRightPanelCollapsed(true)}
+          onExpand={() => setRightPanelCollapsed(false)}
+          className={`recon-panel recon-panel--right ${rightPanelCollapsed ? 'recon-panel--collapsed' : ''}`}
+        >
+          {/* Collapse Toggle */}
+          <button
+            onClick={() => setRightPanelCollapsed(!rightPanelCollapsed)}
+            className="recon-panel__toggle recon-panel__toggle--right"
+            title={rightPanelCollapsed ? 'Expand panel' : 'Collapse panel'}
+          >
+            {rightPanelCollapsed ? <PanelRightOpen className="w-4 h-4" /> : <PanelRightClose className="w-4 h-4" />}
+          </button>
+
+          {/* Collapsed State Label */}
+          {rightPanelCollapsed && (
+            <div className="flex items-center justify-center h-full">
+              <span className="collapsed-label">Review</span>
+            </div>
+          )}
+
+          {/* Panel Content */}
+          <div className={`flex flex-col h-full ${rightPanelCollapsed ? 'hidden' : ''}`}>
+            {/* Tabs */}
+            <div className="review-panel__header">
+              <button
+                className={`review-panel__tab ${rightTab === "review" ? "review-panel__tab--active" : ""}`}
                 onClick={() => setRightTab("review")}
-                className="rounded-lg flex-1"
               >
                 Review
-              </Button>
-              <Button
-                variant={rightTab === "terms" ? "default" : "ghost"}
-                size="sm"
+              </button>
+              <button
+                className={`review-panel__tab ${rightTab === "terms" ? "review-panel__tab--active" : ""}`}
                 onClick={() => setRightTab("terms")}
-                className="rounded-lg flex-1"
               >
                 Terms
-              </Button>
-              <Button
-                variant={rightTab === "comments" ? "default" : "ghost"}
-                size="sm"
+              </button>
+              <button
+                className={`review-panel__tab ${rightTab === "comments" ? "review-panel__tab--active" : ""}`}
                 onClick={() => setRightTab("comments")}
-                className="rounded-lg flex-1"
               >
                 Comments
-              </Button>
-              <Button
-                variant={rightTab === "library" ? "default" : "ghost"}
-                size="sm"
+              </button>
+              <button
+                className={`review-panel__tab ${rightTab === "library" ? "review-panel__tab--active" : ""}`}
                 onClick={() => setRightTab("library")}
-                className="rounded-lg flex-1"
               >
                 Library
-              </Button>
+              </button>
             </div>
-          </div>
 
-          <div className="flex-1 overflow-y-auto p-6">
+            <div className="recon-panel__content">
             {rightTab === "review" && selectedClause && (
               <div className="space-y-6">
                 {/* Current Clause */}
@@ -3433,8 +3496,10 @@ function ReconciliationContent() {
                 ))}
               </div>
             )}
+            </div>
           </div>
-        </div>
+        </ResizablePanel>
+        </ResizablePanelGroup>
       </div>
 
       {chatBuddyVisible && (

@@ -40,3 +40,4 @@ test-pdf-puppeteer.js
 test-pdf-simple.js
 # clerk configuration (can include secrets)
 /.clerk/
+worker/node_modules/
