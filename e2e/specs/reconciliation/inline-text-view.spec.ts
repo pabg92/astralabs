@@ -188,17 +188,21 @@ test.describe('Inline Text View', () => {
     await firstHighlight.click();
     await page.waitForTimeout(500);
 
-    // Verify the clause has selection ring
-    const hasRing = await firstHighlight.evaluate(el =>
-      el.classList.contains('ring-2') || el.className.includes('ring-')
+    // Verify the clause has selection styling (blue tint background)
+    // Note: Selection uses background color change instead of ring for inline spans
+    const bgColor = await firstHighlight.evaluate(el =>
+      window.getComputedStyle(el).backgroundColor
     );
-    expect(hasRing).toBe(true);
+    // Selected clause should have blue tint: rgba(59, 130, 246, 0.25)
+    const hasSelectionTint = bgColor.includes('59') && bgColor.includes('130') && bgColor.includes('246');
+    expect(hasSelectionTint).toBe(true);
 
     // Take screenshot showing selection
     await page.screenshot({ path: 'e2e/artifacts/inline-view-clause-selected.png', fullPage: true });
 
-    // Verify right sidebar shows clause details (Review tab should have content)
-    const reviewTab = page.locator('button:has-text("Review")');
+    // Verify right sidebar shows clause details (Review tab should be visible)
+    // Use exact match to avoid matching "Complete Review" button
+    const reviewTab = page.getByRole('button', { name: 'Review', exact: true });
     await expect(reviewTab).toBeVisible();
 
     console.log('Clause selection test passed');
