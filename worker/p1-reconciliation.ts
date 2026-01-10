@@ -3,8 +3,6 @@
  * OPTIMIZED: Uses batched GPT calls instead of sequential (5 min → ~15 sec)
  */
 
-import { createClient } from '@supabase/supabase-js'
-
 // ============ TYPES ============
 import type {
   PreAgreedTerm,
@@ -79,6 +77,23 @@ export {
   callWithBackoff,
   calculateTimeout,
 } from './adapters/gpt-adapter'
+
+// ============ DATABASE ADAPTER ============
+import {
+  fetchDocument,
+  fetchPreAgreedTerms,
+  fetchClauses,
+  fetchMatchResults,
+  createIdentityMatchResult,
+  createMissingTermResult,
+  batchUpdateMatchResults,
+  createDiscrepancy,
+  insertReviewQueueItem,
+  type BatchUpdateItem,
+} from './adapters/database-adapter'
+
+// Re-export database types for backward compatibility
+export type { DocumentMetadata, BatchUpdateItem, DiscrepancyInput, ReviewQueueInput } from './adapters/database-adapter'
 
 // Types imported from ./types/p1-types
 // Identity functions imported from ./services/identity-matcher
@@ -333,15 +348,7 @@ export async function performP1Reconciliation(
 
   // Fetch document metadata including extracted_text for identity term matching
   // Also includes p1_completed_at for idempotency check (Issue #3)
-  const { data: document, error: docError } = await supabase
-    .from("document_repository")
-    .select("id, deal_id, tenant_id, extracted_text, p1_completed_at")
-    .eq("id", documentId)
-    .single()
-
-  if (docError || !document) {
-    throw new Error(`Document not found: ${docError?.message}`)
-  }
+  const document = await fetchDocument(supabase, documentId)
 
   // ============ IDEMPOTENCY CHECK (Issue #3) ============
   // Use p1_completed_at column instead of checking JSONB presence
@@ -367,14 +374,9 @@ export async function performP1Reconciliation(
   }
 
   // Fetch pre-agreed terms
-  const { data: preAgreedTerms, error: termsError } = await supabase
-    .from("pre_agreed_terms")
-    .select("*")
-    .eq("deal_id", document.deal_id)
+  const preAgreedTerms = await fetchPreAgreedTerms(supabase, document.deal_id!)
 
-  if (termsError) throw termsError
-
-  if (!preAgreedTerms?.length) {
+  if (!preAgreedTerms.length) {
     console.log(`   ℹ️ No pre-agreed terms, skipping P1 comparison`)
     return { p1_comparisons_made: 0 }
   }
@@ -385,22 +387,9 @@ export async function performP1Reconciliation(
   // Pass supabase client to enable caching of normalized values
   const normalizedTerms = await normalizePatTerms(preAgreedTerms, openaiApiKey, supabase)
 
-  // Fetch clauses
-  const { data: clauses, error: clausesError } = await supabase
-    .from("clause_boundaries")
-    .select("id, content, clause_type, confidence")
-    .eq("document_id", documentId)
-
-  if (clausesError) throw clausesError
-
-  // Fetch match results
-  const { data: matchResults, error: matchError } = await supabase
-    .from("clause_match_results")
-    .select("*")
-    .eq("document_id", documentId)
-    .not("clause_boundary_id", "is", null)
-
-  if (matchError) throw matchError
+  // Fetch clauses and match results
+  const clauses = await fetchClauses(supabase, documentId)
+  const matchResults = await fetchMatchResults(supabase, documentId)
 
   // Build all comparisons upfront (term-centric: top 1-3 clauses per PAT)
   // Identity terms are short-circuited and returned in identityResults
@@ -430,61 +419,14 @@ export async function performP1Reconciliation(
     }
 
     // Create a virtual clause_match_result for identity terms
-    // These don't link to a specific clause but track the identity verification
-    const { data: virtualMatch, error: virtualError } = await supabase
-      .from("clause_match_results")
-      .insert({
-        document_id: documentId,
-        clause_boundary_id: null, // Identity terms check full document, not specific clause
-        matched_template_id: null,
-        similarity_score: identityResult.matchResult.confidence,
-        rag_parsing: identityResult.ragParsing,
-        rag_risk: 'green', // Identity doesn't use library risk assessment
-        rag_status: identityResult.ragParsing,
-        discrepancy_count: identityResult.ragParsing === 'red' ? 1 : 0,
-        gpt_analysis: {
-          identity_term_check: {
-            term_id: termId,
-            term_category: identityResult.termCategory,
-            expected_value: identityResult.expectedValue,
-            match_type: identityResult.matchResult.matchType,
-            found_value: identityResult.matchResult.foundValue,
-            confidence: identityResult.matchResult.confidence,
-          },
-          pre_agreed_comparisons: [{
-            term_id: termId,
-            term_category: identityResult.termCategory,
-            is_mandatory: identityResult.isMandatory,
-            match_metadata: {
-              match_reason: 'identity_short_circuit',
-              identity_match_type: identityResult.matchResult.matchType,
-            },
-            comparison_result: {
-              matches: identityResult.matchResult.matches,
-              deviation_severity: identityResult.ragParsing === 'green' ? 'none' :
-                                 identityResult.ragParsing === 'amber' ? 'minor' : 'major',
-              explanation: identityResult.explanation,
-              key_differences: [],
-              confidence: identityResult.matchResult.confidence,
-            },
-            rag_parsing: identityResult.ragParsing,
-          }],
-          reconciliation_timestamp: new Date().toISOString(),
-        },
-      })
-      .select()
-      .single()
-
-    if (virtualError) {
-      console.error(`   ⚠️ Failed to create identity match result for ${identityResult.termCategory}: ${virtualError.message}`)
-      continue
-    }
+    const virtualMatch = await createIdentityMatchResult(supabase, documentId, identityResult)
+    if (!virtualMatch) continue
 
     identityUpdatedCount++
 
     // Create discrepancy for RED identity terms
-    if (identityResult.ragParsing === 'red' && virtualMatch) {
-      const { error: discError } = await supabase.from("discrepancies").insert({
+    if (identityResult.ragParsing === 'red') {
+      const created = await createDiscrepancy(supabase, {
         match_result_id: virtualMatch.id,
         document_id: documentId,
         discrepancy_type: identityResult.matchResult.matchType === 'absent' ? 'missing' : 'conflicting',
@@ -493,9 +435,7 @@ export async function performP1Reconciliation(
         suggested_action: `Verify ${identityResult.termCategory}: expected "${identityResult.expectedValue}"`,
       })
 
-      if (!discError || discError.code === "23505") {
-        identityDiscrepanciesCreated++
-      }
+      if (created) identityDiscrepanciesCreated++
     }
 
     console.log(`   📋 Identity: ${identityResult.termCategory} = ${identityResult.ragParsing.toUpperCase()} (${identityResult.matchResult.matchType})`)
@@ -644,28 +584,7 @@ export async function performP1Reconciliation(
 
   // Execute batch update (single DB round-trip instead of N)
   if (batchUpdates.length > 0) {
-    const { data: batchResult, error: batchError } = await supabase
-      .rpc('batch_update_clause_match_results', { updates: batchUpdates })
-
-    if (batchError) {
-      console.error(`   ⚠️ Batch update failed, falling back to sequential:`, batchError)
-      // Fallback to sequential updates if RPC not available
-      for (const update of batchUpdates) {
-        const { error } = await supabase
-          .from("clause_match_results")
-          .update({
-            rag_parsing: update.rag_parsing,
-            rag_status: update.rag_status,
-            gpt_analysis: update.gpt_analysis,
-            discrepancy_count: update.discrepancy_count,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", update.id)
-        if (!error) updatedCount++
-      }
-    } else {
-      updatedCount = batchResult?.[0]?.updated_count || batchUpdates.length
-    }
+    updatedCount = await batchUpdateMatchResults(supabase, batchUpdates as BatchUpdateItem[])
   }
 
   // Second pass: handle side effects (admin_review_queue, discrepancies)
@@ -673,13 +592,13 @@ export async function performP1Reconciliation(
     // Flag low-confidence matches for LCL growth
     const similarityScore = matchResult.similarity_score || 0
     if (similarityScore < 0.85 && similarityScore > 0) {
-      const priority = similarityScore < 0.5 ? "critical" : similarityScore < 0.6 ? "high" : similarityScore < 0.7 ? "medium" : "low"
+      const priority = similarityScore < 0.5 ? 'critical' : similarityScore < 0.6 ? 'high' : similarityScore < 0.7 ? 'medium' : 'low'
 
-      const { error: reviewError } = await supabase.from("admin_review_queue").insert({
+      await insertReviewQueueItem(supabase, {
         document_id: documentId,
         clause_boundary_id: clause.id,
-        review_type: "low_confidence",  // Fixed: was "new_clause" which violates constraint
-        status: "pending",
+        review_type: 'low_confidence',
+        status: 'pending',
         priority,
         issue_description: `Low confidence match (${(similarityScore * 100).toFixed(1)}%) for ${clause.clause_type}`,
         original_text: clause.content,
@@ -691,34 +610,28 @@ export async function performP1Reconciliation(
           matched_clause_id: matchResult.matched_template_id,
         },
       })
-
-      if (reviewError && reviewError.code !== "23505") {
-        console.error(`   ⚠️ Failed to insert review queue item:`, reviewError)
-      }
     }
 
     // Create discrepancy if RED
-    if (rag_status === "red" || rag_parsing === "red") {
-      const redComparisons = patComparisons.filter((c: any) => c.rag_parsing === "red")
+    if (rag_status === 'red' || rag_parsing === 'red') {
+      const redComparisons = patComparisons.filter((c: any) => c.rag_parsing === 'red')
       const description = redComparisons.length > 0
         ? `Conflicts with: ${redComparisons[0].term_category}`
         : `Deviates from library`
 
-      const { error: discrepancyError } = await supabase.from("discrepancies").insert({
+      const created = await createDiscrepancy(supabase, {
         match_result_id: matchResult.id,
         document_id: documentId,
-        discrepancy_type: rag_parsing === "red" ? "conflicting" : "modified",
-        severity: rag_parsing === "red" ? "critical" : "error",
+        discrepancy_type: rag_parsing === 'red' ? 'conflicting' : 'modified',
+        severity: rag_parsing === 'red' ? 'critical' : 'error',
         description,
         affected_text: clause.content.substring(0, 200),
         suggested_action: redComparisons.length > 0
           ? `Review: ${redComparisons[0].comparison_result.explanation}`
-          : "Review against library",
+          : 'Review against library',
       })
 
-      if (!discrepancyError || discrepancyError.code === "23505") {
-        discrepanciesCreated++
-      }
+      if (created) discrepanciesCreated++
     }
   }
 
@@ -744,42 +657,19 @@ export async function performP1Reconciliation(
   for (const missingTerm of missingTerms) {
     console.log(`   ⚠️ Missing mandatory: ${missingTerm.term_category}`)
 
-    const { data: virtualMatch, error: virtualError } = await supabase
-      .from("clause_match_results")
-      .insert({
-        document_id: documentId,
-        clause_boundary_id: null,
-        matched_template_id: null,
-        similarity_score: 0,
-        rag_parsing: "red",
-        rag_risk: "red",
-        rag_status: "red",
-        discrepancy_count: 1,
-        gpt_analysis: {
-          missing_required_term: {
-            term_id: missingTerm.id,
-            term_category: missingTerm.term_category,
-            term_description: missingTerm.term_description,
-          },
-        },
-      })
-      .select()
-      .single()
+    const virtualMatch = await createMissingTermResult(supabase, documentId, missingTerm)
+    if (!virtualMatch) continue
 
-    if (virtualError) continue
+    const created = await createDiscrepancy(supabase, {
+      match_result_id: virtualMatch.id,
+      document_id: documentId,
+      discrepancy_type: 'missing',
+      severity: 'critical',
+      description: `Missing: ${missingTerm.term_category}`,
+      suggested_action: `Add: ${missingTerm.term_description}`,
+    })
 
-    if (virtualMatch) {
-      const { error: discError } = await supabase.from("discrepancies").insert({
-        match_result_id: virtualMatch.id,
-        document_id: documentId,
-        discrepancy_type: "missing",
-        severity: "critical",
-        description: `Missing: ${missingTerm.term_category}`,
-        suggested_action: `Add: ${missingTerm.term_description}`,
-      })
-
-      if (!discError || discError.code === "23505") discrepanciesCreated++
-    }
+    if (created) discrepanciesCreated++
   }
 
   const elapsedMs = Date.now() - startTime

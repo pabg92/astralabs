@@ -18,6 +18,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `P1_MAX_TIMEOUT_MS` - Maximum timeout cap (default: 120000)
 
 ### Changed
+- **P1 Reconciliation Phase 4 Refactor** - Extract database adapter
+  - Created `worker/adapters/database-adapter.ts` with:
+    - `fetchDocument()`, `fetchPreAgreedTerms()`, `fetchClauses()`, `fetchMatchResults()`
+    - `createIdentityMatchResult()`, `createMissingTermResult()`
+    - `batchUpdateMatchResults()` with RPC and sequential fallback
+    - `createDiscrepancy()`, `insertReviewQueueItem()`
+    - `DatabaseAdapter` class for dependency injection
+    - Typed interfaces: `DocumentMetadata`, `BatchUpdateItem`, `DiscrepancyInput`, `ReviewQueueInput`
+  - Main file `worker/p1-reconciliation.ts` reduced by additional ~100 lines
+  - All 113 existing tests continue to pass
+
 - **P1 Reconciliation Phase 3 Refactor** - Extract GPT adapter
   - Created `worker/adapters/gpt-adapter.ts` with:
     - `sleep()`, `calculateTimeout()`, `callWithBackoff()` utility functions
