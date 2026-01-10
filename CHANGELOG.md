@@ -18,6 +18,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `P1_MAX_TIMEOUT_MS` - Maximum timeout cap (default: 120000)
 
 ### Changed
+- **P1 Reconciliation Phase 7 Refactor** - Extract RAG calculator service
+  - Created `worker/services/rag-calculator.ts` with:
+    - `calculateTermRAG()` - Single GPT result → RAG status
+    - `calculateClauseRAG()` - Aggregate multiple PAT comparisons → RAG
+    - `calculateFinalRAG()` - Combine P1 parsing + library risk → final RAG
+    - `calculateReviewPriority()` - Similarity score → review priority
+    - `needsReview()` - Check if clause needs human review
+    - `severityToRAG()` - Convert deviation severity to RAG
+    - `RAGCalculator` class with `calculateAll()` pipeline method
+    - Clear decision table documentation
+  - Replaced nested conditionals with explicit decision logic
+  - Main file `worker/p1-reconciliation.ts` reduced by additional ~25 lines
+  - All 113 existing tests continue to pass
+
 - **P1 Reconciliation Phase 6 Refactor** - Extract semantic matcher service
   - Created `worker/services/semantic-matcher.ts` with:
     - `buildBatchComparisons()` - Builds GPT comparison list with identity short-circuit

@@ -121,6 +121,28 @@ export {
 
 export type { BatchComparisonResult, BestMatchResult } from './services/semantic-matcher'
 
+// ============ RAG CALCULATOR SERVICE ============
+import {
+  calculateTermRAG,
+  calculateClauseRAG,
+  calculateFinalRAG,
+  calculateReviewPriority,
+  needsReview,
+  RAGCalculator,
+} from './services/rag-calculator'
+
+// Re-export RAG calculator functions for backward compatibility
+export {
+  calculateTermRAG,
+  calculateClauseRAG,
+  calculateFinalRAG,
+  calculateReviewPriority,
+  needsReview,
+  RAGCalculator,
+} from './services/rag-calculator'
+
+export type { PATComparison, ReviewPriority } from './services/rag-calculator'
+
 export async function performP1Reconciliation(
   documentId: string,
   supabase: any,
@@ -272,14 +294,7 @@ export async function performP1Reconciliation(
       })
     }
 
-    let termRagParsing: "green" | "amber" | "red"
-    if (result.matches && result.severity === "none") {
-      termRagParsing = "green"
-    } else if (result.matches && result.severity === "minor") {
-      termRagParsing = "amber"
-    } else {
-      termRagParsing = "red"
-    }
+    const termRagParsing = calculateTermRAG(result)
 
     clauseUpdates.get(comparison.matchResultId)!.patComparisons.push({
       term_id: termId,
@@ -324,29 +339,10 @@ export async function performP1Reconciliation(
   }> = []
 
   for (const [matchResultId, { matchResult, clause, patComparisons }] of clauseUpdates) {
-    // Calculate worst-case rag_parsing from PAT comparisons
-    let rag_parsing: "green" | "amber" | "red" = "green"
-    for (const comp of patComparisons) {
-      if (comp.rag_parsing === "red" && comp.is_mandatory) {
-        rag_parsing = "red"
-      } else if (comp.rag_parsing === "red" && rag_parsing !== "red") {
-        rag_parsing = "amber"
-      } else if (comp.rag_parsing === "amber" && rag_parsing === "green") {
-        rag_parsing = "amber"
-      }
-    }
-
-    // Calculate final rag_status (combine with library matching)
-    const rag_risk = matchResult.rag_risk as "green" | "amber" | "red"
-    let rag_status: "green" | "amber" | "red"
-
-    if (rag_parsing === "red" || rag_risk === "red") {
-      rag_status = "red"
-    } else if (rag_parsing === "green" && rag_risk === "green") {
-      rag_status = "green"
-    } else {
-      rag_status = "amber"
-    }
+    // Calculate RAG status using RAG calculator
+    const rag_parsing = calculateClauseRAG(patComparisons)
+    const rag_risk = matchResult.rag_risk as 'green' | 'amber' | 'red'
+    const rag_status = calculateFinalRAG(rag_parsing, rag_risk)
 
     // Add to batch
     batchUpdates.push({
@@ -358,7 +354,7 @@ export async function performP1Reconciliation(
         pre_agreed_comparisons: patComparisons,
         reconciliation_timestamp: new Date().toISOString(),
       },
-      discrepancy_count: rag_status === "red" ? 1 : 0,
+      discrepancy_count: rag_status === 'red' ? 1 : 0,
     })
 
     // Store for second pass (side effects)
@@ -374,8 +370,8 @@ export async function performP1Reconciliation(
   for (const { matchResult, clause, patComparisons, rag_parsing, rag_status } of processedClauses) {
     // Flag low-confidence matches for LCL growth
     const similarityScore = matchResult.similarity_score || 0
-    if (similarityScore < 0.85 && similarityScore > 0) {
-      const priority = similarityScore < 0.5 ? 'critical' : similarityScore < 0.6 ? 'high' : similarityScore < 0.7 ? 'medium' : 'low'
+    if (needsReview(similarityScore)) {
+      const priority = calculateReviewPriority(similarityScore)
 
       await insertReviewQueueItem(supabase, {
         document_id: documentId,
