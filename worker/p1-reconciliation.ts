@@ -26,7 +26,6 @@ export type { IdentityMatchResult, IdentityTermResult } from './types/p1-types'
 // ============ CONFIGURATION ============
 import {
   P1_MODEL,
-  MATCH_REASON_WEIGHTS,
   IDENTITY_TERM_CATEGORIES,
 } from './config/p1-config'
 
@@ -86,11 +85,10 @@ export type { DocumentMetadata, BatchUpdateItem, DiscrepancyInput, ReviewQueueIn
 
 // ============ CLAUSE SELECTOR SERVICE ============
 import {
-  ClauseSelector,
-  buildClauseIndex,
   keywordMatchClause,
   selectTopClausesForTerm,
-  type ClauseIndex,
+  buildClauseIndex,
+  ClauseSelector,
 } from './services/clause-selector'
 
 // Re-export clause selector functions for backward compatibility
@@ -103,166 +101,25 @@ export {
 
 export type { ClauseIndex } from './services/clause-selector'
 
-/**
- * Build batch comparisons list - term-centric approach (top 1-3 clauses per PAT)
- *
- * IDENTITY TERM SHORT-CIRCUIT:
- * Identity terms (Brand Name, Talent Name, Agency, etc.) are handled via direct
- * string matching against the contract text, bypassing GPT comparison. This:
- * - Reduces GPT API calls and latency
- * - Eliminates false negatives from semantic comparison of referential data
- * - Provides instant GREEN/RED determination based on presence check
- *
- * PERFORMANCE OPTIMIZATION:
- * Uses pre-indexed clause lookup (O(1) by type) instead of linear scanning.
- *
- * @param clauses - Extracted clause boundaries from the contract
- * @param matchResults - LCL match results for each clause
- * @param preAgreedTerms - Pre-agreed terms to compare against
- * @param fullContractText - Optional full contract text for identity term matching
- * @returns Comparisons for GPT, term map, and pre-resolved identity results
- */
-function buildBatchComparisons(
-  clauses: ClauseBoundary[],
-  matchResults: ClauseMatchResult[],
-  preAgreedTerms: PreAgreedTerm[],
-  fullContractText?: string
-): {
-  comparisons: BatchComparison[],
-  termComparisonMap: Map<string, BatchComparison[]>,
-  identityResults: Map<string, IdentityTermResult>
-} {
-  const comparisons: BatchComparison[] = []
-  const termComparisonMap = new Map<string, BatchComparison[]>()
-  const identityResults = new Map<string, IdentityTermResult>()
-  let idx = 0
+// ============ SEMANTIC MATCHER SERVICE ============
+import {
+  buildBatchComparisons,
+  selectBestMatchPerTerm,
+  isBetterMatch,
+  calculateRagScore,
+  SemanticMatcher,
+} from './services/semantic-matcher'
 
-  // Build clause index for O(1) lookup (performance optimization)
-  const clauseIndex = buildClauseIndex(clauses, matchResults)
-  const selector = new ClauseSelector()
+// Re-export semantic matcher functions for backward compatibility
+export {
+  buildBatchComparisons,
+  selectBestMatchPerTerm,
+  isBetterMatch,
+  calculateRagScore,
+  SemanticMatcher,
+} from './services/semantic-matcher'
 
-  // For each PAT term, either short-circuit (identity) or build GPT comparison
-  for (const term of preAgreedTerms) {
-    const category = term.normalized_term_category || term.term_category
-
-    // ============ IDENTITY TERM SHORT-CIRCUIT ============
-    // Identity terms (Brand Name, Talent Name, etc.) use direct string matching
-    // instead of GPT semantic comparison
-    if (isIdentityTermCategory(category)) {
-      const expectedValue = term.expected_value || ''
-      const identityMatch = checkIdentityMatch(
-        expectedValue,
-        '', // No specific clause - check against full contract
-        fullContractText
-      )
-
-      const ragParsing = determineIdentityRag(identityMatch, term.is_mandatory)
-      const explanation = generateIdentityExplanation(identityMatch, expectedValue, category)
-
-      identityResults.set(term.id, {
-        termId: term.id,
-        termCategory: category,
-        isMandatory: term.is_mandatory,
-        expectedValue,
-        matchResult: identityMatch,
-        ragParsing,
-        explanation,
-      })
-
-      // Skip GPT comparison for identity terms
-      continue
-    }
-
-    // ============ SEMANTIC TERMS → GPT COMPARISON ============
-    // Use indexed clause selection for O(1) type lookup
-    const candidates = selector.selectForTerm(term, clauseIndex)
-    if (candidates.length === 0) continue
-
-    const termComparisons: BatchComparison[] = []
-
-    for (const { clause, matchResult, matchReason } of candidates) {
-      const comparison: BatchComparison = {
-        idx: idx++,
-        clauseId: clause.id,
-        matchResultId: matchResult.id,
-        termId: term.id,
-        clauseType: clause.clause_type,
-        termCategory: category,
-        isMandatory: term.is_mandatory,
-        clauseContent: clause.content.substring(0, 600), // Truncate for context window
-        termDescription: term.term_description,
-        expectedValue: term.expected_value || 'N/A',
-        matchReason,
-        semanticScore: matchResult.similarity_score || 0,
-      }
-      comparisons.push(comparison)
-      termComparisons.push(comparison)
-    }
-
-    termComparisonMap.set(term.id, termComparisons)
-  }
-
-  return { comparisons, termComparisonMap, identityResults }
-}
-
-// MATCH_REASON_WEIGHTS imported from ./config/p1-config
-
-// Select best match per PAT term (green > amber > red, then by match reason weight, then by confidence)
-function selectBestMatchPerTerm(
-  termComparisonMap: Map<string, BatchComparison[]>,
-  results: Map<number, BatchResult>
-): Map<string, { comparison: BatchComparison, result: BatchResult }> {
-  const bestByTerm = new Map<string, { comparison: BatchComparison, result: BatchResult }>()
-
-  for (const [termId, comparisons] of termComparisonMap) {
-    for (const comparison of comparisons) {
-      const result = results.get(comparison.idx)
-      if (!result) continue
-
-      const existing = bestByTerm.get(termId)
-      if (!existing || isBetterMatch(
-        { result, matchReason: comparison.matchReason },
-        { result: existing.result, matchReason: existing.comparison.matchReason }
-      )) {
-        bestByTerm.set(termId, { comparison, result })
-      }
-    }
-  }
-
-  return bestByTerm
-}
-
-// Compare matches: green > amber > red, then by match reason weight, then by confidence
-function isBetterMatch(
-  a: { result: BatchResult, matchReason: string },
-  b: { result: BatchResult, matchReason: string }
-): boolean {
-  const ragScore = (r: BatchResult) => {
-    if (r.matches && r.severity === "none") return 3  // green
-    if (r.matches && r.severity === "minor") return 2  // amber
-    return 1  // red
-  }
-
-  const scoreA = ragScore(a.result)
-  const scoreB = ragScore(b.result)
-
-  // First compare RAG score
-  if (scoreA !== scoreB) {
-    return scoreA > scoreB
-  }
-
-  // Then compare match reason weight
-  const weightA = MATCH_REASON_WEIGHTS[a.matchReason] ?? 0.5
-  const weightB = MATCH_REASON_WEIGHTS[b.matchReason] ?? 0.5
-  if (weightA !== weightB) {
-    return weightA > weightB
-  }
-
-  // Finally compare confidence
-  return a.result.confidence > b.result.confidence
-}
-
-// calculateTimeout and executeBatchComparison imported from ./adapters/gpt-adapter
+export type { BatchComparisonResult, BestMatchResult } from './services/semantic-matcher'
 
 export async function performP1Reconciliation(
   documentId: string,

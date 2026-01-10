@@ -18,6 +18,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `P1_MAX_TIMEOUT_MS` - Maximum timeout cap (default: 120000)
 
 ### Changed
+- **P1 Reconciliation Phase 6 Refactor** - Extract semantic matcher service
+  - Created `worker/services/semantic-matcher.ts` with:
+    - `buildBatchComparisons()` - Builds GPT comparison list with identity short-circuit
+    - `selectBestMatchPerTerm()` - Selects best match per PAT term
+    - `isBetterMatch()` - Compares matches by RAG score, weight, confidence
+    - `calculateRagScore()` - Converts BatchResult to numeric score
+    - `SemanticMatcher` class for dependency injection
+    - Typed interfaces: `BatchComparisonResult`, `BestMatchResult`
+  - Main file `worker/p1-reconciliation.ts` reduced by additional ~100 lines
+  - All 113 existing tests continue to pass
+
 - **P1 Reconciliation Phase 5 Refactor** - Extract clause selector with Strategy pattern
   - Created `worker/services/clause-selector.ts` with:
     - `ClauseSelectionStrategy` interface for pluggable strategies
