@@ -26,19 +26,8 @@ export type { IdentityMatchResult, IdentityTermResult } from './types/p1-types'
 // ============ CONFIGURATION ============
 import {
   P1_MODEL,
-  NORMALIZATION_MODEL,
-  BATCH_SIZE,
-  MAX_RETRIES,
-  BACKOFF_MULTIPLIER,
-  MAX_BACKOFF_MS,
-  BASE_TIMEOUT_MS,
-  PER_COMPARISON_MS,
-  MAX_TIMEOUT_MS,
-  CLAUSE_SELECTION_THRESHOLD,
   MATCH_REASON_WEIGHTS,
-  TERM_TO_CLAUSE_MAP,
   IDENTITY_TERM_CATEGORIES,
-  KEYWORD_MAP,
 } from './config/p1-config'
 
 // Re-export for backward compatibility
@@ -95,95 +84,24 @@ import {
 // Re-export database types for backward compatibility
 export type { DocumentMetadata, BatchUpdateItem, DiscrepancyInput, ReviewQueueInput } from './adapters/database-adapter'
 
-// Types imported from ./types/p1-types
-// Identity functions imported from ./services/identity-matcher
+// ============ CLAUSE SELECTOR SERVICE ============
+import {
+  ClauseSelector,
+  buildClauseIndex,
+  keywordMatchClause,
+  selectTopClausesForTerm,
+  type ClauseIndex,
+} from './services/clause-selector'
 
-// Legacy keyword matching for unmapped term categories
-// Uses KEYWORD_MAP imported from ./config/p1-config
-function keywordMatchClause(term: PreAgreedTerm, clause: ClauseBoundary): boolean {
-  const normalizedClauseType = clause.clause_type.replace(/_/g, ' ').toLowerCase()
-  const termCategory = (term.normalized_term_category || term.term_category).toLowerCase()
-  const termDescription = term.term_description.toLowerCase()
+// Re-export clause selector functions for backward compatibility
+export {
+  keywordMatchClause,
+  selectTopClausesForTerm,
+  buildClauseIndex,
+  ClauseSelector,
+} from './services/clause-selector'
 
-  for (const relatedKeywords of Object.values(KEYWORD_MAP)) {
-    const clauseMatches = relatedKeywords.some((kw) => normalizedClauseType.includes(kw))
-    const termMatches = relatedKeywords.some((kw) =>
-      termCategory.includes(kw) || termDescription.includes(kw)
-    )
-    if (clauseMatches && termMatches) return true
-  }
-  return false
-}
-
-// normalizePatTerms imported from ./adapters/gpt-adapter
-
-// Select top 1-3 clauses for a given PAT term using type mapping
-function selectTopClausesForTerm(
-  term: PreAgreedTerm,
-  clauses: ClauseBoundary[],
-  matchResults: ClauseMatchResult[]
-): ClauseCandidate[] {
-  const category = term.normalized_term_category || term.term_category
-  const mapping = TERM_TO_CLAUSE_MAP[category] || (term.normalized_clause_type
-    ? { primary: [term.normalized_clause_type], fallback: [] }
-    : undefined)
-
-  // Step 1: Filter by primary clause types
-  let candidates: ClauseCandidate[] = []
-  if (mapping?.primary.length) {
-    for (const clause of clauses) {
-      if (!mapping.primary.includes(clause.clause_type)) continue
-      const matchResult = matchResults.find(m => m.clause_boundary_id === clause.id)
-      if (matchResult) {
-        candidates.push({ clause, matchResult, matchReason: 'type_match' })
-      }
-    }
-  }
-
-  // Step 2: Fallback to secondary types if no primary matches
-  if (candidates.length === 0 && mapping?.fallback.length) {
-    for (const clause of clauses) {
-      if (!mapping.fallback.includes(clause.clause_type)) continue
-      const matchResult = matchResults.find(m => m.clause_boundary_id === clause.id)
-      if (matchResult) {
-        candidates.push({ clause, matchResult, matchReason: 'fallback_match' })
-      }
-    }
-  }
-
-  // Step 3: If still empty, use keyword matching for unmapped categories
-  if (candidates.length === 0) {
-    for (const clause of clauses) {
-      if (!keywordMatchClause(term, clause)) continue
-      const matchResult = matchResults.find(m => m.clause_boundary_id === clause.id)
-      if (matchResult) {
-        candidates.push({ clause, matchResult, matchReason: 'semantic_fallback' })
-      }
-    }
-  }
-
-  // Step 3.5: Embedding similarity fallback - use existing similarity_score from matchResults
-  // NO new API calls needed - reuses data from generate-embeddings phase
-  // CLAUSE_SELECTION_THRESHOLD imported from ./config/p1-config
-  if (candidates.length === 0) {
-    const embeddingCandidates = matchResults
-      .filter(m => m.similarity_score && m.similarity_score >= CLAUSE_SELECTION_THRESHOLD)
-      .sort((a, b) => (b.similarity_score || 0) - (a.similarity_score || 0))
-      .slice(0, 3)
-
-    for (const matchResult of embeddingCandidates) {
-      const clause = clauses.find(c => c.id === matchResult.clause_boundary_id)
-      if (clause) {
-        candidates.push({ clause, matchResult, matchReason: 'embedding_similarity' })
-      }
-    }
-  }
-
-  // Step 4: Sort by similarity score, take top 3
-  return candidates
-    .sort((a, b) => (b.matchResult.similarity_score || 0) - (a.matchResult.similarity_score || 0))
-    .slice(0, 3)
-}
+export type { ClauseIndex } from './services/clause-selector'
 
 /**
  * Build batch comparisons list - term-centric approach (top 1-3 clauses per PAT)
@@ -194,6 +112,9 @@ function selectTopClausesForTerm(
  * - Reduces GPT API calls and latency
  * - Eliminates false negatives from semantic comparison of referential data
  * - Provides instant GREEN/RED determination based on presence check
+ *
+ * PERFORMANCE OPTIMIZATION:
+ * Uses pre-indexed clause lookup (O(1) by type) instead of linear scanning.
  *
  * @param clauses - Extracted clause boundaries from the contract
  * @param matchResults - LCL match results for each clause
@@ -215,6 +136,10 @@ function buildBatchComparisons(
   const termComparisonMap = new Map<string, BatchComparison[]>()
   const identityResults = new Map<string, IdentityTermResult>()
   let idx = 0
+
+  // Build clause index for O(1) lookup (performance optimization)
+  const clauseIndex = buildClauseIndex(clauses, matchResults)
+  const selector = new ClauseSelector()
 
   // For each PAT term, either short-circuit (identity) or build GPT comparison
   for (const term of preAgreedTerms) {
@@ -249,7 +174,8 @@ function buildBatchComparisons(
     }
 
     // ============ SEMANTIC TERMS → GPT COMPARISON ============
-    const candidates = selectTopClausesForTerm(term, clauses, matchResults)
+    // Use indexed clause selection for O(1) type lookup
+    const candidates = selector.selectForTerm(term, clauseIndex)
     if (candidates.length === 0) continue
 
     const termComparisons: BatchComparison[] = []
@@ -265,7 +191,7 @@ function buildBatchComparisons(
         isMandatory: term.is_mandatory,
         clauseContent: clause.content.substring(0, 600), // Truncate for context window
         termDescription: term.term_description,
-        expectedValue: term.expected_value || "N/A",
+        expectedValue: term.expected_value || 'N/A',
         matchReason,
         semanticScore: matchResult.similarity_score || 0,
       }

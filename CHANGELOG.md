@@ -18,6 +18,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `P1_MAX_TIMEOUT_MS` - Maximum timeout cap (default: 120000)
 
 ### Changed
+- **P1 Reconciliation Phase 5 Refactor** - Extract clause selector with Strategy pattern
+  - Created `worker/services/clause-selector.ts` with:
+    - `ClauseSelectionStrategy` interface for pluggable strategies
+    - `TypeMatchStrategy` - Primary clause type matching
+    - `FallbackTypeStrategy` - Fallback clause type matching
+    - `KeywordStrategy` - Keyword-based matching for unmapped categories
+    - `EmbeddingStrategy` - Embedding similarity fallback
+    - `ClauseSelector` class orchestrating strategy chain
+    - `buildClauseIndex()` for O(1) clause lookup by type (performance optimization)
+    - `ClauseIndex` interface for pre-indexed clause data
+  - Main file `worker/p1-reconciliation.ts` reduced by additional ~70 lines
+  - Performance improvement: O(1) clause type lookup vs O(n) linear scan
+  - All 113 existing tests continue to pass
+
 - **P1 Reconciliation Phase 4 Refactor** - Extract database adapter
   - Created `worker/adapters/database-adapter.ts` with:
     - `fetchDocument()`, `fetchPreAgreedTerms()`, `fetchClauses()`, `fetchMatchResults()`
