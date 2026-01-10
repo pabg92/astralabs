@@ -18,6 +18,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `P1_MAX_TIMEOUT_MS` - Maximum timeout cap (default: 120000)
 
 ### Changed
+- **P1 Reconciliation Phase 8 Refactor** - Final cleanup and orchestrator slim-down
+  - Created `worker/services/result-processor.ts` with:
+    - `processIdentityResults()` - Persist identity term matches and create discrepancies
+    - `groupClauseUpdates()` - Group best matches by clause/matchResult
+    - `prepareBatchUpdates()` - Prepare batch update payloads with RAG calculation
+    - `processSideEffects()` - Handle review queue and discrepancy creation
+    - `processMissingTerms()` - Detect and flag missing mandatory terms
+    - `getMatchedTermIdsFromResults()` - Extract matched term IDs from results
+    - `ResultProcessor` class for dependency injection
+  - Rewrote `worker/p1-reconciliation.ts` as clean 227-line orchestrator:
+    - 10 clearly labeled steps with single responsibility
+    - Pure orchestration: fetch → normalize → compare → persist → return
+    - 84% reduction from original 1,386 lines
+  - All 113 existing tests continue to pass
+
 - **P1 Reconciliation Phase 7 Refactor** - Extract RAG calculator service
   - Created `worker/services/rag-calculator.ts` with:
     - `calculateTermRAG()` - Single GPT result → RAG status
