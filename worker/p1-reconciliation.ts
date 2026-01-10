@@ -46,6 +46,24 @@ import {
 // Re-export for backward compatibility
 export { IDENTITY_TERM_CATEGORIES } from './config/p1-config'
 
+// ============ IDENTITY MATCHER SERVICE ============
+import {
+  isIdentityTermCategory,
+  normalizeForIdentityMatch,
+  checkIdentityMatch,
+  determineIdentityRag,
+  generateIdentityExplanation,
+} from './services/identity-matcher'
+
+// Re-export identity functions for backward compatibility
+export {
+  isIdentityTermCategory,
+  normalizeForIdentityMatch,
+  checkIdentityMatch,
+  determineIdentityRag,
+  generateIdentityExplanation,
+} from './services/identity-matcher'
+
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
@@ -70,152 +88,7 @@ async function callWithBackoff<T>(
 }
 
 // Types imported from ./types/p1-types
-
-// TERM_TO_CLAUSE_MAP and IDENTITY_TERM_CATEGORIES imported from ./config/p1-config
-
-/**
- * Check if a term category is an identity term (requires presence check, not semantic comparison)
- * @param category - The term category to check
- * @returns true if this is an identity term category
- */
-export function isIdentityTermCategory(category: string): boolean {
-  return IDENTITY_TERM_CATEGORIES.has(category) ||
-         IDENTITY_TERM_CATEGORIES.has(category.toLowerCase().trim())
-}
-
-/**
- * Normalize text for identity matching (case-insensitive, whitespace-normalized)
- * @param text - The text to normalize
- * @returns Normalized lowercase text with condensed whitespace
- */
-export function normalizeForIdentityMatch(text: string): string {
-  return text.toLowerCase().replace(/\s+/g, ' ').trim()
-}
-
-// IdentityMatchResult and IdentityTermResult exported from ./types/p1-types
-
-/**
- * Check if contract text contains the expected identity value
- * Uses multiple matching strategies: exact, normalized, and partial
- *
- * @param expectedValue - The value expected from the PAT (e.g., "Nike")
- * @param clauseContent - The content of a specific clause to search
- * @param fullContractText - Optional full contract text for broader search
- * @returns IdentityMatchResult with match details
- */
-export function checkIdentityMatch(
-  expectedValue: string,
-  clauseContent: string,
-  fullContractText?: string
-): IdentityMatchResult {
-  // Handle empty/missing expected values
-  if (!expectedValue || expectedValue.trim() === '' || expectedValue === 'N/A') {
-    return { matches: false, matchType: 'absent', confidence: 0 }
-  }
-
-  const normalizedExpected = normalizeForIdentityMatch(expectedValue)
-  const normalizedClause = normalizeForIdentityMatch(clauseContent)
-  const normalizedFullText = fullContractText
-    ? normalizeForIdentityMatch(fullContractText)
-    : normalizedClause
-
-  // Check 1: Exact match in clause content
-  if (normalizedClause.includes(normalizedExpected)) {
-    return {
-      matches: true,
-      matchType: 'exact',
-      confidence: 1.0,
-      foundValue: expectedValue
-    }
-  }
-
-  // Check 2: Exact match in full contract text (if provided)
-  if (fullContractText && normalizedFullText.includes(normalizedExpected)) {
-    return {
-      matches: true,
-      matchType: 'exact',
-      confidence: 0.95,
-      foundValue: expectedValue
-    }
-  }
-
-  // Check 3: Partial/fuzzy match (e.g., "Nike" matches in "Nike Inc" or "Nike Corporation")
-  // Only check significant words (length > 2 to skip articles)
-  const expectedWords = normalizedExpected.split(' ').filter(w => w.length > 2)
-  if (expectedWords.length > 0) {
-    const foundWords = expectedWords.filter(w => normalizedFullText.includes(w))
-    const matchRatio = foundWords.length / expectedWords.length
-
-    // Require at least 70% word match for partial
-    if (matchRatio >= 0.7) {
-      return {
-        matches: true,
-        matchType: 'partial',
-        confidence: matchRatio * 0.8, // Reduce confidence for partial matches
-        foundValue: foundWords.join(' ')
-      }
-    }
-  }
-
-  // No match found
-  return { matches: false, matchType: 'absent', confidence: 0 }
-}
-
-/**
- * Determine RAG status for an identity term match
- * - Exact/normalized match → GREEN
- * - Partial match → AMBER (needs human review)
- * - Absent + mandatory → RED
- * - Absent + non-mandatory → AMBER
- *
- * @param match - The identity match result
- * @param isMandatory - Whether this term is mandatory
- * @returns RAG status color
- */
-export function determineIdentityRag(
-  match: IdentityMatchResult,
-  isMandatory: boolean
-): 'green' | 'amber' | 'red' {
-  switch (match.matchType) {
-    case 'exact':
-      return 'green'
-    case 'normalized':
-      return 'green'
-    case 'partial':
-      return 'amber' // Partial match needs human review
-    case 'absent':
-      return isMandatory ? 'red' : 'amber'
-    default:
-      return 'amber'
-  }
-}
-
-/**
- * Generate a human-readable explanation for an identity term match
- *
- * @param match - The identity match result
- * @param expectedValue - The expected value from the PAT
- * @param category - The term category (e.g., "Brand Name")
- * @returns Explanation string (max 15 words to match GPT output format)
- */
-export function generateIdentityExplanation(
-  match: IdentityMatchResult,
-  expectedValue: string,
-  category: string
-): string {
-  switch (match.matchType) {
-    case 'exact':
-      return `${category} "${expectedValue}" found in contract`
-    case 'normalized':
-      return `${category} "${expectedValue}" found (case-insensitive)`
-    case 'partial':
-      return `Partial match: expected "${expectedValue}", found "${match.foundValue}"`
-    case 'absent':
-      return `${category} "${expectedValue}" not found in contract`
-    default:
-      return `Unable to verify ${category}`
-  }
-}
+// Identity functions imported from ./services/identity-matcher
 
 // Legacy keyword matching for unmapped term categories
 // Uses KEYWORD_MAP imported from ./config/p1-config

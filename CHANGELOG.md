@@ -18,6 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `P1_MAX_TIMEOUT_MS` - Maximum timeout cap (default: 120000)
 
 ### Changed
+- **P1 Reconciliation Phase 2 Refactor** - Extract identity matcher service
+  - Created `worker/services/identity-matcher.ts` with:
+    - Standalone functions: `isIdentityTermCategory()`, `normalizeForIdentityMatch()`,
+      `checkIdentityMatch()`, `determineIdentityRag()`, `generateIdentityExplanation()`
+    - `IdentityMatcher` class with `processTerm()`, `processIdentityTerms()`, `filterSemanticTerms()`
+  - Main file `worker/p1-reconciliation.ts` reduced by additional ~130 lines
+  - Re-exports maintained for backward compatibility
+  - All 113 existing tests continue to pass
+
 - **P1 Reconciliation Phase 1 Refactor** - Extract types and config
   - Created `worker/types/p1-types.ts` with all interface definitions
   - Created `worker/config/p1-config.ts` with centralized configuration
