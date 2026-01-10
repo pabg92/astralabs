@@ -18,6 +18,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `P1_MAX_TIMEOUT_MS` - Maximum timeout cap (default: 120000)
 
 ### Changed
+- **P1 Reconciliation Phase 3 Refactor** - Extract GPT adapter
+  - Created `worker/adapters/gpt-adapter.ts` with:
+    - `sleep()`, `calculateTimeout()`, `callWithBackoff()` utility functions
+    - `normalizePatTerms()` for PAT normalization via GPT
+    - `executeBatchComparison()` for batch clause-term comparison
+    - `GPTAdapter` class for dependency injection
+    - Response validation with `parseGPTResponse()` and `validateBatchResult()`
+  - Main file `worker/p1-reconciliation.ts` reduced by additional ~150 lines
+  - All 113 existing tests continue to pass
+
 - **P1 Reconciliation Phase 2 Refactor** - Extract identity matcher service
   - Created `worker/services/identity-matcher.ts` with:
     - Standalone functions: `isIdentityTermCategory()`, `normalizeForIdentityMatch()`,
