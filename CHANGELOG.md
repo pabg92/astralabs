@@ -1,0 +1,76 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Added
+- P1 environment variable configuration for runtime tunability
+  - `P1_MODEL` - GPT model for comparisons (default: gpt-4o)
+  - `P1_NORMALIZATION_MODEL` - Model for PAT normalization (default: gpt-4o-mini)
+  - `P1_BATCH_SIZE` - Comparisons per batch (default: 50)
+  - `P1_MAX_RETRIES` - Retry attempts on rate limit (default: 3)
+  - `P1_BASE_TIMEOUT_MS` - Base timeout (default: 30000)
+  - `P1_PER_COMPARISON_MS` - Additional timeout per comparison (default: 2000)
+  - `P1_MAX_TIMEOUT_MS` - Maximum timeout cap (default: 120000)
+
+### Changed
+- **P1 Reconciliation Phase 1 Refactor** - Extract types and config
+  - Created `worker/types/p1-types.ts` with all interface definitions
+  - Created `worker/config/p1-config.ts` with centralized configuration
+  - Main file `worker/p1-reconciliation.ts` reduced by ~215 lines
+  - All 113 existing tests continue to pass
+
+### Fixed
+- Fixed default `P1_MODEL` from non-existent "gpt-5.1" to valid "gpt-4o"
+- Removed duplicate identity category entries (now normalized on comparison)
+
+## [0.1.0] - 2026-01-10
+
+### Added
+- Initial P1 reconciliation system with two-tier term comparison
+  - Tier 1: Identity terms (string matching) - Brand Name, Talent Name, Agency, etc.
+  - Tier 2: Semantic terms (GPT comparison) - Payment Terms, Exclusivity, etc.
+- Batched GPT comparisons (50 per batch) reducing processing time from ~5min to ~15sec
+- Identity term short-circuit bypassing GPT for faster, more accurate results
+- RAG status calculation combining library risk with PAT comparison
+- Idempotency check via `p1_completed_at` column
+- PAT normalization with timestamp-based caching
+- Admin review queue for low-confidence matches (<0.85 similarity)
+- Discrepancy creation for RED status terms
+
+### Infrastructure
+- pgmq queue for document processing
+- Edge Functions: extract-clauses, generate-embeddings, match-and-reconcile
+- Worker polling system with retry logic
+- Batch RPC for efficient database updates
+
+---
+
+## Guiding Principles
+
+### Types of Changes
+- **Added** for new features
+- **Changed** for changes in existing functionality
+- **Deprecated** for soon-to-be removed features
+- **Removed** for now removed features
+- **Fixed** for any bug fixes
+- **Security** for vulnerability fixes
+
+### Commit to Changelog Mapping
+When making commits, add corresponding entries here:
+- `feat:` commits → **Added** or **Changed**
+- `fix:` commits → **Fixed**
+- `refactor:` commits → **Changed** (if behavior changes) or just code cleanup
+- `security:` commits → **Security**
+- `chore:` commits → Usually not logged unless significant
+
+### For AI Agents
+**IMPORTANT:** After completing any significant change (feature, fix, refactor):
+1. Add an entry under `[Unreleased]` in the appropriate category
+2. Include file paths affected for traceability
+3. Reference issue numbers if applicable (e.g., "Fixes #123")
+4. Keep descriptions concise but informative

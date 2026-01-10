@@ -2,6 +2,33 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Agent Instructions
+
+**IMPORTANT: Always follow these practices when making changes:**
+
+1. **Update CHANGELOG.md** - After completing any feature, fix, or refactoring:
+   - Add entry under `[Unreleased]` section
+   - Use categories: Added, Changed, Fixed, Removed, Security
+   - Include brief description and file paths affected
+   - Reference issue numbers if applicable
+
+2. **Run Tests** - Before committing changes to worker/:
+   ```bash
+   cd worker && npm test
+   ```
+
+3. **Commit Messages** - Use conventional commits:
+   - `feat:` new features
+   - `fix:` bug fixes
+   - `refactor:` code restructuring
+   - `docs:` documentation changes
+   - `chore:` maintenance tasks
+
+4. **Documentation** - Update relevant docs when changing:
+   - Architecture → update CLAUDE.md
+   - Database schema → update Documentation/2-DATABASE-SCHEMA.md
+   - New environment variables → update CLAUDE.md and .env.example
+
 ## Project Overview
 
 ContractBuddy is an AI-powered contract reconciliation platform for influencer marketing agencies. It uses a **two-tier clause architecture** (LCL + LCSTX) with AI-powered extraction, semantic matching via pgvector, and three-way comparison (Contract vs Pre-Agreed Terms vs Library).
@@ -115,11 +142,38 @@ PAT: "Payment Terms = 30 days" → Find payment_terms clauses → GPT comparison
 | `app/api/` | API routes (deals, reconciliation, admin) |
 | `components/ui/` | shadcn/ui components (60+) |
 | `lib/supabase/` | Supabase clients (browser + server) |
+| `lib/constants/` | Centralized constants (thresholds, categories) |
 | `worker/` | Document processing worker (pgmq poller) |
 | `supabase/functions/` | Edge Functions (extract, embed, match) |
 | `supabase/migrations/` | Database migrations (000-100+) |
 | `e2e/` | Playwright E2E tests |
 | `types/database.ts` | Supabase generated types |
+
+### Worker Structure (P1 Reconciliation)
+
+The worker uses a modular architecture for maintainability:
+
+```
+worker/
+├── p1-reconciliation.ts      # Main orchestrator
+├── p1-reconciliation.test.ts # Tests (113 tests)
+├── worker.ts                 # Queue poller, pipeline coordinator
+│
+├── types/
+│   └── p1-types.ts           # All P1 interfaces and type definitions
+│
+├── config/
+│   └── p1-config.ts          # Configuration with env overrides
+│
+├── services/                 # (Planned - Phase 2+)
+│   ├── identity-matcher.ts   # Identity term short-circuit
+│   ├── clause-selector.ts    # Strategy pattern matching
+│   ├── semantic-matcher.ts   # GPT comparison orchestration
+│   └── rag-calculator.ts     # RAG status calculation
+│
+└── utils/
+    └── text.ts               # Text processing utilities
+```
 
 ### Main Routes
 
@@ -158,6 +212,15 @@ SUPABASE_SERVICE_ROLE_KEY=
 # AI Services (Edge Functions / Worker)
 OPENAI_API_KEY=
 COHERE_API_KEY=
+
+# P1 Reconciliation (Optional - all have sensible defaults)
+P1_MODEL=gpt-4o                    # GPT model for comparisons
+P1_NORMALIZATION_MODEL=gpt-4o-mini # Model for PAT normalization
+P1_BATCH_SIZE=50                   # Comparisons per GPT batch
+P1_MAX_RETRIES=3                   # Retry attempts on rate limit
+P1_BASE_TIMEOUT_MS=30000           # Base timeout (30s)
+P1_PER_COMPARISON_MS=2000          # Additional timeout per comparison
+P1_MAX_TIMEOUT_MS=120000           # Maximum timeout cap (2min)
 ```
 
 ## Database
@@ -190,9 +253,12 @@ E2E_TESTING=true PLAYWRIGHT_TEST=true npx playwright test e2e/specs/deals/full-d
 
 ## Documentation
 
-Detailed docs in `Documentation/`:
+**Root-level docs:**
+- `CHANGELOG.md` - Version history (Keep a Changelog format)
+- `docs/P1-RECONCILIATION-REFACTOR.md` - P1 refactoring plan and progress
+
+**Detailed docs in `Documentation/`:**
 - `1-ARCHITECTURE.md` - System design and decisions
 - `2-DATABASE-SCHEMA.md` - Full schema with migrations
 - `3-IMPLEMENTATION-GUIDE.md` - Build instructions
 - `4-LCL-CLAUSE-ID-SCHEMA.md` - Clause ID naming conventions
-- `CHANGELOG.md` - Change history
