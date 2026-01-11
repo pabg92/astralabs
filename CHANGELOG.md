@@ -8,6 +8,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Edge Functions Migration Phase 1** - Infrastructure & Shared Utilities
+  - Added `unpdf@0.12.0` and `mammoth@1.6.0` to worker dependencies
+    - PDF text extraction via unpdf
+    - DOCX text extraction via mammoth
+  - Created `worker/utils/retry.ts` - Shared retry utilities:
+    - `withRetry<T>()` - Generic retry with exponential backoff
+    - `callWithBackoff<T>()` - Rate limit (429) handling
+    - `isTransientError()` - Transient error detection
+    - `isRetryableStatus()` - HTTP status code checking
+    - `calculateBackoffDelay()` - Exponential backoff calculation
+    - `TRANSIENT_ERROR_PATTERNS` - Configurable error patterns
+    - `RetryConfig` interface for dependency injection
+  - Created `worker/config/extraction-config.ts` - Extraction/embedding configuration:
+    - `ExtractionConfig` - Chunk size, overlap, timeout, model settings
+    - `EmbeddingConfig` - Model, dimensions, batch size
+    - `SimilarityConfig` - Thresholds for match quality
+    - `QualityConfig` - Extraction quality gates
+    - `estimateTokens()` - Token estimation utility
+    - `MODEL_CONTEXT_LIMITS` - GPT model context sizes
+    - All values configurable via environment variables
+  - Added 34 retry utility tests (`worker/utils/retry.test.ts`)
+  - Added 37 extraction config tests (`worker/config/extraction-config.test.ts`)
+  - Total: 225 tests passing (up from 154)
+
 - P1 environment variable configuration for runtime tunability
   - `P1_MODEL` - GPT model for comparisons (default: gpt-4o)
   - `P1_NORMALIZATION_MODEL` - Model for PAT normalization (default: gpt-4o-mini)
