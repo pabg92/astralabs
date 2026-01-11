@@ -8,6 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Edge Functions Migration Phase 7** - OpenAI Extraction Adapter
+  - Created `worker/adapters/openai-extraction-adapter.ts`:
+    - OpenAI API integration for clause extraction
+    - Single-pass extraction for documents within context limits
+    - Chunked extraction for large documents (auto-fallback)
+    - Line-based and index-based extraction modes
+    - Prompt construction: `buildLineBasedSystemPrompt()`, `buildIndexBasedSystemPrompt()`
+    - Response parsing: `parseClausesResponse()`, `extractClausesArray()`
+    - Extraction path decision based on token estimation
+    - Text chunking with configurable overlap: `splitIntoChunks()`
+    - Clause deduplication for overlapping chunks
+    - `ExtractionError` class with retryable flag and status code
+    - `callOpenAI()` with timeout and abort controller
+    - `callOpenAIWithRetry()` for automatic retry logic
+    - `validateRawClause()` for GPT response validation
+    - `OpenAIExtractionAdapter` class for dependency injection
+    - Factory functions: `createOpenAIExtractionAdapter()`, `createOpenAIExtractionAdapterFromEnv()`
+    - Configuration via environment: `EXTRACTION_MODEL`, `EXTRACTION_MODE`
+    - Telemetry: extraction time, tokens estimated, chunks processed, retries used
+  - Added 56 openai-extraction-adapter unit tests (`worker/adapters/openai-extraction-adapter.test.ts`)
+  - Total: 568 tests passing (up from 512)
+
 - **Edge Functions Migration Phase 6** - Line Mapper & Clause Validator Utilities
   - Created `worker/utils/line-mapper.ts`:
     - Line numbering for GPT extraction: `[0] First line\n[1] Second line...`
