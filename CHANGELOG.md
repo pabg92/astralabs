@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Edge Functions Migration Phase 3** - Storage Download Adapter
+  - Created `worker/adapters/storage-adapter.ts`:
+    - Downloads files from Supabase Storage with bucket fallback (contracts → documents)
+    - Integrates with retry utilities for transient error handling
+    - `StorageError` class for storage-specific errors
+    - `downloadDocument()` - Download by document ID with metadata resolution
+    - `downloadByPath()` - Download by storage path directly
+    - `downloadWithFallback()` - Bucket fallback logic
+    - `downloadWithRetry()` - Retry logic for transient errors
+    - `extractFilenameFromPath()` - Extract filename from storage path
+    - `StorageAdapter` class for dependency injection
+    - Factory function for adapter creation
+  - Added 40 storage-adapter tests (`worker/adapters/storage-adapter.test.ts`)
+  - Total: 300 tests passing (up from 260)
+
 - **Edge Functions Migration Phase 2** - Text Extraction Adapter
   - Created `worker/adapters/text-extractor-adapter.ts`:
     - PDF text extraction via unpdf (handles both string and object return formats)
