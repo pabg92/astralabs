@@ -8,6 +8,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Edge Functions Migration Phase 8** - Gemini Extraction Adapter (replaces OpenAI)
+  - Created `worker/adapters/gemini-extraction-adapter.ts`:
+    - Google Gemini 3 Flash API integration for clause extraction
+    - **No chunking required** - 1M token context handles full contracts in single pass
+    - **5-16x cheaper** than OpenAI ($0.50/1M vs $2.50/1M input tokens)
+    - **3x faster** response times vs GPT-4o
+    - Zod v4 schemas with native `z.toJSONSchema()` for structured output
+    - `ClauseSchema`, `ExtractionResponseSchema` - validated response structure
+    - Line-based extraction with proper line-mapper integration
+    - `buildGeminiSystemPrompt()` - Dynamic prompt with line count
+    - `callGemini()` - API call with timeout and structured output
+    - `callGeminiWithRetry()` - Retry logic for rate limits/server errors
+    - `convertGeminiClausesToIndices()` - Line numbers to character indices
+    - `GeminiExtractionError` class with retryable flag
+    - `GeminiExtractionAdapter` class with `extract()` method
+    - Factory functions: `createGeminiExtractionAdapter()`, `createGeminiExtractionAdapterFromEnv()`
+    - Configuration via environment: `GEMINI_API_KEY`, `GOOGLE_AI_API_KEY`, `EXTRACTION_MODEL`
+    - Telemetry: extraction time, tokens estimated, lines processed, retries used
+    - Validation telemetry from clause-validator integration
+  - Added `@google/genai@1.35.0` and `zod@4.3.5` dependencies
+  - Added 65 gemini-extraction-adapter unit tests (`worker/adapters/gemini-extraction-adapter.test.ts`)
+  - Total: 633 tests passing (up from 568)
+
 - **Edge Functions Migration Phase 7** - OpenAI Extraction Adapter
   - Created `worker/adapters/openai-extraction-adapter.ts`:
     - OpenAI API integration for clause extraction

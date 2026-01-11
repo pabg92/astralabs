@@ -16,6 +16,7 @@ describe('retry utility', () => {
   })
 
   afterEach(() => {
+    vi.clearAllTimers()
     vi.useRealTimers()
   })
 
@@ -201,7 +202,11 @@ describe('retry utility', () => {
     })
 
     it('throws after max retries exhausted', async () => {
-      const fn = vi.fn().mockRejectedValue(new Error('503'))
+      // Use mockRejectedValueOnce to prevent unhandled rejections during cleanup
+      const fn = vi.fn()
+        .mockRejectedValueOnce(new Error('503'))
+        .mockRejectedValueOnce(new Error('503'))
+        .mockRejectedValueOnce(new Error('503'))
       const config = { ...DEFAULT_RETRY_CONFIG, maxRetries: 2 }
 
       const promise = withRetry(fn, config)
@@ -298,7 +303,10 @@ describe('retry utility', () => {
     })
 
     it('uses custom maxRetries', async () => {
-      const fn = vi.fn().mockRejectedValue(new Error('503'))
+      // Use mockRejectedValueOnce to prevent unhandled rejections during cleanup
+      const fn = vi.fn()
+        .mockRejectedValueOnce(new Error('503'))
+        .mockRejectedValueOnce(new Error('503'))
 
       const promise = callWithBackoff(fn, 'test-operation', 1)
       await vi.advanceTimersByTimeAsync(10000)
