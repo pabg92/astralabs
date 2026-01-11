@@ -8,6 +8,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Edge Functions Migration Phase 5** - Similarity Search Adapter
+  - Created `worker/adapters/similarity-adapter.ts`:
+    - Vector similarity search via pgvector `find_similar_clauses_v2` RPC
+    - RAG risk calculation: GREEN (>=0.75), AMBER (0.60-0.75), RED (<0.60)
+    - Match category classification: auto_merge (>=0.92), review_required (0.85-0.92), unique (<0.85)
+    - `SimilarityError` class with retryable flag
+    - `findSimilarClauses()` - Single embedding similarity search
+    - `findSimilarClausesWithRetry()` - With retry logic
+    - `calculateRagRisk()` - Threshold-based RAG status calculation
+    - `prepareClauseMatchResult()` - Format for clause_match_results storage
+    - `batchSimilaritySearch()` - Batch processing with progress callback
+    - `SimilarityAdapter` class for dependency injection
+    - Factory function: `createSimilarityAdapter()`
+  - Created `supabase/migrations/20260111000001_add_find_similar_clauses_v2.sql`:
+    - RPC function that accepts text-formatted embedding (easier from JavaScript)
+    - Same functionality as find_similar_clauses but with string parameter
+  - Added 42 similarity-adapter unit tests (`worker/adapters/similarity-adapter.test.ts`)
+  - Added 12 similarity-adapter integration tests (`worker/adapters/similarity-adapter.integration.test.ts`)
+    - Tests against real Supabase database when connected
+    - Verifies RPC function works with real embeddings
+    - Validates RAG risk calculation with actual similarity scores
+  - Total: 378 tests passing (up from 335)
+
 - **Edge Functions Migration Phase 4** - Embedding Adapter
   - Created `worker/adapters/embedding-adapter.ts`:
     - Generates vector embeddings via OpenAI API (text-embedding-3-large)
