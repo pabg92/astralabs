@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Edge Functions Migration Phase 2** - Text Extraction Adapter
+  - Created `worker/adapters/text-extractor-adapter.ts`:
+    - PDF text extraction via unpdf (handles both string and object return formats)
+    - DOCX text extraction via mammoth
+    - Plain text extraction via TextDecoder
+    - MIME type detection helpers (isPdfMimeType, isDocxMimeType, isPlainTextMimeType)
+    - Text sanitization (removes null bytes, preserves whitespace)
+    - `extractFromBuffer()` and `extractFromBlob()` main functions
+    - `TextExtractorAdapter` class for dependency injection
+    - Factory function and default instance export
+  - Added 35 text-extractor-adapter tests (`worker/adapters/text-extractor-adapter.test.ts`)
+  - Total: 260 tests passing (up from 225)
+
 - **Edge Functions Migration Phase 1** - Infrastructure & Shared Utilities
   - Added `unpdf@0.12.0` and `mammoth@1.6.0` to worker dependencies
     - PDF text extraction via unpdf
