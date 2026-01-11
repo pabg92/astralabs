@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Edge Functions Migration Phase 4** - Embedding Adapter
+  - Created `worker/adapters/embedding-adapter.ts`:
+    - Generates vector embeddings via OpenAI API (text-embedding-3-large)
+    - Automatic batching (25 texts per batch, configurable)
+    - Text truncation to 2000 chars (configurable via EMBEDDING_MAX_CHARS)
+    - Retry logic with exponential backoff for rate limits (429) and server errors
+    - `EmbeddingError` class with retryable flag
+    - `generateEmbeddings()` - Batch processing with progress callback
+    - `generateSingleEmbedding()` - Single text embedding
+    - `EmbeddingAdapter` class for dependency injection
+    - Factory functions: `createEmbeddingAdapter()`, `createEmbeddingAdapterFromEnv()`
+  - Added `EMBEDDING_MAX_CHARS` to extraction-config.ts
+  - Added 35 embedding-adapter tests (`worker/adapters/embedding-adapter.test.ts`)
+  - Total: 335 tests passing (up from 300)
+
 - **Edge Functions Migration Phase 3** - Storage Download Adapter
   - Created `worker/adapters/storage-adapter.ts`:
     - Downloads files from Supabase Storage with bucket fallback (contracts → documents)

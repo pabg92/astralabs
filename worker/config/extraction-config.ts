@@ -117,6 +117,14 @@ export const EMBEDDING_BATCH_SIZE = parseInt(
   10
 )
 
+/**
+ * Maximum characters per text for embedding
+ */
+export const EMBEDDING_MAX_CHARS = parseInt(
+  process.env.EMBEDDING_MAX_CHARS || '2000',
+  10
+)
+
 // ============================================================================
 // SIMILARITY THRESHOLDS
 // ============================================================================
@@ -191,6 +199,7 @@ export const EmbeddingConfig = {
   model: EMBEDDING_MODEL,
   dimensions: EMBEDDING_DIMENSIONS,
   batchSize: EMBEDDING_BATCH_SIZE,
+  maxChars: EMBEDDING_MAX_CHARS,
 } as const
 
 export const SimilarityConfig = {
