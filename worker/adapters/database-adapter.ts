@@ -54,6 +54,28 @@ export interface ReviewQueueInput {
   metadata: Record<string, any>
 }
 
+/**
+ * Input for saving extracted clauses to clause_boundaries
+ */
+export interface ExtractedClauseInput {
+  content: string
+  clause_type: string
+  confidence: number
+  start_index: number
+  end_index: number
+  rag_status: RAGStatus
+  section_title?: string
+  summary?: string
+}
+
+/**
+ * Result from saving extracted clauses
+ */
+export interface SaveClausesResult {
+  inserted: number
+  clauses: Array<{ id: string; clause_type: string; confidence: number }>
+}
+
 // ============ STANDALONE FUNCTIONS ============
 
 /**
@@ -317,6 +339,76 @@ export async function insertReviewQueueItem(
 }
 
 /**
+ * Save extracted clauses to clause_boundaries table
+ *
+ * Uses upsert with onConflict to prevent duplicate insertions
+ * for the same document_id + content combination.
+ */
+export async function saveExtractedClauses(
+  supabase: any,
+  documentId: string,
+  tenantId: string,
+  clauses: ExtractedClauseInput[]
+): Promise<SaveClausesResult> {
+  if (clauses.length === 0) {
+    return { inserted: 0, clauses: [] }
+  }
+
+  // Map clauses to database records
+  const clauseRecords = clauses.map((clause) => ({
+    document_id: documentId,
+    tenant_id: tenantId,
+    content: clause.content,
+    clause_type: clause.clause_type,
+    confidence: clause.confidence,
+    parsing_quality: clause.confidence, // Use confidence as parsing quality
+    section_title: clause.section_title || null,
+    start_char: clause.start_index,
+    end_char: clause.end_index,
+    rag_parsing: clause.rag_status,
+    parsing_issues: clause.confidence < 0.7
+      ? [{ issue: 'low_confidence', score: clause.confidence }]
+      : [],
+  }))
+
+  // Upsert clauses (skip duplicates)
+  const { data: insertedClauses, error: insertError } = await supabase
+    .from('clause_boundaries')
+    .upsert(clauseRecords, {
+      onConflict: 'document_id,content',
+      ignoreDuplicates: true,
+    })
+    .select('id, clause_type, confidence')
+
+  if (insertError) {
+    throw new Error(`Failed to save clauses: ${insertError.message}`)
+  }
+
+  return {
+    inserted: insertedClauses?.length || 0,
+    clauses: insertedClauses || [],
+  }
+}
+
+/**
+ * Update document with extracted text
+ */
+export async function updateDocumentExtractedText(
+  supabase: any,
+  documentId: string,
+  extractedText: string
+): Promise<void> {
+  const { error } = await supabase
+    .from('document_repository')
+    .update({ extracted_text: extractedText })
+    .eq('id', documentId)
+
+  if (error) {
+    throw new Error(`Failed to update extracted text: ${error.message}`)
+  }
+}
+
+/**
  * Mark a document's P1 reconciliation as complete
  */
 export async function markP1Complete(
@@ -419,6 +511,27 @@ export class DatabaseAdapter {
    */
   async markP1Complete(documentId: string): Promise<void> {
     return markP1Complete(this.supabase, documentId)
+  }
+
+  /**
+   * Save extracted clauses to clause_boundaries
+   */
+  async saveExtractedClauses(
+    documentId: string,
+    tenantId: string,
+    clauses: ExtractedClauseInput[]
+  ): Promise<SaveClausesResult> {
+    return saveExtractedClauses(this.supabase, documentId, tenantId, clauses)
+  }
+
+  /**
+   * Update document with extracted text
+   */
+  async updateDocumentExtractedText(
+    documentId: string,
+    extractedText: string
+  ): Promise<void> {
+    return updateDocumentExtractedText(this.supabase, documentId, extractedText)
   }
 }
 

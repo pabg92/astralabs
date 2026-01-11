@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Edge Functions Migration Phase 9** - Gemini Worker Integration
+  - Integrated Gemini extraction adapter into `worker/worker.ts` pipeline
+  - **Local extraction** - No more Edge Function calls for clause extraction
+  - Pipeline: Storage download → Text extraction → Gemini extraction → Database save
+  - Automatic fallback to Edge Function if `GEMINI_API_KEY` not set
+  - Added `saveExtractedClauses()` and `updateDocumentExtractedText()` to database adapter
+  - Added `ExtractedClauseInput` and `SaveClausesResult` types
+  - Worker now logs extraction progress with telemetry
+
 - **Edge Functions Migration Phase 8** - Gemini Extraction Adapter (replaces OpenAI)
   - Created `worker/adapters/gemini-extraction-adapter.ts`:
     - Google Gemini 3 Flash API integration for clause extraction

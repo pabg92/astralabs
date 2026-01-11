@@ -1,17 +1,18 @@
 #!/usr/bin/env node
 /**
  * Document Processing Worker
- * Polls pgmq queue and invokes Edge Functions to process documents
+ * Polls pgmq queue and processes documents using local adapters
  *
  * Usage: npm start (from /worker directory)
  *
  * This worker:
  * 1. Polls document_processing_queue using dequeue_document_processing()
- * 2. Invokes extract-clauses Edge Function for each document
- * 3. Invokes generate-embeddings Edge Function after extraction
- * 4. Invokes match-and-reconcile Edge Function to complete the pipeline
- * 5. Runs P1 reconciliation (batched GPT comparison against pre-agreed terms)
- * 6. Updates document status to 'completed' when done
+ * 2. Downloads document and extracts text using local adapters
+ * 3. Extracts clauses using Gemini 3 Flash (1M token context, no chunking)
+ * 4. Invokes generate-embeddings Edge Function after extraction
+ * 5. Invokes match-and-reconcile Edge Function to complete the pipeline
+ * 6. Runs P1 reconciliation (batched GPT comparison against pre-agreed terms)
+ * 7. Updates document status to 'completed' when done
  */
 
 import { createClient } from '@supabase/supabase-js'
@@ -19,6 +20,16 @@ import dotenv from 'dotenv'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { performP1Reconciliation } from './p1-reconciliation.js'
+
+// Local adapters for document processing
+import { createStorageAdapter, type StorageAdapter } from './adapters/storage-adapter.js'
+import { createTextExtractorAdapter, type TextExtractorAdapter } from './adapters/text-extractor-adapter.js'
+import { createGeminiExtractionAdapter, type GeminiExtractionAdapter } from './adapters/gemini-extraction-adapter.js'
+import {
+  saveExtractedClauses,
+  updateDocumentExtractedText,
+  type ExtractedClauseInput,
+} from './adapters/database-adapter.js'
 
 // Resolve paths for ESM
 const __filename = fileURLToPath(import.meta.url)
@@ -79,6 +90,11 @@ class DocumentProcessingWorker {
   private pollInterval = 3000 // 3 seconds
   private edgeFunctionBaseUrl: string
 
+  // Local adapters for document processing
+  private storageAdapter: StorageAdapter
+  private textExtractor: TextExtractorAdapter
+  private geminiExtractor: GeminiExtractionAdapter | null = null
+
   constructor() {
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
     const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -89,6 +105,22 @@ class DocumentProcessingWorker {
 
     this.supabase = createClient(supabaseUrl, supabaseServiceKey)
     this.edgeFunctionBaseUrl = `${supabaseUrl}/functions/v1`
+
+    // Initialize local adapters
+    this.storageAdapter = createStorageAdapter(this.supabase)
+    this.textExtractor = createTextExtractorAdapter()
+
+    // Initialize Gemini extractor if API key is available
+    const geminiApiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_API_KEY
+    if (geminiApiKey) {
+      this.geminiExtractor = createGeminiExtractionAdapter({
+        apiKey: geminiApiKey,
+        model: 'gemini-2.0-flash',
+      })
+      console.log('🤖 Gemini extraction: ENABLED (local adapter)')
+    } else {
+      console.log('⚠️  Gemini extraction: DISABLED (no API key, using Edge Function)')
+    }
 
     console.log('🚀 Document Processing Worker initialized')
     console.log(`📦 Queue: document_processing_queue`)
@@ -185,17 +217,30 @@ class DocumentProcessingWorker {
     try {
       // Step 1: Extract clauses
       console.log('   1️⃣ Extracting clauses...')
-      const extractResult = await this.invokeEdgeFunction('extract-clauses', {
-        document_id,
-        tenant_id,
-        object_path
-      })
+      let clausesExtracted = 0
 
-      if (!extractResult.success) {
-        throw new Error(`Clause extraction failed: ${extractResult.error}`)
+      if (this.geminiExtractor) {
+        // Use local Gemini extraction (preferred)
+        clausesExtracted = await this.extractClausesWithGemini(
+          document_id,
+          tenant_id,
+          object_path
+        )
+      } else {
+        // Fallback to Edge Function
+        const extractResult = await this.invokeEdgeFunction('extract-clauses', {
+          document_id,
+          tenant_id,
+          object_path
+        })
+
+        if (!extractResult.success) {
+          throw new Error(`Clause extraction failed: ${extractResult.error}`)
+        }
+        clausesExtracted = extractResult.clauses_extracted || 0
       }
 
-      console.log(`   ✅ Extracted ${extractResult.clauses_extracted || 0} clauses`)
+      console.log(`   ✅ Extracted ${clausesExtracted} clauses`)
 
       // Heartbeat: Extend visibility timeout after step 1
       await this.extendVisibilityTimeout(msg.msg_id)
@@ -372,6 +417,85 @@ class DocumentProcessingWorker {
       // Log but don't fail - worker can continue, just risk redelivery
       console.warn(`   ⚠️ Failed to extend VT for msg ${msgId}:`, error.message)
     }
+  }
+
+  /**
+   * Extract clauses using local Gemini adapter
+   *
+   * Pipeline:
+   * 1. Download document from Supabase Storage
+   * 2. Extract raw text (PDF/DOCX/TXT)
+   * 3. Call Gemini 3 Flash for clause extraction
+   * 4. Save extracted clauses to clause_boundaries
+   * 5. Save extracted text to document_repository
+   *
+   * @returns Number of clauses extracted
+   */
+  private async extractClausesWithGemini(
+    documentId: string,
+    tenantId: string,
+    objectPath: string
+  ): Promise<number> {
+    if (!this.geminiExtractor) {
+      throw new Error('Gemini extractor not initialized')
+    }
+
+    // Step 1: Download document from storage
+    console.log(`      📥 Downloading document...`)
+    const downloadResult = await this.storageAdapter.downloadByPath(objectPath)
+
+    if (!downloadResult.buffer) {
+      throw new Error(`Failed to download document: empty buffer`)
+    }
+
+    // Step 2: Extract raw text from document
+    console.log(`      📝 Extracting text (${downloadResult.mimeType})...`)
+    const textResult = await this.textExtractor.extractFromBuffer(
+      downloadResult.buffer,
+      downloadResult.mimeType
+    )
+
+    if (!textResult.text || textResult.text.length < 100) {
+      throw new Error(`Extracted text too short (${textResult.text?.length || 0} chars)`)
+    }
+
+    console.log(`      📊 Text extracted: ${textResult.text.length} chars, ${textResult.extractionMethod}`)
+
+    // Step 3: Extract clauses using Gemini
+    console.log(`      🤖 Calling Gemini for clause extraction...`)
+    const extractionResult = await this.geminiExtractor.extract(textResult.text)
+
+    const invalidCount = extractionResult.validation.clauses_returned - extractionResult.validation.clauses_valid
+    console.log(`      📈 Gemini extracted ${extractionResult.clauses.length} clauses in ${extractionResult.telemetry.extractionTimeMs}ms`)
+    console.log(`      📈 Validation: ${extractionResult.validation.clauses_valid} valid, ${invalidCount} invalid`)
+
+    // Step 4: Save extracted clauses to database
+    if (extractionResult.clauses.length > 0) {
+      const clauseInputs: ExtractedClauseInput[] = extractionResult.clauses.map(clause => ({
+        content: clause.content,
+        clause_type: clause.clause_type,
+        confidence: clause.confidence,
+        start_index: clause.start_index,
+        end_index: clause.end_index,
+        rag_status: clause.rag_status,
+        section_title: clause.section_title,
+        summary: clause.summary,
+      }))
+
+      const saveResult = await saveExtractedClauses(
+        this.supabase,
+        documentId,
+        tenantId,
+        clauseInputs
+      )
+
+      console.log(`      💾 Saved ${saveResult.inserted} clauses to database`)
+    }
+
+    // Step 5: Save extracted text to document_repository
+    await updateDocumentExtractedText(this.supabase, documentId, textResult.text)
+
+    return extractionResult.clauses.length
   }
 }
 
