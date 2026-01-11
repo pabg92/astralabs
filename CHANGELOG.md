@@ -8,6 +8,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Edge Functions Migration Phase 6** - Line Mapper & Clause Validator Utilities
+  - Created `worker/utils/line-mapper.ts`:
+    - Line numbering for GPT extraction: `[0] First line\n[1] Second line...`
+    - `LineMapping` interface with lineNumber, startChar, endChar, content
+    - `LineNumberedDocument` interface for prepared documents
+    - `prepareLineNumberedDocument()` - Splits text and creates line map
+    - `convertLinesToIndices()` - Converts GPT line numbers to character indices
+    - `getLineForCharIndex()`, `getCharRangeForLine()` - Lookup utilities
+    - `getContentForLineRange()` - Extract content by line range
+    - `findLineStart()`, `findLineEnd()` - Line boundary detection
+    - `LineMapper` class for dependency injection
+    - Factory function: `createLineMapper()`
+  - Created `worker/utils/clause-validator.ts`:
+    - Word boundary snapping: `snapToWordBoundary()` - Prevents mid-word splits
+    - Sentence boundary detection: `findSentenceStart()`, `findSentenceEnd()`
+    - Sentence snapping: `snapToSentenceBoundary()` - Adaptive window expansion
+    - List item detection: `findListItemStart()` - Bullet/numbered items
+    - Header detection: `isLikelyHeader()` - ALL CAPS, numbered, colon-ending
+    - Header trimming: `trimLeadingHeaders()` - Removes section headers
+    - Forced boundaries: `forceValidBoundaries()` - Aggressive expansion
+    - Clause validation: `validateClauseIndices()` - Bounds, length, overlap
+    - Telemetry: `ValidationTelemetry`, `SnapTelemetry` interfaces
+    - RAG validation: `validateRagStatus()` - Normalize green/amber/red
+    - `ClauseValidator` class for dependency injection
+    - Factory function: `createClauseValidator()`
+  - Added 54 line-mapper unit tests (`worker/utils/line-mapper.test.ts`)
+  - Added 80 clause-validator unit tests (`worker/utils/clause-validator.test.ts`)
+  - Total: 512 tests passing (up from 378)
+
 - **Edge Functions Migration Phase 5** - Similarity Search Adapter
   - Created `worker/adapters/similarity-adapter.ts`:
     - Vector similarity search via pgvector `find_similar_clauses_v2` RPC
