@@ -175,6 +175,7 @@ export function isRetryableGeminiError(error: unknown): boolean {
   if (error instanceof GeminiExtractionError) return error.retryable
 
   const message = String((error as Error)?.message || error || '')
+  const errorName = (error as Error)?.name || ''
 
   // Rate limiting
   if (/rate.?limit|429|too.?many|quota/i.test(message)) return true
@@ -184,6 +185,10 @@ export function isRetryableGeminiError(error: unknown): boolean {
 
   // Timeout
   if (/timeout|ETIMEDOUT|aborted|deadline/i.test(message)) return true
+
+  // Network errors (fetch failed, connection reset, etc.)
+  if (/fetch.?failed|ECONNRESET|ECONNREFUSED|ENOTFOUND|network|socket/i.test(message)) return true
+  if (errorName === 'TypeError' && /fetch/i.test(message)) return true
 
   return false
 }
