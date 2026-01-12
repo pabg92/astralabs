@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Clause text not updating after accepting redline** - Clause card/inline view now shows accepted proposed text
+  - After accepting an AI-suggested redline, the clause displays the revised text instead of original
+  - Original text preserved in `originalText` field for audit trail and reports
+  - File: `app/reconciliation/page.tsx`
+
 - **React version mismatch** - Aligned `react` and `react-dom` to same version (19.2.0)
   - Was causing Vercel build failures: "Incompatible React versions"
   - Pinned both packages to explicit `19.2.0` instead of `latest`/`^19.2.3`

@@ -102,6 +102,7 @@ interface Clause {
   id: number
   clauseBoundaryId?: string // Database ID for API calls
   text: string
+  originalText?: string // Preserved when redline is accepted, for audit trail
   status: ClauseStatus
   summary: string
   confidence: number
@@ -858,6 +859,20 @@ function ReconciliationContent() {
             ),
           }
         })
+
+        // 2b. Update clause text to show accepted proposed_text
+        const acceptedRedline = redlinesByClause[clauseBoundaryId]?.find(r => r.id === redlineId)
+        if (acceptedRedline?.proposed_text) {
+          setClauses(prev => prev.map(c =>
+            c.clauseBoundaryId === clauseBoundaryId
+              ? {
+                  ...c,
+                  originalText: c.originalText || c.text, // Preserve original only if not already set
+                  text: acceptedRedline.proposed_text,
+                }
+              : c
+          ))
+        }
       }
 
       // 3. Approve the clause
