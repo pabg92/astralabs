@@ -96,7 +96,7 @@ export class GeminiVisionAdapter {
     }
     this.client = new GoogleGenAI({ apiKey: config.apiKey })
     this.model = config.model || 'gemini-3-flash-preview' // 64K output token limit
-    this.temperature = config.temperature || 0.2
+    this.temperature = config.temperature ?? 0 // Deterministic for consistent extraction
     this.timeoutMs = config.timeoutMs || 120000 // 2 minutes default
   }
 
