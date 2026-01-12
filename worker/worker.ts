@@ -25,6 +25,7 @@ import { performP1Reconciliation } from './p1-reconciliation.js'
 import { createStorageAdapter, type StorageAdapter } from './adapters/storage-adapter.js'
 import { createTextExtractorAdapter, type TextExtractorAdapter } from './adapters/text-extractor-adapter.js'
 import { createGeminiExtractionAdapter, type GeminiExtractionAdapter } from './adapters/gemini-extraction-adapter.js'
+import { createGeminiVisionAdapter, type GeminiVisionAdapter } from './adapters/gemini-vision-adapter.js'
 import {
   saveExtractedClauses,
   updateDocumentExtractedText,
@@ -94,6 +95,7 @@ class DocumentProcessingWorker {
   private storageAdapter: StorageAdapter
   private textExtractor: TextExtractorAdapter
   private geminiExtractor: GeminiExtractionAdapter | null = null
+  private geminiVisionAdapter: GeminiVisionAdapter | null = null
 
   constructor() {
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
@@ -110,14 +112,19 @@ class DocumentProcessingWorker {
     this.storageAdapter = createStorageAdapter(this.supabase)
     this.textExtractor = createTextExtractorAdapter()
 
-    // Initialize Gemini extractor if API key is available
+    // Initialize Gemini extractors if API key is available
     const geminiApiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_API_KEY
     if (geminiApiKey) {
       this.geminiExtractor = createGeminiExtractionAdapter({
         apiKey: geminiApiKey,
         model: 'gemini-2.0-flash',
       })
+      this.geminiVisionAdapter = createGeminiVisionAdapter({
+        apiKey: geminiApiKey,
+        model: 'gemini-3-flash-preview', // 64K output token limit
+      })
       console.log('🤖 Gemini extraction: ENABLED (local adapter)')
+      console.log('👁️  Gemini Vision: ENABLED (fallback for scanned PDFs)')
     } else {
       console.log('⚠️  Gemini extraction: DISABLED (no API key, using Edge Function)')
     }
@@ -426,9 +433,10 @@ class DocumentProcessingWorker {
    * Pipeline:
    * 1. Download document from Supabase Storage
    * 2. Extract raw text (PDF/DOCX/TXT)
-   * 3. Call Gemini 3 Flash for clause extraction
-   * 4. Save extracted clauses to clause_boundaries
-   * 5. Save extracted text to document_repository
+   * 3. If text extraction fails or returns too little text, fall back to Gemini Vision
+   * 4. Call Gemini for clause extraction (text-based or vision)
+   * 5. Save extracted clauses to clause_boundaries
+   * 6. Save extracted text to document_repository (if available)
    *
    * @returns Number of clauses extracted
    */
@@ -449,28 +457,88 @@ class DocumentProcessingWorker {
       throw new Error(`Failed to download document: empty buffer`)
     }
 
-    // Step 2: Extract raw text from document
-    console.log(`      📝 Extracting text (${downloadResult.mimeType})...`)
-    const textResult = await this.textExtractor.extractFromBuffer(
-      downloadResult.buffer,
-      downloadResult.mimeType
-    )
+    // Keep a copy of the original buffer for Vision fallback
+    // (text extraction may consume/detach the ArrayBuffer)
+    const originalBuffer = downloadResult.buffer.slice(0)
 
-    if (!textResult.text || textResult.text.length < 100) {
-      throw new Error(`Extracted text too short (${textResult.text?.length || 0} chars)`)
+    // Step 2: Try to extract raw text from document
+    console.log(`      📝 Extracting text (${downloadResult.mimeType})...`)
+    let textResult: { text: string; extractionMethod: string } | null = null
+    let useVisionFallback = false
+
+    try {
+      const result = await this.textExtractor.extractFromBuffer(
+        downloadResult.buffer,
+        downloadResult.mimeType
+      )
+
+      if (result.text && result.text.length >= 100) {
+        textResult = { text: result.text, extractionMethod: result.extractionMethod }
+        console.log(`      📊 Text extracted: ${result.text.length} chars, ${result.extractionMethod}`)
+      } else {
+        console.log(`      ⚠️ Text extraction returned only ${result.text?.length || 0} chars`)
+        useVisionFallback = true
+      }
+    } catch (textError) {
+      console.log(`      ⚠️ Text extraction failed: ${(textError as Error).message}`)
+      useVisionFallback = true
     }
 
-    console.log(`      📊 Text extracted: ${textResult.text.length} chars, ${textResult.extractionMethod}`)
+    // Step 3: Fall back to Gemini Vision for scanned PDFs
+    if (useVisionFallback) {
+      if (!this.geminiVisionAdapter) {
+        throw new Error('Text extraction failed and Gemini Vision not available')
+      }
 
-    // Step 3: Extract clauses using Gemini
+      if (downloadResult.mimeType !== 'application/pdf') {
+        throw new Error(`Text extraction failed for non-PDF document (${downloadResult.mimeType})`)
+      }
+
+      console.log(`      👁️ Using Gemini Vision for scanned PDF...`)
+      const visionResult = await this.geminiVisionAdapter.extractFromPdf(originalBuffer)
+
+      console.log(`      📈 Vision extracted ${visionResult.clauses.length} clauses in ${visionResult.telemetry.extractionTimeMs}ms`)
+
+      // Save vision-extracted clauses
+      if (visionResult.clauses.length > 0) {
+        const clauseInputs: ExtractedClauseInput[] = visionResult.clauses.map(clause => ({
+          content: clause.content,
+          clause_type: clause.clause_type,
+          confidence: clause.confidence,
+          start_index: clause.start_index,
+          end_index: clause.end_index,
+          rag_status: clause.rag_status,
+          section_title: clause.section_title,
+          summary: clause.summary,
+        }))
+
+        const saveResult = await saveExtractedClauses(
+          this.supabase,
+          documentId,
+          tenantId,
+          clauseInputs
+        )
+
+        console.log(`      💾 Saved ${saveResult.inserted} clauses to database (via Vision)`)
+      }
+
+      // For vision extraction, we don't have extracted text to save
+      // but we can reconstruct it from clauses for display purposes
+      const reconstructedText = visionResult.clauses.map(c => c.content).join('\n\n')
+      await updateDocumentExtractedText(this.supabase, documentId, reconstructedText)
+
+      return visionResult.clauses.length
+    }
+
+    // Step 4: Extract clauses using text-based Gemini (normal path)
     console.log(`      🤖 Calling Gemini for clause extraction...`)
-    const extractionResult = await this.geminiExtractor.extract(textResult.text)
+    const extractionResult = await this.geminiExtractor.extract(textResult!.text)
 
     const invalidCount = extractionResult.validation.clauses_returned - extractionResult.validation.clauses_valid
     console.log(`      📈 Gemini extracted ${extractionResult.clauses.length} clauses in ${extractionResult.telemetry.extractionTimeMs}ms`)
     console.log(`      📈 Validation: ${extractionResult.validation.clauses_valid} valid, ${invalidCount} invalid`)
 
-    // Step 4: Save extracted clauses to database
+    // Step 5: Save extracted clauses to database
     if (extractionResult.clauses.length > 0) {
       const clauseInputs: ExtractedClauseInput[] = extractionResult.clauses.map(clause => ({
         content: clause.content,
@@ -493,8 +561,8 @@ class DocumentProcessingWorker {
       console.log(`      💾 Saved ${saveResult.inserted} clauses to database`)
     }
 
-    // Step 5: Save extracted text to document_repository
-    await updateDocumentExtractedText(this.supabase, documentId, textResult.text)
+    // Step 6: Save extracted text to document_repository
+    await updateDocumentExtractedText(this.supabase, documentId, textResult!.text)
 
     return extractionResult.clauses.length
   }
