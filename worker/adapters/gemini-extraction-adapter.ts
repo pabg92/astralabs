@@ -190,6 +190,9 @@ export function isRetryableGeminiError(error: unknown): boolean {
   if (/fetch.?failed|ECONNRESET|ECONNREFUSED|ENOTFOUND|network|socket/i.test(message)) return true
   if (errorName === 'TypeError' && /fetch/i.test(message)) return true
 
+  // JSON parsing errors (truncated response from Gemini)
+  if (/unterminated|unexpected.?end|JSON|parse/i.test(message)) return true
+
   return false
 }
 
@@ -374,10 +377,11 @@ export async function callGemini(
       const validated = ExtractionResponseSchema.parse(parsed)
       return validated
     } catch (parseError) {
+      // JSON parse errors are often transient (truncated responses) - mark as retryable
       throw new GeminiExtractionError(
         `Failed to parse Gemini response: ${(parseError as Error).message}`,
         'PARSE_ERROR',
-        false
+        true  // Retryable - Gemini sometimes returns truncated JSON
       )
     }
   } catch (error) {

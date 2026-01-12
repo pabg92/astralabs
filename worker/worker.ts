@@ -162,7 +162,8 @@ class DocumentProcessingWorker {
     }
 
     if (!messages || messages.length === 0) {
-      // No messages to process
+      // No messages to process (only log occasionally to avoid spam)
+      if (Math.random() < 0.1) console.log('⏳ Polling... (no messages)')
       return
     }
 

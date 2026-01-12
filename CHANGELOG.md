@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Database schema fix** - Removed `rag_parsing` from `clause_boundaries` insert
+  - Column exists in `clause_match_results`, not `clause_boundaries`
+  - Was causing "Could not find the 'rag_parsing' column" errors
+  - File: `worker/adapters/database-adapter.ts`
+
+- **Gemini JSON parse errors now retryable** - Truncated responses from Gemini are retried
+  - JSON parse errors (unterminated string, unexpected end) marked as retryable
+  - Prevents false DLQ archival for transient API issues
+  - File: `worker/adapters/gemini-extraction-adapter.ts`
+
+### Added
+- **Queue helper functions** - SQL migration for worker queue operations
+  - `delete_queue_message(queue_name, msg_id)` - Delete after successful processing
+  - `archive_queue_message(queue_name, msg_id)` - Archive to DLQ on failure
+  - File: `supabase/migrations/100_add_queue_helper_functions.sql`
+
 ### Changed
 - **Gemini 3 Flash Upgrade** - Now using `gemini-3-flash-preview` (latest)
   - 1M token context, $0.50/$3 per 1M tokens

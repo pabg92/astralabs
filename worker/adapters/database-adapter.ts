@@ -355,6 +355,7 @@ export async function saveExtractedClauses(
   }
 
   // Map clauses to database records
+  // Note: rag_parsing belongs to clause_match_results, not clause_boundaries
   const clauseRecords = clauses.map((clause) => ({
     document_id: documentId,
     tenant_id: tenantId,
@@ -365,7 +366,6 @@ export async function saveExtractedClauses(
     section_title: clause.section_title || null,
     start_char: clause.start_index,
     end_char: clause.end_index,
-    rag_parsing: clause.rag_status,
     parsing_issues: clause.confidence < 0.7
       ? [{ issue: 'low_confidence', score: clause.confidence }]
       : [],
