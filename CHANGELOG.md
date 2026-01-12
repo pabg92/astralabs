@@ -8,8 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Gemini 3 Flash Upgrade** - Now using `gemini-3-flash-preview` (latest)
+  - 1M token context, $0.50/$3 per 1M tokens
+  - Built-in reasoning with thinking levels
+  - Faster extraction (59s vs 105s on test contract)
+
 - **Gemini Extraction Prompt Improvements** - Edge case handling for talent manager use cases
-  - Upgraded model from `gemini-2.0-flash` to `gemini-2.5-flash`
+  - Upgraded model from `gemini-2.0-flash` to `gemini-3-flash-preview`
   - Added detailed clause type descriptions with influencer-specific examples
   - Added edge case rules:
     - Morality vs warranty classification (conduct clauses now correctly typed)
