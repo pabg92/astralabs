@@ -19,6 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - File: `worker/adapters/gemini-extraction-adapter.ts`
 
 ### Added
+- **Dev Testing Routes** - Quick contract testing without manual form filling
+  - `/dev/upload` - Quick upload: auto-creates deal + sample PATs, redirects to reconciliation
+  - `/dev/process` - Direct extraction: see raw Gemini extraction results without deal creation
+  - `POST /api/dev/quick-upload` - Creates deal, uploads file, triggers processing pipeline
+  - `POST /api/dev/extract` - Extracts clauses directly from PDF/DOCX, returns JSON results
+  - Protected: Returns 403 in production (`NODE_ENV=production`)
+  - Files: `app/dev/upload/`, `app/dev/process/`, `app/api/dev/`, `middleware.ts`
+
 - **Public Changelog Page** - View all changes at `/changelog`
   - Accessible without authentication
   - Parses CHANGELOG.md and displays with professional UI

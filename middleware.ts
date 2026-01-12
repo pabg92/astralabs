@@ -7,6 +7,7 @@ const isPublicRoute = createRouteMatcher([
   '/sign-up(.*)',
   '/api/webhooks(.*)',
   '/changelog',
+  '/dev(.*)',  // Dev routes (protected by NODE_ENV check in API routes)
 ])
 
 // Bypass auth for E2E testing
