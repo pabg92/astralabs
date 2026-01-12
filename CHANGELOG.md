@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Gemini Extraction Prompt Improvements** - Edge case handling for talent manager use cases
+  - Upgraded model from `gemini-2.0-flash` to `gemini-2.5-flash`
+  - Added detailed clause type descriptions with influencer-specific examples
+  - Added edge case rules:
+    - Morality vs warranty classification (conduct clauses now correctly typed)
+    - Negative clause capture ("no expenses" → `expenses` type)
+    - Section header hints for classification
+  - Added type selection priority to reduce `miscellaneous` usage
+  - Test results on C9.pdf: morality_clause 0→4, expenses 0→1, total clauses 28→43
+
 ### Added
 - **Edge Functions Migration Phase 9** - Gemini Worker Integration
   - Integrated Gemini extraction adapter into `worker/worker.ts` pipeline
