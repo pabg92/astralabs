@@ -276,6 +276,11 @@ SPLITTING RULES (each becomes separate clause):
 2. Each numbered item (1., 2., a)) = separate clause
 3. Different obligations joined by "and shall" / "and must" = split
 4. Different actors ("Influencer must" vs "Brand shall") = split
+5. CRITICAL - "Representations and Warranties" sections:
+   - Split by each lettered sub-item: (a), (b), (c), (d), etc.
+   - Each sub-item becomes its OWN clause with appropriate type
+   - Example: "(d) Morals" sub-item → separate morality_clause
+   - Do NOT combine entire R&W section into one warranty clause
 
 CLAUSE TYPES - Use the most specific match:
 ${CLAUSE_TYPE_GUIDE}
