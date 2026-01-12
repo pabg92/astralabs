@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **React version mismatch** - Aligned `react` and `react-dom` to same version (19.2.0)
+  - Was causing Vercel build failures: "Incompatible React versions"
+  - Pinned both packages to explicit `19.2.0` instead of `latest`/`^19.2.3`
+  - File: `package.json`
+
+- **pnpm lockfile sync** - Updated `pnpm-lock.yaml` for Vercel deployment
+  - Vercel uses pnpm, local dev was using npm causing lockfile drift
+  - Added new dependencies: `@google/genai`, `mammoth`, `unpdf`
+
 - **Database schema fix** - Removed `rag_parsing` from `clause_boundaries` insert
   - Column exists in `clause_match_results`, not `clause_boundaries`
   - Was causing "Could not find the 'rag_parsing' column" errors
