@@ -20,8 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Morality vs warranty classification (conduct clauses now correctly typed)
     - Negative clause capture ("no expenses" → `expenses` type)
     - Section header hints for classification
+  - Added explicit R&W splitting guidance (split by sub-items a, b, c, d)
   - Added type selection priority to reduce `miscellaneous` usage
-  - Test results on C9.pdf: morality_clause 0→4, expenses 0→1, total clauses 28→43
+  - Test results on C9.pdf: morality_clause now correctly extracted from R&W sections
 
 ### Added
 - **Edge Functions Migration Phase 9** - Gemini Worker Integration
