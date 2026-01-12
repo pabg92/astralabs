@@ -19,6 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - File: `worker/adapters/gemini-extraction-adapter.ts`
 
 ### Added
+- **Public Changelog Page** - View all changes at `/changelog`
+  - Accessible without authentication
+  - Parses CHANGELOG.md and displays with professional UI
+  - Color-coded category badges (Added=green, Fixed=amber, etc.)
+  - Version cards with dates and grouped changes
+  - Files: `app/changelog/`, `lib/changelog/`, `middleware.ts`
+
 - **Queue helper functions** - SQL migration for worker queue operations
   - `delete_queue_message(queue_name, msg_id)` - Delete after successful processing
   - `archive_queue_message(queue_name, msg_id)` - Archive to DLQ on failure
