@@ -11,13 +11,13 @@ const DEV_USER_ID = '00000000-0000-0000-0000-000000000002'
  * Quick upload endpoint for dev testing - creates deal + PATs + uploads document
  * in one step without requiring auth or manual form filling.
  *
- * Protected: Only works in non-production environments
+ * Protected: Requires ENABLE_DEV_ROUTES=true environment variable
  */
 export async function POST(request: NextRequest) {
-  // Block in production
-  if (process.env.NODE_ENV === 'production') {
+  // Block unless explicitly enabled
+  if (process.env.ENABLE_DEV_ROUTES !== 'true') {
     return NextResponse.json(
-      { error: 'Dev routes disabled in production' },
+      { error: 'Dev routes not enabled. Set ENABLE_DEV_ROUTES=true to enable.' },
       { status: 403 }
     )
   }

@@ -9,13 +9,13 @@ import { GoogleGenAI } from '@google/genai'
  * Direct extraction endpoint for dev testing - extracts clauses from a PDF/DOCX
  * without creating a deal or saving to database. Just returns raw extraction results.
  *
- * Protected: Only works in non-production environments
+ * Protected: Requires ENABLE_DEV_ROUTES=true environment variable
  */
 export async function POST(request: NextRequest) {
-  // Block in production
-  if (process.env.NODE_ENV === 'production') {
+  // Block unless explicitly enabled
+  if (process.env.ENABLE_DEV_ROUTES !== 'true') {
     return NextResponse.json(
-      { error: 'Dev routes disabled in production' },
+      { error: 'Dev routes not enabled. Set ENABLE_DEV_ROUTES=true to enable.' },
       { status: 403 }
     )
   }
