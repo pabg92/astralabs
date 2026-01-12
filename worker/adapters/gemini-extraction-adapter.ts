@@ -1,11 +1,12 @@
 /**
  * Gemini Extraction Adapter
  * Handles clause extraction via Google Gemini 3 Flash API for contract documents
+ * See: https://ai.google.dev/gemini-api/docs/gemini-3
  *
  * Benefits over OpenAI:
  * - 1M token context window (vs 128K) - no chunking needed
- * - 5-16x cheaper ($0.50/1M input vs $2.50/1M)
- * - 3x faster response times
+ * - Cheaper pricing ($0.50/$3 per 1M tokens for Gemini 3 Flash)
+ * - Built-in reasoning with thinking levels
  * - Native Zod v4 JSON schema support
  */
 
@@ -45,8 +46,9 @@ export type RagStatus = 'green' | 'amber' | 'red'
 
 /**
  * Gemini model options
+ * See: https://ai.google.dev/gemini-api/docs/gemini-3
  */
-export type GeminiModel = 'gemini-2.5-flash' | 'gemini-2.5-pro' | 'gemini-2.0-flash'
+export type GeminiModel = 'gemini-3-flash-preview' | 'gemini-3-pro-preview' | 'gemini-2.5-flash'
 
 /**
  * Extracted clause with all metadata (final output)
@@ -604,6 +606,6 @@ export function createGeminiExtractionAdapterFromEnv(): GeminiExtractionAdapter 
 
   return new GeminiExtractionAdapter({
     apiKey,
-    model: (process.env.EXTRACTION_MODEL as GeminiModel) || 'gemini-2.5-flash',
+    model: (process.env.EXTRACTION_MODEL as GeminiModel) || 'gemini-3-flash-preview',
   })
 }
