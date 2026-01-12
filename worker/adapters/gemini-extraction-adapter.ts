@@ -46,7 +46,7 @@ export type RagStatus = 'green' | 'amber' | 'red'
 /**
  * Gemini model options
  */
-export type GeminiModel = 'gemini-3-flash' | 'gemini-3-pro' | 'gemini-2.0-flash'
+export type GeminiModel = 'gemini-2.5-flash' | 'gemini-2.5-pro' | 'gemini-2.0-flash'
 
 /**
  * Extracted clause with all metadata (final output)
@@ -191,42 +191,67 @@ export function isRetryableGeminiError(error: unknown): boolean {
 // ============================================================================
 
 /**
- * Clause types for extraction
+ * Clause type definitions with descriptions for the extraction prompt
  */
-const CLAUSE_TYPES = [
-  'payment_terms',
-  'invoicing',
-  'invoicing_obligation',
-  'invoicing_consequence',
-  'exclusivity',
-  'usage_rights',
-  'deliverables',
-  'timeline',
-  'termination',
-  'confidentiality',
-  'liability',
-  'indemnification',
-  'dispute_resolution',
-  'governing_law',
-  'force_majeure',
-  'assignment',
-  'modification',
-  'notice',
-  'intellectual_property',
-  'non_compete',
-  'non_solicitation',
-  'warranty',
-  'compliance',
-  'audit_rights',
-  'data_protection',
-  'insurance',
-  'publicity_rights',
-  'morality_clause',
-  'approval_rights',
-  'expenses',
-  'taxes',
-  'miscellaneous',
-].join(', ')
+const CLAUSE_TYPE_GUIDE = `
+INFLUENCER-SPECIFIC CLAUSES:
+- morality_clause: Talent conduct, reputation, criminal history, behavior that could damage brand
+  EXAMPLES: "Talent represents no criminal record", "shall not engage in conduct that would disparage", "Morals clause"
+  NOTE: Often phrased as warranties - look for "morals", "conduct", "reputation", "criminal", "disparage"
+
+- expenses: Expense reimbursement OR denial of expense coverage - capture BOTH
+  EXAMPLES: "Brand shall reimburse travel expenses", "no obligation for expenses or costs"
+  NOTE: Even "no expenses" clauses should be classified as expenses
+
+- usage_rights: How brand can use talent's content/likeness
+  EXAMPLES: "perpetual license to use Content", "whitelisting rights", "boosting rights", "paid media"
+
+- publicity_rights: Brand's right to publicize the relationship with talent
+  EXAMPLES: "may tag Talent's name", "announce partnership publicly", "press release"
+
+- approval_rights: Talent's right to review/approve content before publication
+  EXAMPLES: "subject to Talent's prior written approval", "24-hour review period", "right to approve"
+
+- deliverables: Specific content talent must create (posts, videos, stories)
+  EXAMPLES: "One (1) TikTok post", "Instagram Story", "YouTube video", "social media content"
+
+- exclusivity: Restrictions on working with competitors
+  EXAMPLES: "shall not promote competing products", "exclusive to Brand in category"
+
+FINANCIAL CLAUSES:
+- payment_terms: Amount, timing, method of payment
+- invoicing: Invoice submission requirements
+- invoicing_obligation: Specific invoicing duties
+- invoicing_consequence: Penalties for invoicing failures
+- taxes: Tax responsibility and withholding
+
+LEGAL/LIABILITY CLAUSES:
+- termination: How contract can be ended, effect of termination, cancellation fees
+- confidentiality: NDA/secrecy obligations
+- liability: Limitation of liability, damage caps
+- indemnification: Protection from third-party claims
+- warranty: Guarantees about work/product quality (NOT talent conduct - that's morality_clause)
+- compliance: FTC disclosure, platform terms, regulatory requirements
+  EXAMPLES: "FTC Endorsement Guidelines", "#ad disclosure", "platform terms of use"
+
+STANDARD CONTRACT CLAUSES:
+- intellectual_property: IP ownership, licensing, work-for-hire
+- timeline: Project milestones, deadlines
+- dispute_resolution: How disputes are handled
+- governing_law: Which jurisdiction's laws apply
+- force_majeure: Excuses for uncontrollable events
+- assignment: Can contract be transferred
+- modification: How contract can be changed
+- notice: How formal notices must be sent
+- non_compete: Restrictions on competing
+- non_solicitation: Cannot poach employees/clients
+- audit_rights: Right to inspect records
+- data_protection: GDPR/privacy compliance
+- insurance: Required insurance coverage
+
+CATCH-ALL (use sparingly):
+- miscellaneous: ONLY for true boilerplate (signatures, counterparts, electronic delivery, entire agreement)
+  NOTE: If uncertain between miscellaneous and a specific type, prefer the specific type`
 
 /**
  * Builds the system prompt for Gemini extraction
@@ -250,8 +275,30 @@ SPLITTING RULES (each becomes separate clause):
 3. Different obligations joined by "and shall" / "and must" = split
 4. Different actors ("Influencer must" vs "Brand shall") = split
 
-CLAUSE_TYPE VALUES (use exactly one):
-${CLAUSE_TYPES}
+CLAUSE TYPES - Use the most specific match:
+${CLAUSE_TYPE_GUIDE}
+
+EDGE CASE RULES:
+1. MORALITY vs WARRANTY:
+   - If clause mentions "morals", "conduct", "reputation", "criminal", "disparage" → morality_clause
+   - Even if phrased as "Talent represents and warrants..." → still morality_clause
+   - warranty is for product/service QUALITY guarantees, NOT personal conduct
+
+2. NEGATIVE CLAUSES - Still capture them:
+   - "No expenses will be paid" → expenses (captures the term's denial)
+   - "No exclusivity" → exclusivity (captures absence of exclusivity)
+   - Capture what the contract SAYS, even if it denies something
+
+3. SECTION HEADERS as hints:
+   - If section is labeled "d. Morals" → clauses inside are morality_clause
+   - Use explicit headers to guide classification
+
+TYPE SELECTION PRIORITY:
+1. Check explicit section headers first (e.g., "d. Morals" → morality_clause)
+2. Look for influencer-specific keywords (deliverables, usage, exclusivity, morals)
+3. Match the PRIMARY obligation, not secondary phrasing
+4. When in doubt between warranty and morality_clause → choose morality_clause
+5. miscellaneous is ONLY for execution/signature boilerplate
 
 RAG_STATUS:
 - "green": Standard clause, no issues expected
@@ -260,7 +307,7 @@ RAG_STATUS:
 
 CRITICAL RULES:
 - Extract EVERY substantive clause - do not skip content
-- Section headers like "PAYMENT TERMS" are NOT clauses
+- Section headers like "PAYMENT TERMS" are NOT clauses themselves
 - start_line and end_line are 0-indexed and inclusive
 - Confidence must be between 0.0 and 1.0
 - If a clause spans lines 5-7, use start_line: 5, end_line: 7`
@@ -557,6 +604,6 @@ export function createGeminiExtractionAdapterFromEnv(): GeminiExtractionAdapter 
 
   return new GeminiExtractionAdapter({
     apiKey,
-    model: (process.env.EXTRACTION_MODEL as GeminiModel) || 'gemini-3-flash',
+    model: (process.env.EXTRACTION_MODEL as GeminiModel) || 'gemini-2.5-flash',
   })
 }
