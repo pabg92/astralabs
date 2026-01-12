@@ -33,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Uses Gemini 3 Flash Preview (`gemini-3-flash-preview`) with 64K output token limit
   - Extracts clauses directly from PDF page images via multimodal API
   - Reconstructs text from extracted clauses for display in reconciliation view
+  - Temperature set to 0 for deterministic, consistent extraction results
   - Files: `worker/adapters/gemini-vision-adapter.ts`, `worker/worker.ts`
 
 - **Dev Testing Routes** - Quick contract testing without manual form filling
