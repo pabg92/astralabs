@@ -11,6 +11,12 @@ type Deal = Database["public"]["Tables"]["deals"]["Row"]
 type PreAgreedTerm = Database["public"]["Tables"]["pre_agreed_terms"]["Row"]
 type Document = Database["public"]["Tables"]["document_repository"]["Row"]
 
+/** Deal with joined relations from Supabase query */
+interface DealQueryResult extends Deal {
+  pre_agreed_terms: PreAgreedTerm[]
+  document_repository: Document[]
+}
+
 interface DealWithRelations extends Deal {
   pre_agreed_terms: PreAgreedTerm[]
   latest_document?: Document | null
@@ -56,7 +62,8 @@ export async function GET(
     }
 
     // Transform to include only latest document
-    const documents = (deal as any).document_repository || []
+    const dealWithDocs = deal as DealQueryResult
+    const documents = dealWithDocs.document_repository || []
     const latestDocument =
       documents.length > 0
         ? documents.reduce((latest: Document, current: Document) => {
@@ -154,14 +161,21 @@ export async function PATCH(
 
       // Insert new terms
       if (terms.length > 0) {
-        const termsToInsert = terms.map((term: any) => ({
+        interface TermInput {
+          term_category: string
+          term_description: string
+          expected_value?: string
+          is_mandatory?: boolean
+          related_clause_types?: string[]
+        }
+        const termsToInsert = (terms as TermInput[]).map((term) => ({
           deal_id: dealId,
           tenant_id: authResult.user.tenantId,
           term_category: term.term_category,
           term_description: term.term_description,
           expected_value: term.expected_value || null,
           is_mandatory: term.is_mandatory !== undefined ? term.is_mandatory : true,
-          related_clause_types: term.related_clause_types?.length > 0
+          related_clause_types: term.related_clause_types?.length
             ? term.related_clause_types
             : null,
         }))

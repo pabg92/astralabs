@@ -13,7 +13,8 @@ import type {
   ClauseMatchResult,
   IdentityTermResult,
   RAGStatus,
-} from '../types/p1-types'
+} from '../types/p1-types.js'
+import type { TypedSupabaseClient } from '../types/supabase.js'
 
 // ============ TYPES ============
 
@@ -82,7 +83,7 @@ export interface SaveClausesResult {
  * Fetch document metadata including extracted text and completion status
  */
 export async function fetchDocument(
-  supabase: any,
+  supabase: TypedSupabaseClient,
   documentId: string
 ): Promise<DocumentMetadata> {
   const { data: document, error } = await supabase
@@ -102,7 +103,7 @@ export async function fetchDocument(
  * Fetch pre-agreed terms for a deal
  */
 export async function fetchPreAgreedTerms(
-  supabase: any,
+  supabase: TypedSupabaseClient,
   dealId: string
 ): Promise<PreAgreedTerm[]> {
   const { data: terms, error } = await supabase
@@ -118,7 +119,7 @@ export async function fetchPreAgreedTerms(
  * Fetch clause boundaries for a document
  */
 export async function fetchClauses(
-  supabase: any,
+  supabase: TypedSupabaseClient,
   documentId: string
 ): Promise<ClauseBoundary[]> {
   const { data: clauses, error } = await supabase
@@ -134,7 +135,7 @@ export async function fetchClauses(
  * Fetch clause match results for a document
  */
 export async function fetchMatchResults(
-  supabase: any,
+  supabase: TypedSupabaseClient,
   documentId: string
 ): Promise<ClauseMatchResult[]> {
   const { data: results, error } = await supabase
@@ -151,7 +152,7 @@ export async function fetchMatchResults(
  * Create a clause match result for an identity term check
  */
 export async function createIdentityMatchResult(
-  supabase: any,
+  supabase: TypedSupabaseClient,
   documentId: string,
   identityResult: IdentityTermResult
 ): Promise<{ id: string } | null> {
@@ -211,7 +212,7 @@ export async function createIdentityMatchResult(
  * Create a clause match result for a missing mandatory term
  */
 export async function createMissingTermResult(
-  supabase: any,
+  supabase: TypedSupabaseClient,
   documentId: string,
   missingTerm: PreAgreedTerm
 ): Promise<{ id: string } | null> {
@@ -252,7 +253,7 @@ export async function createMissingTermResult(
  * @returns Number of successfully updated records
  */
 export async function batchUpdateMatchResults(
-  supabase: any,
+  supabase: TypedSupabaseClient,
   updates: BatchUpdateItem[]
 ): Promise<number> {
   if (updates.length === 0) return 0
@@ -293,7 +294,7 @@ export async function batchUpdateMatchResults(
  * @returns true if created successfully (or already exists)
  */
 export async function createDiscrepancy(
-  supabase: any,
+  supabase: TypedSupabaseClient,
   input: DiscrepancyInput
 ): Promise<boolean> {
   const { error } = await supabase.from('discrepancies').insert({
@@ -316,7 +317,7 @@ export async function createDiscrepancy(
  * @returns true if inserted successfully (or already exists)
  */
 export async function insertReviewQueueItem(
-  supabase: any,
+  supabase: TypedSupabaseClient,
   input: ReviewQueueInput
 ): Promise<boolean> {
   const { error } = await supabase.from('admin_review_queue').insert({
@@ -345,7 +346,7 @@ export async function insertReviewQueueItem(
  * for the same document_id + content combination.
  */
 export async function saveExtractedClauses(
-  supabase: any,
+  supabase: TypedSupabaseClient,
   documentId: string,
   tenantId: string,
   clauses: ExtractedClauseInput[]
@@ -394,7 +395,7 @@ export async function saveExtractedClauses(
  * Update document with extracted text
  */
 export async function updateDocumentExtractedText(
-  supabase: any,
+  supabase: TypedSupabaseClient,
   documentId: string,
   extractedText: string
 ): Promise<void> {
@@ -412,7 +413,7 @@ export async function updateDocumentExtractedText(
  * Mark a document's P1 reconciliation as complete
  */
 export async function markP1Complete(
-  supabase: any,
+  supabase: TypedSupabaseClient,
   documentId: string
 ): Promise<void> {
   const { error } = await supabase
@@ -431,9 +432,9 @@ export async function markP1Complete(
  * DatabaseAdapter class for dependency injection and testing
  */
 export class DatabaseAdapter {
-  private supabase: any
+  private supabase: TypedSupabaseClient
 
-  constructor(supabase: any) {
+  constructor(supabase: TypedSupabaseClient) {
     this.supabase = supabase
   }
 
@@ -538,6 +539,6 @@ export class DatabaseAdapter {
 /**
  * Factory function to create a DatabaseAdapter instance
  */
-export function createDatabaseAdapter(supabase: any): DatabaseAdapter {
+export function createDatabaseAdapter(supabase: TypedSupabaseClient): DatabaseAdapter {
   return new DatabaseAdapter(supabase)
 }

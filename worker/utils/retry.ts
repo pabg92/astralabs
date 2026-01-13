@@ -3,6 +3,8 @@
  * Consolidated from worker.ts and gpt-adapter.ts
  */
 
+import { getErrorMessage, getHttpStatus } from '../types/errors.js'
+
 /**
  * Configuration for retry behavior
  */
@@ -44,12 +46,7 @@ export const TRANSIENT_ERROR_PATTERNS: RegExp[] = [
  * Checks if an error is transient and should be retried
  */
 export function isTransientError(error: unknown): boolean {
-  const errorString = String(
-    (error as any)?.message ||
-    (error as any)?.response?.statusText ||
-    error ||
-    ''
-  )
+  const errorString = getErrorMessage(error)
   return TRANSIENT_ERROR_PATTERNS.some(pattern => pattern.test(errorString))
 }
 
@@ -151,7 +148,7 @@ export async function callWithBackoff<T>(
   }
 
   const shouldRetry = (error: unknown): boolean => {
-    const status = (error as any)?.status || (error as any)?.response?.status
+    const status = getHttpStatus(error)
     return status === 429 || isTransientError(error)
   }
 

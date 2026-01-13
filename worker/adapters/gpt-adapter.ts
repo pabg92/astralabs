@@ -13,7 +13,9 @@ import type {
   NormalizedTerm,
   PreAgreedTerm,
   DeviationSeverity,
-} from '../types/p1-types'
+} from '../types/p1-types.js'
+import type { TypedSupabaseClient } from '../types/supabase.js'
+import { getHttpStatus, isRateLimitError } from '../types/errors.js'
 
 import {
   P1_MODEL,
@@ -62,9 +64,8 @@ export async function callWithBackoff<T>(
 ): Promise<T> {
   try {
     return await fn()
-  } catch (err: any) {
-    const status = err.status || err.response?.status
-    if (status === 429 && retries > 0) {
+  } catch (err: unknown) {
+    if (isRateLimitError(err) && retries > 0) {
       const delay = Math.min(1000 * Math.pow(BACKOFF_MULTIPLIER, MAX_RETRIES - retries), MAX_BACKOFF_MS)
       console.warn(`Rate limited on ${operationName}, retrying in ${delay}ms (${retries} retries left)`)
       await sleep(delay)
@@ -76,15 +77,26 @@ export async function callWithBackoff<T>(
 
 // ============ RESPONSE VALIDATION ============
 
+/** Raw batch result from GPT before validation */
+interface RawBatchResult {
+  idx?: unknown
+  matches?: unknown
+  severity?: unknown
+  explanation?: unknown
+  differences?: unknown
+  key_differences?: unknown
+  confidence?: unknown
+}
+
 /**
  * Validate and normalize a batch result from GPT response
  */
-function validateBatchResult(raw: any): BatchResult | null {
+function validateBatchResult(raw: RawBatchResult): BatchResult | null {
   if (typeof raw?.idx !== 'number') return null
 
   return {
     idx: raw.idx,
-    matches: raw.matches ?? false,
+    matches: typeof raw.matches === 'boolean' ? raw.matches : false,
     severity: validateSeverity(raw.severity),
     explanation: String(raw.explanation || ''),
     differences: Array.isArray(raw.differences)
@@ -99,11 +111,19 @@ function validateBatchResult(raw: any): BatchResult | null {
 /**
  * Validate severity value
  */
-function validateSeverity(value: any): DeviationSeverity {
+function validateSeverity(value: unknown): DeviationSeverity {
   if (value === 'none' || value === 'minor' || value === 'major') {
     return value
   }
   return 'major' // Default to major if invalid
+}
+
+/** Shape of parsed GPT response */
+interface ParsedGPTResponse {
+  results?: RawBatchResult[]
+  comparisons?: RawBatchResult[]
+  idx?: number
+  matches?: boolean
 }
 
 /**
@@ -111,25 +131,31 @@ function validateSeverity(value: any): DeviationSeverity {
  * Handles multiple response formats for robustness
  */
 function parseGPTResponse(content: string): BatchResult[] {
-  const parsed = JSON.parse(content)
+  const parsed: unknown = JSON.parse(content)
 
   // Handle multiple response formats:
   // 1. Array directly: [{idx:0,...}, {idx:1,...}]
   // 2. Object with results key: {results: [...]}
   // 3. Object with comparisons key: {comparisons: [...]}
   // 4. Single object with idx: {idx:0, matches:...}
-  let rawResults: any[]
+  let rawResults: RawBatchResult[]
 
   if (Array.isArray(parsed)) {
-    rawResults = parsed
-  } else if (parsed.results && Array.isArray(parsed.results)) {
-    rawResults = parsed.results
-  } else if (parsed.comparisons && Array.isArray(parsed.comparisons)) {
-    rawResults = parsed.comparisons
-  } else if (typeof parsed.idx === 'number' && typeof parsed.matches === 'boolean') {
-    rawResults = [parsed]
+    rawResults = parsed as RawBatchResult[]
+  } else if (typeof parsed === 'object' && parsed !== null) {
+    const obj = parsed as ParsedGPTResponse
+    if (obj.results && Array.isArray(obj.results)) {
+      rawResults = obj.results
+    } else if (obj.comparisons && Array.isArray(obj.comparisons)) {
+      rawResults = obj.comparisons
+    } else if (typeof obj.idx === 'number' && typeof obj.matches === 'boolean') {
+      rawResults = [obj as RawBatchResult]
+    } else {
+      console.error(`⚠️ Unexpected GPT response format:`, Object.keys(obj))
+      return []
+    }
   } else {
-    console.error(`⚠️ Unexpected GPT response format:`, Object.keys(parsed))
+    console.error(`⚠️ Invalid GPT response type:`, typeof parsed)
     return []
   }
 
@@ -159,7 +185,7 @@ function parseGPTResponse(content: string): BatchResult[] {
 export async function normalizePatTerms(
   terms: PreAgreedTerm[],
   openaiApiKey: string,
-  supabase?: any
+  supabase?: TypedSupabaseClient
 ): Promise<PreAgreedTerm[]> {
   if (!terms.length) return terms
 
@@ -226,7 +252,7 @@ Use the closest known term_category; leave clause_type_guess empty if unsure; ke
           }),
         })
         if (!res.ok) {
-          const err: any = new Error(`OpenAI error ${res.status}`)
+          const err = new Error(`OpenAI error ${res.status}`) as Error & { status: number }
           err.status = res.status
           throw err
         }
@@ -377,7 +403,7 @@ Return JSON {"results":[...]} with exactly ${batch.length} result objects, one f
           })
 
           if (!res.ok) {
-            const error: any = new Error(`OpenAI error ${res.status}`)
+            const error = new Error(`OpenAI error ${res.status}`) as Error & { status: number }
             error.status = res.status
             throw error
           }
@@ -440,7 +466,7 @@ export class GPTAdapter {
   /**
    * Normalize PAT terms
    */
-  async normalizePATs(terms: PreAgreedTerm[], supabase?: any): Promise<PreAgreedTerm[]> {
+  async normalizePATs(terms: PreAgreedTerm[], supabase?: TypedSupabaseClient): Promise<PreAgreedTerm[]> {
     return normalizePatTerms(terms, this.apiKey, supabase)
   }
 

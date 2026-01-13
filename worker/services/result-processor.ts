@@ -18,7 +18,8 @@ import type {
   BatchResult,
   IdentityTermResult,
   RAGStatus,
-} from '../types/p1-types'
+} from '../types/p1-types.js'
+import type { TypedSupabaseClient } from '../types/supabase.js'
 
 import {
   createIdentityMatchResult,
@@ -90,7 +91,7 @@ export interface SemanticProcessingResult {
  * Process identity term results and persist to database
  */
 export async function processIdentityResults(
-  supabase: any,
+  supabase: TypedSupabaseClient,
   documentId: string,
   identityResults: Map<string, IdentityTermResult>
 ): Promise<IdentityProcessingResult> {
@@ -225,7 +226,7 @@ export function prepareBatchUpdates(
  * Process side effects: review queue and discrepancies
  */
 export async function processSideEffects(
-  supabase: any,
+  supabase: TypedSupabaseClient,
   documentId: string,
   processedClauses: ProcessedClause[]
 ): Promise<number> {
@@ -285,7 +286,7 @@ export async function processSideEffects(
  * Find and process missing mandatory terms
  */
 export async function processMissingTerms(
-  supabase: any,
+  supabase: TypedSupabaseClient,
   documentId: string,
   preAgreedTerms: PreAgreedTerm[],
   matchedTermIds: Set<string>
@@ -317,15 +318,26 @@ export async function processMissingTerms(
   return { count: missingTerms.length, discrepanciesCreated }
 }
 
+/** Structure of PAT comparison stored in gpt_analysis */
+interface StoredPATComparison {
+  term_id: string
+  comparison_result?: {
+    matches?: boolean
+  }
+}
+
 /**
  * Get matched term IDs from existing match results
  */
 export function getMatchedTermIdsFromResults(matchResults: ClauseMatchResult[]): Set<string> {
   return new Set(
     matchResults
-      .flatMap((r: any) => r.gpt_analysis?.pre_agreed_comparisons || [])
-      .filter((c: any) => c.comparison_result?.matches)
-      .map((c: any) => c.term_id)
+      .flatMap((r) => {
+        const analysis = r.gpt_analysis as { pre_agreed_comparisons?: StoredPATComparison[] } | null
+        return analysis?.pre_agreed_comparisons || []
+      })
+      .filter((c) => c.comparison_result?.matches)
+      .map((c) => c.term_id)
   )
 }
 
@@ -336,7 +348,7 @@ export function getMatchedTermIdsFromResults(matchResults: ClauseMatchResult[]):
  */
 export class ResultProcessor {
   async processIdentityResults(
-    supabase: any,
+    supabase: TypedSupabaseClient,
     documentId: string,
     identityResults: Map<string, IdentityTermResult>
   ): Promise<IdentityProcessingResult> {
@@ -357,7 +369,7 @@ export class ResultProcessor {
   }
 
   async processSideEffects(
-    supabase: any,
+    supabase: TypedSupabaseClient,
     documentId: string,
     processedClauses: ProcessedClause[]
   ): Promise<number> {
@@ -365,7 +377,7 @@ export class ResultProcessor {
   }
 
   async processMissingTerms(
-    supabase: any,
+    supabase: TypedSupabaseClient,
     documentId: string,
     preAgreedTerms: PreAgreedTerm[],
     matchedTermIds: Set<string>

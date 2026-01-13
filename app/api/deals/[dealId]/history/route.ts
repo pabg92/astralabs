@@ -68,7 +68,18 @@ export async function GET(
     const documentIds = documents?.map(d => d.id) || []
 
     // Fetch clause update history for documents in this deal
-    let clauseChanges: any[] = []
+    interface ClauseChange {
+      id: string
+      version?: number
+      change_type?: string
+      reason_code?: string
+      reason_description?: string
+      old_values?: Record<string, unknown>
+      new_values?: Record<string, unknown>
+      created_at?: string
+      changed_by?: string
+    }
+    let clauseChanges: ClauseChange[] = []
     if (documentIds.length > 0) {
       const { data: changes, error: changeError } = await supabaseServer
         .from("clause_update_history")

@@ -70,7 +70,7 @@ export async function POST(
       )
     }
 
-    const clauseDealId = (clause.document_repository as any)?.deal_id
+    const clauseDealId = (clause.document_repository as { deal_id?: string } | null)?.deal_id
     if (clauseDealId !== dealId) {
       return NextResponse.json(
         { error: "Clause boundary does not belong to the specified deal" },

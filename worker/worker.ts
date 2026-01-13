@@ -20,6 +20,9 @@ import dotenv from 'dotenv'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { performP1Reconciliation } from './p1-reconciliation.js'
+import type { Database } from '../types/database.js'
+import type { TypedSupabaseClient, QueueMessage } from './types/supabase.js'
+import { getErrorMessage, isTransientError as checkTransient } from './types/errors.js'
 
 // Local adapters for document processing
 import { createStorageAdapter, type StorageAdapter } from './adapters/storage-adapter.js'
@@ -38,19 +41,6 @@ const __dirname = path.dirname(__filename)
 
 // Load environment variables from parent directory's .env.local
 dotenv.config({ path: path.resolve(__dirname, '../.env.local') })
-
-interface QueueMessage {
-  msg_id: bigint
-  message: {
-    document_id: string
-    tenant_id: string
-    object_path: string
-    processing_type: string
-    enqueued_at: string
-  }
-  enqueued_at: string
-  vt: string
-}
 
 // Retry configuration
 const RETRY_CONFIG = {
@@ -75,9 +65,8 @@ const TRANSIENT_ERROR_PATTERNS = [
   /service unavailable/i,
 ]
 
-function isTransientError(error: any): boolean {
-  const errorString = String(error?.message || error || '')
-  return TRANSIENT_ERROR_PATTERNS.some(pattern => pattern.test(errorString))
+function isTransientError(error: unknown): boolean {
+  return checkTransient(error)
 }
 
 function calculateBackoffDelay(attempt: number): number {
@@ -86,7 +75,7 @@ function calculateBackoffDelay(attempt: number): number {
 }
 
 class DocumentProcessingWorker {
-  private supabase: any
+  private supabase: TypedSupabaseClient
   private isRunning = false
   private pollInterval = 3000 // 3 seconds
   private edgeFunctionBaseUrl: string
@@ -105,7 +94,7 @@ class DocumentProcessingWorker {
       throw new Error('Missing SUPABASE_URL or SERVICE_ROLE_KEY')
     }
 
-    this.supabase = createClient(supabaseUrl, supabaseServiceKey)
+    this.supabase = createClient<Database>(supabaseUrl, supabaseServiceKey)
     this.edgeFunctionBaseUrl = `${supabaseUrl}/functions/v1`
 
     // Initialize local adapters
@@ -193,10 +182,10 @@ class DocumentProcessingWorker {
         } else {
           console.log(`✅ Message ${msg.msg_id} processed and deleted (document: ${docId})`)
         }
-      } catch (error: any) {
+      } catch (error: unknown) {
         const wasTransient = isTransientError(error)
         const errorType = wasTransient ? 'transient (retries exhausted)' : 'non-retryable'
-        console.error(`❌ Failed to process document ${docId} (msg ${msg.msg_id}) - ${errorType}:`, error?.message || error)
+        console.error(`❌ Failed to process document ${docId} (msg ${msg.msg_id}) - ${errorType}:`, getErrorMessage(error))
 
         // Archive failed message to DLQ
         const { error: archiveError } = await this.supabase.rpc('archive_queue_message', {
@@ -304,10 +293,10 @@ class DocumentProcessingWorker {
             console.log(`   ✅ P1: ${p1Result.p1_comparisons_made} comparisons in ${((p1Result.execution_time_ms || 0) / 1000).toFixed(1)}s`)
             p1Status = 'completed'
           }
-        } catch (err: any) {
+        } catch (err: unknown) {
           console.error(`   ⚠️ P1 comparison failed (non-fatal):`, err)
           p1Status = 'failed'
-          p1Error = err?.message || String(err)
+          p1Error = getErrorMessage(err)
           // Don't throw - P1 is enhancement, not required for document processing
         }
       } else {
@@ -347,7 +336,7 @@ class DocumentProcessingWorker {
     }
   }
 
-  private async invokeEdgeFunction(functionName: string, payload: any) {
+  private async invokeEdgeFunction(functionName: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
     const url = `${this.edgeFunctionBaseUrl}/${functionName}`
     let lastError: Error | null = null
 
@@ -386,14 +375,14 @@ class DocumentProcessingWorker {
 
         return await response.json()
 
-      } catch (error: any) {
-        lastError = error
+      } catch (error: unknown) {
+        lastError = error instanceof Error ? error : new Error(getErrorMessage(error))
 
         // Check if this is a retryable error (network errors, etc.)
         if (isTransientError(error) && attempt < RETRY_CONFIG.maxRetries) {
           const delay = calculateBackoffDelay(attempt)
           console.log(`   ⚠️ ${functionName} failed with transient error (attempt ${attempt + 1}/${RETRY_CONFIG.maxRetries + 1}), retrying in ${delay}ms...`)
-          console.log(`      Error: ${error.message?.substring(0, 100)}...`)
+          console.log(`      Error: ${getErrorMessage(error).substring(0, 100)}...`)
           await this.sleep(delay)
           continue
         }

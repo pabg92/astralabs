@@ -4,7 +4,9 @@
  * Ported from supabase/functions/extract-clauses/index.ts
  */
 
-import { withRetry, isTransientError } from '../utils/retry'
+import { withRetry, isTransientError } from '../utils/retry.js'
+import type { TypedSupabaseClient } from '../types/supabase.js'
+import { getErrorMessage } from '../types/errors.js'
 
 // ============================================================================
 // TYPES
@@ -84,7 +86,7 @@ export function isRetryableStorageError(error: unknown): boolean {
   if (isTransientError(error)) return true
 
   // Check for specific storage error codes that are retryable
-  const errorMessage = String((error as any)?.message || error || '')
+  const errorMessage = getErrorMessage(error)
 
   // Supabase storage may return these for transient issues
   if (/timeout/i.test(errorMessage)) return true
@@ -102,7 +104,7 @@ export function isRetryableStorageError(error: unknown): boolean {
  * Fetches document storage metadata from the database
  */
 export async function fetchDocumentStorageMetadata(
-  supabase: any,
+  supabase: TypedSupabaseClient,
   documentId: string
 ): Promise<DocumentStorageMetadata> {
   const { data, error } = await supabase
@@ -142,7 +144,7 @@ export async function fetchDocumentStorageMetadata(
  * Throws for other errors
  */
 export async function downloadFromBucket(
-  supabase: any,
+  supabase: TypedSupabaseClient,
   bucket: string,
   path: string
 ): Promise<Blob | null> {
@@ -156,8 +158,9 @@ export async function downloadFromBucket(
     if (
       errorMessage.includes('not found') ||
       errorMessage.includes('Object not found') ||
+      error.statusCode === '404' ||
       error.statusCode === 404 ||
-      (error as any).status === 404
+      (error as { status?: number }).status === 404
     ) {
       return null
     }
@@ -179,7 +182,7 @@ export async function downloadFromBucket(
  * Tries primary bucket first, then fallback bucket
  */
 export async function downloadWithFallback(
-  supabase: any,
+  supabase: TypedSupabaseClient,
   path: string,
   config: StorageConfig = DEFAULT_STORAGE_CONFIG
 ): Promise<{ blob: Blob; bucket: 'contracts' | 'documents' }> {
@@ -211,7 +214,7 @@ export async function downloadWithFallback(
  * Downloads a file with retry logic for transient errors
  */
 export async function downloadWithRetry(
-  supabase: any,
+  supabase: TypedSupabaseClient,
   path: string,
   config: StorageConfig = DEFAULT_STORAGE_CONFIG
 ): Promise<{ blob: Blob; bucket: 'contracts' | 'documents' }> {
@@ -243,7 +246,7 @@ export async function downloadWithRetry(
  * @returns StorageDownloadResult with buffer, mimeType, and metadata
  */
 export async function downloadDocument(
-  supabase: any,
+  supabase: TypedSupabaseClient,
   documentId: string,
   config: StorageConfig = DEFAULT_STORAGE_CONFIG
 ): Promise<StorageDownloadResult> {
@@ -281,7 +284,7 @@ export async function downloadDocument(
  * @returns StorageDownloadResult with buffer and metadata
  */
 export async function downloadByPath(
-  supabase: any,
+  supabase: TypedSupabaseClient,
   path: string,
   mimeType?: string,
   config: StorageConfig = DEFAULT_STORAGE_CONFIG
@@ -330,10 +333,10 @@ export function extractFilenameFromPath(path: string): string {
  * Storage Adapter class for dependency injection
  */
 export class StorageAdapter {
-  private supabase: any
+  private supabase: TypedSupabaseClient
   private config: StorageConfig
 
-  constructor(supabase: any, config: StorageConfig = DEFAULT_STORAGE_CONFIG) {
+  constructor(supabase: TypedSupabaseClient, config: StorageConfig = DEFAULT_STORAGE_CONFIG) {
     this.supabase = supabase
     this.config = config
   }
@@ -368,7 +371,7 @@ export class StorageAdapter {
  * Creates a new StorageAdapter instance
  */
 export function createStorageAdapter(
-  supabase: any,
+  supabase: TypedSupabaseClient,
   config?: StorageConfig
 ): StorageAdapter {
   return new StorageAdapter(supabase, config)

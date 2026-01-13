@@ -4,8 +4,15 @@ import { authenticateRequest, internalError } from "@/lib/auth/api-auth"
 import type { Database } from "@/types/database"
 
 type Deal = Database["public"]["Tables"]["deals"]["Row"]
+type DealInsert = Database["public"]["Tables"]["deals"]["Insert"]
 type PreAgreedTerm = Database["public"]["Tables"]["pre_agreed_terms"]["Row"]
 type Document = Database["public"]["Tables"]["document_repository"]["Row"]
+
+/** Deal with joined relations from Supabase query */
+interface DealQueryResult extends Deal {
+  pre_agreed_terms: PreAgreedTerm[]
+  document_repository: Document[]
+}
 
 interface DealWithRelations extends Deal {
   pre_agreed_terms: PreAgreedTerm[]
@@ -47,7 +54,7 @@ export async function GET(request: NextRequest) {
     }
 
     // Transform the response to include only the latest document per deal
-    const dealsWithLatestDoc: DealWithRelations[] = deals.map((deal: any) => {
+    const dealsWithLatestDoc: DealWithRelations[] = (deals as DealQueryResult[]).map((deal) => {
       const documents = deal.document_repository || []
       const latestDocument =
         documents.length > 0
@@ -150,7 +157,7 @@ export async function POST(request: NextRequest) {
         talent_name: talentName,
         value: value ? parseFloat(value) : null,
         currency: currency || "USD",
-        status: (status as any) || "draft",
+        status: (status as DealInsert["status"]) || "draft",
         description,
         tenant_id: tenantId,
         created_by: createdBy,

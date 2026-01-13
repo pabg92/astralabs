@@ -43,6 +43,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Files: `lib/auth/api-auth.ts`, `app/api/**/*.ts`
 
 ### Fixed
+- **Type safety improvements across worker and API routes** - Eliminated ~62 `any` type usages for better type safety
+  - Created `worker/types/supabase.ts` with `TypedSupabaseClient` and table row types
+  - Created `worker/types/errors.ts` with `getErrorMessage()`, `isTransientError()`, and error type guards
+  - Fixed all worker adapters: database, storage, gpt, embedding, similarity
+  - Fixed API routes: deals, reconciliation, monitoring/health
+  - Improved error handling in catch blocks with proper `unknown` type
+  - Files: `worker/types/*.ts`, `worker/adapters/*.ts`, `worker/services/*.ts`, `app/api/**/*.ts`
+
 - **Deal creation failing with invalid UUID error** - `created_by` column expected `user_profiles.id` (UUID) but was receiving Clerk user ID string
   - Added `profileId` to `AuthenticatedUser` interface for FK references
   - `authenticateRequest()` now returns `user_profiles.id` as `profileId`

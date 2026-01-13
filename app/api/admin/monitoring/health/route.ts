@@ -16,10 +16,22 @@ import { authenticateAdmin, internalError } from "@/lib/auth/api-auth"
  * - documents_processed_24h: Count of successfully processed documents in last 24h
  *
  * Caching: 60 second TTL in memory
+ * NOTE: In-memory cache works for serverless with warm starts but won't persist across cold starts.
+ * For production, consider using Redis or database-level caching.
  */
 
-// In-memory cache
-let cachedData: any = null
+/** Health data structure */
+interface HealthData {
+  pending_documents: number
+  processing_documents: number
+  critical_reviews: number
+  errors_last_hour: number
+  avg_execution_ms: number | null
+  documents_processed_24h: number
+}
+
+// In-memory cache (ephemeral in serverless - cleared on cold start)
+let cachedData: HealthData | null = null
 let cacheTimestamp: number = 0
 const CACHE_TTL_MS = 60 * 1000 // 60 seconds
 

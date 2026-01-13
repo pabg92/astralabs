@@ -5,7 +5,8 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { withRetry, isTransientError } from '../utils/retry'
+import { withRetry, isTransientError } from '../utils/retry.js'
+import { getErrorMessage } from '../types/errors.js'
 import {
   SIMILARITY_THRESHOLD_MIN,
   SIMILARITY_THRESHOLD_GREEN,
@@ -157,7 +158,7 @@ export function isRetryableSimilarityError(error: unknown): boolean {
   if (isTransientError(error)) return true
   if (error instanceof SimilarityError) return error.retryable
 
-  const message = String((error as any)?.message || error || '')
+  const message = getErrorMessage(error)
 
   // Database connection errors are retryable
   if (/connection|timeout|ETIMEDOUT/i.test(message)) return true

@@ -4,7 +4,8 @@
  * Ported from supabase/functions/generate-embeddings/index.ts
  */
 
-import { withRetry, isTransientError } from '../utils/retry'
+import { withRetry, isTransientError } from '../utils/retry.js'
+import { getErrorMessage } from '../types/errors.js'
 import {
   EMBEDDING_MODEL,
   EMBEDDING_DIMENSIONS,
@@ -115,7 +116,7 @@ export function isRetryableEmbeddingError(error: unknown): boolean {
   // Check if it's our custom error with retryable flag
   if (error instanceof EmbeddingError) return error.retryable
 
-  const errorMessage = String((error as any)?.message || error || '')
+  const errorMessage = getErrorMessage(error)
 
   // Rate limiting (429) is retryable
   if (/429|rate.?limit/i.test(errorMessage)) return true

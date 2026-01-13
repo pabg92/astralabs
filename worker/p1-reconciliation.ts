@@ -19,7 +19,8 @@ import type {
   BatchResult,
   IdentityTermResult,
   RAGStatus,
-} from './types/p1-types'
+} from './types/p1-types.js'
+import type { TypedSupabaseClient } from './types/supabase.js'
 
 // Re-export types for backward compatibility
 export type { IdentityMatchResult, IdentityTermResult } from './types/p1-types'
@@ -122,7 +123,7 @@ export {
  */
 export async function performP1Reconciliation(
   documentId: string,
-  supabase: any,
+  supabase: TypedSupabaseClient,
   openaiApiKey: string
 ) {
   const startTime = Date.now()
