@@ -49,6 +49,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Fixed: `/api/deals` POST, `/api/deals/[dealId]/upload` POST
   - Files: `lib/auth/api-auth.ts`, `app/api/deals/route.ts`, `app/api/deals/[dealId]/upload/route.ts`
 
+- **Processing progress animation too fast** - Progress reached 100% in ~10s while actual processing takes ~30s
+  - Increased step durations from ~10s total to ~45s total
+  - Substep transitions now scale with parent step duration (min 800ms)
+  - Slower typing effect (35ms vs 20ms) for better readability
+  - File: `components/processing-thoughts.tsx`
+
 - **Global "Back to Deals" link removed from layout** - Link was appearing on all pages including home page
   - Individual pages (reconciliation, deal edit, etc.) have their own contextual back buttons
   - File: `app/layout.tsx`

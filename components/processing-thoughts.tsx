@@ -12,17 +12,17 @@ interface ThoughtStep {
   substeps?: string[]
 }
 
-// Optimized for ~30 second total animation
+// Optimized for ~45 second total animation to match actual processing time
 const processingThoughts: ThoughtStep[] = [
-  { icon: FileText, text: "Receiving contract document...", duration: 800 },
-  { icon: Eye, text: "Scanning document structure", duration: 1000, substeps: ["Detecting page boundaries", "Identifying section headers", "Mapping clause locations"] },
-  { icon: BookOpen, text: "Extracting contractual clauses", duration: 1200, substeps: ["Payment Terms detected", "Deliverables found", "IP Rights identified", "Confidentiality located", "Termination mapped"] },
-  { icon: Database, text: "Invoking Legal Clause Library", duration: 1000, substeps: ["Connecting to LCL", "Loading 260+ templates", "Preparing semantic engine"] },
-  { icon: Brain, text: "Generating embeddings", duration: 1200, substeps: ["Vector encoding", "1024-dim semantic space", "Normalising similarity"] },
-  { icon: Search, text: "P1 Reconciliation", duration: 1400, substeps: ["Matching pre-agreed terms", "Computing similarity", "Finding discrepancies", "Flagging missing clauses"] },
-  { icon: Scale, text: "Analysing risk factors", duration: 1000, substeps: ["Evaluating deviations", "Assessing impact", "Scoring risk levels"] },
-  { icon: Zap, text: "Running GPT analysis", duration: 1200, substeps: ["Generating summaries", "Identifying obligations", "Highlighting review areas"] },
-  { icon: Sparkles, text: "Finalising report", duration: 800, substeps: ["Aggregating results", "Computing RAG statuses", "Preparing interface"] },
+  { icon: FileText, text: "Receiving contract document...", duration: 1500 },
+  { icon: Eye, text: "Scanning document structure", duration: 2000, substeps: ["Detecting page boundaries", "Identifying section headers", "Mapping clause locations"] },
+  { icon: BookOpen, text: "Extracting contractual clauses", duration: 2500, substeps: ["Payment Terms detected", "Deliverables found", "IP Rights identified", "Confidentiality located", "Termination mapped"] },
+  { icon: Database, text: "Invoking Legal Clause Library", duration: 2000, substeps: ["Connecting to LCL", "Loading 260+ templates", "Preparing semantic engine"] },
+  { icon: Brain, text: "Generating embeddings", duration: 3000, substeps: ["Vector encoding", "3072-dim semantic space", "Normalising similarity"] },
+  { icon: Search, text: "P1 Reconciliation", duration: 4000, substeps: ["Matching pre-agreed terms", "Computing similarity", "Finding discrepancies", "Flagging missing clauses"] },
+  { icon: Scale, text: "Analysing risk factors", duration: 2500, substeps: ["Evaluating deviations", "Assessing impact", "Scoring risk levels"] },
+  { icon: Zap, text: "Running GPT analysis", duration: 3500, substeps: ["Generating summaries", "Identifying obligations", "Highlighting review areas"] },
+  { icon: Sparkles, text: "Finalising report", duration: 2000, substeps: ["Aggregating results", "Computing RAG statuses", "Preparing interface"] },
 ]
 
 const didYouKnowFacts = [
@@ -127,7 +127,7 @@ export function ProcessingThoughts({
         clearInterval(typeInterval)
         setIsTyping(false)
       }
-    }, 20) // Faster typing
+    }, 35) // Moderate typing speed for better readability
 
     return () => clearInterval(typeInterval)
   }, [currentStep, currentSubstep])
@@ -146,6 +146,9 @@ export function ProcessingThoughts({
     const hasSubsteps = step.substeps && step.substeps.length > 0
     const isLastSubstep = !hasSubsteps || currentSubstep >= (step.substeps?.length || 0) - 1
 
+    // Substep duration scales with parent step duration for consistent pacing
+    const substepDuration = hasSubsteps ? Math.max(800, Math.floor(step.duration / (step.substeps?.length || 1))) : step.duration
+
     const timer = setTimeout(() => {
       if (hasSubsteps && !isLastSubstep) {
         setCurrentSubstep(prev => prev + 1)
@@ -162,7 +165,7 @@ export function ProcessingThoughts({
           onCompleteRef.current?.()
         }
       }
-    }, hasSubsteps ? 400 : step.duration)
+    }, substepDuration)
 
     return () => clearTimeout(timer)
   }, [isTyping, currentStep, currentSubstep])
