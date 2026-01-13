@@ -43,6 +43,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Files: `lib/auth/api-auth.ts`, `app/api/**/*.ts`
 
 ### Fixed
+- **Global "Back to Deals" link removed from layout** - Link was appearing on all pages including home page
+  - Individual pages (reconciliation, deal edit, etc.) have their own contextual back buttons
+  - File: `app/layout.tsx`
+
 - **Clause text not updating after accepting redline** - Clause card/inline view now shows accepted proposed text
   - After accepting an AI-suggested redline, the clause displays the revised text instead of original
   - Original text preserved in `originalText` field for audit trail and reports
@@ -68,6 +72,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - File: `worker/adapters/gemini-extraction-adapter.ts`
 
 ### Added
+- **Development mode auto-provisioning** - New Clerk users automatically get access in dev environment
+  - When `NODE_ENV=development` and user has no `user_profiles` row, auto-creates one
+  - Assigns to default tenant with admin role for full testing access
+  - File: `lib/auth/api-auth.ts`
+
 - **Gemini Vision Fallback for Scanned PDFs** - Worker now extracts clauses from scanned/image PDFs
   - Falls back to Gemini 3 Flash Vision when text extraction returns <100 chars
   - Uses Gemini 3 Flash Preview (`gemini-3-flash-preview`) with 64K output token limit
