@@ -23,7 +23,7 @@ export async function POST(
     const authResult = await authenticateRequest()
     if (!authResult.success) return authResult.response
 
-    const { userId, tenantId } = authResult.user
+    const { tenantId, profileId } = authResult.user
 
     // Validate deal access
     const dealAccess = await validateDealAccess(authResult.user, dealId)
@@ -82,7 +82,7 @@ export async function POST(
         mime_type: file.type,
         size_bytes: file.size,
         processing_status: "pending",
-        created_by: userId,
+        created_by: profileId,
         version: newVersion,
       })
       .select()

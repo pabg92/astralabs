@@ -92,7 +92,7 @@ export async function POST(request: NextRequest) {
     const authResult = await authenticateRequest()
     if (!authResult.success) return authResult.response
 
-    const { userId, tenantId } = authResult.user
+    const { tenantId, profileId } = authResult.user
 
     const formData = await request.formData()
 
@@ -118,8 +118,8 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Use authenticated user as creator
-    const createdBy = userId
+    // Use authenticated user's profile ID (UUID) as creator for FK reference
+    const createdBy = profileId
 
     // Parse pre-agreed terms
     let terms: Array<{

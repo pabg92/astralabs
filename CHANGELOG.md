@@ -43,6 +43,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Files: `lib/auth/api-auth.ts`, `app/api/**/*.ts`
 
 ### Fixed
+- **Deal creation failing with invalid UUID error** - `created_by` column expected `user_profiles.id` (UUID) but was receiving Clerk user ID string
+  - Added `profileId` to `AuthenticatedUser` interface for FK references
+  - `authenticateRequest()` now returns `user_profiles.id` as `profileId`
+  - Fixed: `/api/deals` POST, `/api/deals/[dealId]/upload` POST
+  - Files: `lib/auth/api-auth.ts`, `app/api/deals/route.ts`, `app/api/deals/[dealId]/upload/route.ts`
+
 - **Global "Back to Deals" link removed from layout** - Link was appearing on all pages including home page
   - Individual pages (reconciliation, deal edit, etc.) have their own contextual back buttons
   - File: `app/layout.tsx`

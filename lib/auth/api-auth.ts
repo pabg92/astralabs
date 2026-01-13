@@ -17,6 +17,7 @@ export interface AuthenticatedUser {
   tenantId: string
   role: UserRole
   email?: string
+  profileId: string // UUID from user_profiles.id for foreign key references
 }
 
 export interface AuthResult {
@@ -45,10 +46,20 @@ export type AuthResponse = AuthResult | AuthError
 export async function authenticateRequest(): Promise<AuthResponse> {
   // E2E testing bypass - return mock user
   if (isE2ETesting) {
-    // Get default tenant for E2E tests
+    // Get default tenant and first user profile for E2E tests
     const { data: tenant } = await supabaseServer
       .from("tenants")
       .select("id")
+      .limit(1)
+      .single()
+
+    const tenantId = tenant?.id || "00000000-0000-0000-0000-000000000001"
+
+    // Get or create an E2E test profile
+    const { data: profile } = await supabaseServer
+      .from("user_profiles")
+      .select("id")
+      .eq("tenant_id", tenantId)
       .limit(1)
       .single()
 
@@ -56,9 +67,10 @@ export async function authenticateRequest(): Promise<AuthResponse> {
       success: true,
       user: {
         userId: "e2e-test-user",
-        tenantId: tenant?.id || "00000000-0000-0000-0000-000000000001",
+        tenantId,
         role: "admin", // E2E tests get admin access
         email: "e2e@test.com",
+        profileId: profile?.id || "00000000-0000-0000-0000-000000000001",
       },
     }
   }
@@ -76,10 +88,10 @@ export async function authenticateRequest(): Promise<AuthResponse> {
     }
   }
 
-  // Look up user profile to get tenant and role
+  // Look up user profile to get tenant, role, and profile ID for FK references
   const { data: userProfile, error: profileError } = await supabaseServer
     .from("user_profiles")
-    .select("tenant_id, role, email")
+    .select("id, tenant_id, role, email")
     .eq("clerk_user_id", userId)
     .single()
 
@@ -97,7 +109,7 @@ export async function authenticateRequest(): Promise<AuthResponse> {
 
       if (defaultTenant) {
         // Create user profile with default tenant
-        const { error: insertError } = await supabaseServer
+        const { data: newProfile, error: insertError } = await supabaseServer
           .from("user_profiles")
           .upsert({
             clerk_user_id: userId,
@@ -106,8 +118,10 @@ export async function authenticateRequest(): Promise<AuthResponse> {
           }, {
             onConflict: "clerk_user_id"
           })
+          .select("id")
+          .single()
 
-        if (!insertError) {
+        if (!insertError && newProfile) {
           return {
             success: true,
             user: {
@@ -115,6 +129,7 @@ export async function authenticateRequest(): Promise<AuthResponse> {
               tenantId: defaultTenant.id,
               role: "admin" as UserRole,
               email: undefined,
+              profileId: newProfile.id,
             },
           }
         }
@@ -139,6 +154,7 @@ export async function authenticateRequest(): Promise<AuthResponse> {
       tenantId: userProfile.tenant_id,
       role: (userProfile.role as UserRole) || "user",
       email: userProfile.email || undefined,
+      profileId: userProfile.id,
     },
   }
 }
