@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from "next/server"
 import { supabaseServer } from "@/lib/supabase/server"
+import {
+  authenticateRequest,
+  validateDealAccess,
+  internalError,
+} from "@/lib/auth/api-auth"
 import type { Database } from "@/types/database"
 
 type Deal = Database["public"]["Tables"]["deals"]["Row"]
@@ -50,6 +55,7 @@ interface ReconciliationData extends Deal {
  * - Match results for each clause
  * - Linked library templates
  * - Reconciliation statistics
+ * Requires authentication and tenant access
  */
 export async function GET(
   request: NextRequest,
@@ -58,12 +64,13 @@ export async function GET(
   try {
     const { dealId } = await params
 
-    if (!dealId) {
-      return NextResponse.json(
-        { error: "Deal ID is required" },
-        { status: 400 }
-      )
-    }
+    // Authenticate user
+    const authResult = await authenticateRequest()
+    if (!authResult.success) return authResult.response
+
+    // Validate deal access
+    const dealAccess = await validateDealAccess(authResult.user, dealId)
+    if (!dealAccess.success) return dealAccess.response
 
     // Fetch deal with pre-agreed terms
     const { data: deal, error: dealError } = await supabaseServer
@@ -325,10 +332,6 @@ export async function GET(
       data: reconciliationData,
     })
   } catch (error) {
-    console.error("Unexpected error in GET /api/reconciliation/[dealId]:", error)
-    return NextResponse.json(
-      { error: "Internal server error", details: String(error) },
-      { status: 500 }
-    )
+    return internalError(error, "GET /api/reconciliation/[dealId]")
   }
 }

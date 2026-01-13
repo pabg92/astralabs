@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from "next/server"
 import { supabaseServer } from "@/lib/supabase/server"
+import {
+  authenticateRequest,
+  validateDealAccess,
+  internalError,
+} from "@/lib/auth/api-auth"
 import type { Database } from "@/types/database"
 
 type ShareTokenInsert = Database["public"]["Tables"]["share_tokens"]["Insert"]
@@ -32,6 +37,7 @@ function generateSlug(dealName: string): string {
 /**
  * POST /api/reconciliation/[dealId]/share
  * Generate a shareable read-only token for a deal
+ * Requires authentication and tenant access
  */
 export async function POST(
   request: NextRequest,
@@ -40,12 +46,15 @@ export async function POST(
   try {
     const { dealId } = await params
 
-    if (!dealId) {
-      return NextResponse.json(
-        { error: "Deal ID is required" },
-        { status: 400 }
-      )
-    }
+    // Authenticate user
+    const authResult = await authenticateRequest()
+    if (!authResult.success) return authResult.response
+
+    // Validate deal access
+    const dealAccess = await validateDealAccess(authResult.user, dealId)
+    if (!dealAccess.success) return dealAccess.response
+
+    const { tenantId } = authResult.user
 
     const body = await request.json()
     const {
@@ -55,10 +64,10 @@ export async function POST(
       branding = {},
     } = body
 
-    // Verify deal exists and get tenant_id + deal_name
+    // Fetch deal details for slug generation
     const { data: deal, error: dealError } = await supabaseServer
       .from("deals")
-      .select("id, tenant_id, deal_name, talent_name")
+      .select("id, title, talent_name")
       .eq("id", dealId)
       .single()
 
@@ -71,7 +80,7 @@ export async function POST(
 
     // Generate short token and slug
     const shortToken = generateShortToken()
-    const dealDisplayName = deal.deal_name || deal.talent_name || 'contract'
+    const dealDisplayName = deal.title || deal.talent_name || 'contract'
     const slug = generateSlug(dealDisplayName)
 
     // If document_id is provided, verify it belongs to this deal
@@ -110,7 +119,7 @@ export async function POST(
       id: shortToken, // Use short token as ID
       deal_id: dealId,
       document_id: document_id || null,
-      tenant_id: deal.tenant_id,
+      tenant_id: tenantId,
       expires_at: expiresAt.toISOString(),
       allowed_actions: allowed_actions,
       branding: {
@@ -175,10 +184,6 @@ export async function POST(
       },
     }, { status: 201 })
   } catch (error) {
-    console.error("Unexpected error in POST /api/reconciliation/[dealId]/share:", error)
-    return NextResponse.json(
-      { error: "Internal server error", details: String(error) },
-      { status: 500 }
-    )
+    return internalError(error, "POST /api/reconciliation/[dealId]/share")
   }
 }

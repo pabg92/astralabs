@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from "next/server"
 import { supabaseServer } from "@/lib/supabase/server"
+import {
+  authenticateRequest,
+  validateDealAccess,
+  internalError,
+} from "@/lib/auth/api-auth"
 import type { Database } from "@/types/database"
 
 type ClauseRedlineInsert = Database["public"]["Tables"]["clause_redlines"]["Insert"]
@@ -12,25 +17,26 @@ const TIMEOUT_MS = 15000 // 15 seconds - gpt-4o-mini is fast
 /**
  * POST /api/reconciliation/[dealId]/redlines/generate
  * Generate an AI-suggested redline for a clause based on pre-agreed terms
+ * Requires authentication and tenant access
  */
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ dealId: string }> }
 ) {
-  console.log("[Redline Generate API] POST request received")
   try {
     const { dealId } = await params
-    console.log("[Redline Generate API] dealId:", dealId)
 
-    if (!dealId) {
-      return NextResponse.json(
-        { error: "Deal ID is required" },
-        { status: 400 }
-      )
-    }
+    // Authenticate user
+    const authResult = await authenticateRequest()
+    if (!authResult.success) return authResult.response
+
+    // Validate deal access
+    const dealAccess = await validateDealAccess(authResult.user, dealId)
+    if (!dealAccess.success) return dealAccess.response
+
+    const { tenantId } = authResult.user
 
     const body = await request.json()
-    console.log("[Redline Generate API] Request body:", JSON.stringify(body, null, 2))
     const {
       clause_boundary_id,
       clause_text,
@@ -47,20 +53,6 @@ export async function POST(
           details: "clause_boundary_id and clause_text are required",
         },
         { status: 400 }
-      )
-    }
-
-    // Verify deal exists and get tenant_id
-    const { data: deal, error: dealError } = await supabaseServer
-      .from("deals")
-      .select("id, tenant_id")
-      .eq("id", dealId)
-      .single()
-
-    if (dealError || !deal) {
-      return NextResponse.json(
-        { error: "Deal not found", details: dealError?.message },
-        { status: 404 }
       )
     }
 
@@ -199,7 +191,7 @@ Guidelines:
       proposed_text: proposedText,
       status: "draft",
       author_id: null, // System-generated (no human author)
-      tenant_id: deal.tenant_id,
+      tenant_id: tenantId,
     }
 
     const { data: redline, error: insertError } = await supabaseServer
@@ -224,11 +216,7 @@ Guidelines:
       { status: 201 }
     )
   } catch (error) {
-    console.error("Unexpected error in POST /api/reconciliation/[dealId]/redlines/generate:", error)
-    return NextResponse.json(
-      { error: "Internal server error", details: String(error) },
-      { status: 500 }
-    )
+    return internalError(error, "POST /api/reconciliation/[dealId]/redlines/generate")
   }
 }
 

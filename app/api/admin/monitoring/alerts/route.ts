@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server"
 import { supabaseServer } from "@/lib/supabase/server"
+import { authenticateAdmin, internalError } from "@/lib/auth/api-auth"
 
 /**
  * Alert Triggers (Query 6.2)
  * Purpose: Identify conditions requiring immediate attention
+ * Requires admin or curator role
  *
  * Alert Types:
  * - stuck_documents: Documents pending/processing for >2 hours (severity: critical)
@@ -21,6 +23,10 @@ const CACHE_TTL_MS = 60 * 1000 // 60 seconds
 
 export async function GET() {
   try {
+    // Authenticate and require admin role
+    const authResult = await authenticateAdmin()
+    if (!authResult.success) return authResult.response
+
     const now = Date.now()
 
     // Check cache validity
@@ -125,14 +131,6 @@ export async function GET() {
     })
 
   } catch (error) {
-    console.error("Unexpected error in GET /api/admin/monitoring/alerts:", error)
-    return NextResponse.json(
-      {
-        success: false,
-        error: "Internal server error",
-        details: String(error)
-      },
-      { status: 500 }
-    )
+    return internalError(error, "GET /api/admin/monitoring/alerts")
   }
 }

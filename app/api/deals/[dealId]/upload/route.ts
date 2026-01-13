@@ -1,10 +1,16 @@
 import { NextRequest, NextResponse } from "next/server"
 import { supabaseServer } from "@/lib/supabase/server"
+import {
+  authenticateRequest,
+  validateDealAccess,
+  internalError,
+} from "@/lib/auth/api-auth"
 
 /**
  * POST /api/deals/[dealId]/upload
  * Attaches a document (invoice/contract) to an existing deal.
- * Expects FormData: file (required), created_by (optional)
+ * Requires authentication and tenant access
+ * Expects FormData: file (required)
  */
 export async function POST(
   request: NextRequest,
@@ -12,23 +18,28 @@ export async function POST(
 ) {
   try {
     const { dealId } = await params
+
+    // Authenticate user
+    const authResult = await authenticateRequest()
+    if (!authResult.success) return authResult.response
+
+    const { userId, tenantId } = authResult.user
+
+    // Validate deal access
+    const dealAccess = await validateDealAccess(authResult.user, dealId)
+    if (!dealAccess.success) return dealAccess.response
+
     const formData = await request.formData()
     const file = formData.get("file") as File | null
-    const createdBy = (formData.get("created_by") as string) || null
-    const demoAuthor = process.env.DEMO_AUTHOR_ID || "00000000-0000-0000-0000-000000000002"
-
-    if (!dealId) {
-      return NextResponse.json({ error: "dealId is required" }, { status: 400 })
-    }
 
     if (!file || file.size === 0) {
       return NextResponse.json({ error: "file is required" }, { status: 400 })
     }
 
-    // Fetch deal to derive tenant, author, and current version
+    // Fetch deal to get current version
     const { data: deal, error: dealError } = await supabaseServer
       .from("deals")
-      .select("id, tenant_id, created_by, version")
+      .select("id, tenant_id, version")
       .eq("id", dealId)
       .single()
 
@@ -39,8 +50,6 @@ export async function POST(
       )
     }
 
-    const tenantId = deal.tenant_id
-    const authorId = createdBy || (deal as any).created_by || demoAuthor
     const currentVersion = deal.version || 1
     const newVersion = currentVersion + 1
 
@@ -73,7 +82,7 @@ export async function POST(
         mime_type: file.type,
         size_bytes: file.size,
         processing_status: "pending",
-        created_by: authorId,
+        created_by: userId,
         version: newVersion,
       })
       .select()
@@ -118,10 +127,6 @@ export async function POST(
       message: `File uploaded for v${newVersion} and queued for processing`,
     })
   } catch (error) {
-    console.error("Unexpected error in POST /api/deals/[dealId]/upload:", error)
-    return NextResponse.json(
-      { error: "Internal server error", details: String(error) },
-      { status: 500 }
-    )
+    return internalError(error, "POST /api/deals/[dealId]/upload")
   }
 }

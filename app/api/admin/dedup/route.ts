@@ -1,34 +1,21 @@
 import { NextRequest, NextResponse } from "next/server"
-import { createClient } from "@supabase/supabase-js"
+import { supabaseServer } from "@/lib/supabase/server"
+import { authenticateAdmin, internalError } from "@/lib/auth/api-auth"
 
 /**
  * GET /api/admin/dedup
  * Lists duplicate clause clusters pending review
+ * Requires admin or curator role
  *
  * Query params:
  * - limit: number of clusters to return (default: 50)
  * - priority: filter by review_priority (high/medium/low)
- *
- * Requires: Service role key for admin access
  */
 export async function GET(request: NextRequest) {
   try {
-    // Verify service role authorization
-    const authHeader = request.headers.get("authorization")
-    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
-
-    if (!authHeader || !authHeader.includes(serviceKey || "")) {
-      return NextResponse.json(
-        { error: "Unauthorized - Service role required" },
-        { status: 401 }
-      )
-    }
-
-    // Initialize Supabase with service role
-    const supabase = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      serviceKey!
-    )
+    // Authenticate and require admin role
+    const authResult = await authenticateAdmin()
+    if (!authResult.success) return authResult.response
 
     // Parse query params
     const { searchParams } = new URL(request.url)
@@ -36,7 +23,7 @@ export async function GET(request: NextRequest) {
     const priority = searchParams.get("priority")
 
     // Query dedup review queue
-    let query = supabase
+    let query = supabaseServer
       .from("v_dedup_review_queue")
       .select("*")
       .order("avg_similarity", { ascending: false })
@@ -57,7 +44,7 @@ export async function GET(request: NextRequest) {
     }
 
     // Get summary statistics
-    const { data: stats } = await supabase.rpc("get_dedup_stats").single()
+    const { data: stats } = await supabaseServer.rpc("get_dedup_stats").single()
 
     return NextResponse.json({
       success: true,
@@ -71,17 +58,14 @@ export async function GET(request: NextRequest) {
       },
     })
   } catch (error) {
-    console.error("Unexpected error in GET /api/admin/dedup:", error)
-    return NextResponse.json(
-      { error: "Internal server error", details: String(error) },
-      { status: 500 }
-    )
+    return internalError(error, "GET /api/admin/dedup")
   }
 }
 
 /**
  * POST /api/admin/dedup
  * Mark a duplicate cluster as reviewed and optionally merge
+ * Requires admin or curator role
  *
  * Body:
  * {
@@ -92,22 +76,9 @@ export async function GET(request: NextRequest) {
  */
 export async function POST(request: NextRequest) {
   try {
-    // Verify service role authorization
-    const authHeader = request.headers.get("authorization")
-    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
-
-    if (!authHeader || !authHeader.includes(serviceKey || "")) {
-      return NextResponse.json(
-        { error: "Unauthorized - Service role required" },
-        { status: 401 }
-      )
-    }
-
-    // Initialize Supabase with service role
-    const supabase = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      serviceKey!
-    )
+    // Authenticate and require admin role
+    const authResult = await authenticateAdmin()
+    if (!authResult.success) return authResult.response
 
     const body = await request.json()
     const { cluster_id, action, primary_clause_id } = body
@@ -134,7 +105,7 @@ export async function POST(request: NextRequest) {
           ? "reviewed_separate"
           : "rejected"
 
-    const { error: updateError } = await supabase
+    const { error: updateError } = await supabaseServer
       .from("clause_deduplication_clusters")
       .update({
         merge_status: newStatus,
@@ -152,7 +123,7 @@ export async function POST(request: NextRequest) {
 
     // If merging, deactivate duplicate clauses
     if (action === "merge") {
-      const { data: cluster } = await supabase
+      const { data: cluster } = await supabaseServer
         .from("clause_deduplication_clusters")
         .select("duplicate_clause_ids")
         .eq("cluster_id", cluster_id)
@@ -165,7 +136,7 @@ export async function POST(request: NextRequest) {
         )
 
         if (clausesToDeactivate.length > 0) {
-          const { error: deactivateError } = await supabase
+          const { error: deactivateError } = await supabaseServer
             .from("legal_clause_library")
             .update({ active: false })
             .in("id", clausesToDeactivate)
@@ -185,10 +156,6 @@ export async function POST(request: NextRequest) {
       action,
     })
   } catch (error) {
-    console.error("Unexpected error in POST /api/admin/dedup:", error)
-    return NextResponse.json(
-      { error: "Internal server error", details: String(error) },
-      { status: 500 }
-    )
+    return internalError(error, "POST /api/admin/dedup")
   }
 }

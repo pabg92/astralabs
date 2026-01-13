@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from "next/server"
 import { supabaseServer } from "@/lib/supabase/server"
+import {
+  authenticateRequest,
+  validateDealAccess,
+  internalError,
+} from "@/lib/auth/api-auth"
 import type { Database } from "@/types/database"
 
 type Deal = Database["public"]["Tables"]["deals"]["Row"]
@@ -14,6 +19,7 @@ interface DealWithRelations extends Deal {
 /**
  * GET /api/deals/[dealId]
  * Returns a single deal with its pre-agreed terms and latest document
+ * Requires authentication and tenant access
  */
 export async function GET(
   request: NextRequest,
@@ -22,6 +28,15 @@ export async function GET(
   try {
     const { dealId } = await params
 
+    // Authenticate user
+    const authResult = await authenticateRequest()
+    if (!authResult.success) return authResult.response
+
+    // Validate deal access
+    const dealAccess = await validateDealAccess(authResult.user, dealId)
+    if (!dealAccess.success) return dealAccess.response
+
+    // Fetch full deal with relations
     const { data: deal, error } = await supabaseServer
       .from("deals")
       .select(`
@@ -62,18 +77,14 @@ export async function GET(
       data: dealWithLatestDoc,
     })
   } catch (error) {
-    console.error("Unexpected error in GET /api/deals/[dealId]:", error)
-    return NextResponse.json(
-      { success: false, error: "Internal server error", details: String(error) },
-      { status: 500 }
-    )
+    return internalError(error, "GET /api/deals/[dealId]")
   }
 }
 
 /**
  * PATCH /api/deals/[dealId]
  * Updates a deal and its pre-agreed terms
- * Expects JSON body with deal fields and optional terms array
+ * Requires authentication and tenant access
  */
 export async function PATCH(
   request: NextRequest,
@@ -81,6 +92,15 @@ export async function PATCH(
 ) {
   try {
     const { dealId } = await params
+
+    // Authenticate user
+    const authResult = await authenticateRequest()
+    if (!authResult.success) return authResult.response
+
+    // Validate deal access
+    const dealAccess = await validateDealAccess(authResult.user, dealId)
+    if (!dealAccess.success) return dealAccess.response
+
     const body = await request.json()
 
     const {
@@ -136,7 +156,7 @@ export async function PATCH(
       if (terms.length > 0) {
         const termsToInsert = terms.map((term: any) => ({
           deal_id: dealId,
-          tenant_id: deal.tenant_id,
+          tenant_id: authResult.user.tenantId,
           term_category: term.term_category,
           term_description: term.term_description,
           expected_value: term.expected_value || null,
@@ -190,17 +210,14 @@ export async function PATCH(
       message: "Deal updated successfully",
     })
   } catch (error) {
-    console.error("Unexpected error in PATCH /api/deals/[dealId]:", error)
-    return NextResponse.json(
-      { success: false, error: "Internal server error", details: String(error) },
-      { status: 500 }
-    )
+    return internalError(error, "PATCH /api/deals/[dealId]")
   }
 }
 
 /**
  * DELETE /api/deals/[dealId]
  * Deletes a deal (soft delete by setting status to 'archived')
+ * Requires authentication and tenant access
  */
 export async function DELETE(
   request: NextRequest,
@@ -209,10 +226,18 @@ export async function DELETE(
   try {
     const { dealId } = await params
 
-    // Soft delete by setting status to archived
+    // Authenticate user
+    const authResult = await authenticateRequest()
+    if (!authResult.success) return authResult.response
+
+    // Validate deal access
+    const dealAccess = await validateDealAccess(authResult.user, dealId)
+    if (!dealAccess.success) return dealAccess.response
+
+    // Soft delete by setting status to cancelled
     const { data: deal, error } = await supabaseServer
       .from("deals")
-      .update({ status: "archived" })
+      .update({ status: "cancelled" })
       .eq("id", dealId)
       .select()
       .single()
@@ -231,10 +256,6 @@ export async function DELETE(
       message: "Deal archived successfully",
     })
   } catch (error) {
-    console.error("Unexpected error in DELETE /api/deals/[dealId]:", error)
-    return NextResponse.json(
-      { success: false, error: "Internal server error", details: String(error) },
-      { status: 500 }
-    )
+    return internalError(error, "DELETE /api/deals/[dealId]")
   }
 }

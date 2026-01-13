@@ -1,11 +1,16 @@
 import { NextRequest, NextResponse } from "next/server"
-import { supabaseServer, createServerClient } from "@/lib/supabase/server"
+import { supabaseServer } from "@/lib/supabase/server"
+import {
+  authenticateRequest,
+  validateDealAccess,
+  internalError,
+} from "@/lib/auth/api-auth"
 
 /**
  * GET /api/reconciliation/[dealId]/pdf
  *
  * Generates a time-limited signed URL for accessing the original contract PDF from private storage.
- * Implements tenant validation to prevent unauthorized access.
+ * Requires authentication and tenant access.
  *
  * Response format (per plan-pdf.md §1):
  * {
@@ -29,106 +34,15 @@ export async function GET(
   try {
     const { dealId } = await params
 
-    if (!dealId) {
-      return NextResponse.json(
-        { error: "Deal ID is required" },
-        { status: 400 }
-      )
-    }
+    // Authenticate user
+    const authResult = await authenticateRequest()
+    if (!authResult.success) return authResult.response
 
-    // ⚠️ TEMPORARY TESTING BYPASS - Remove before production deployment
-    // This bypass allows PDF testing without authentication in development
-    if (process.env.ALLOW_PDF_TESTING === 'true') {
-      console.warn('⚠️  PDF_TESTING mode enabled - bypassing authentication for deal:', dealId)
+    // Validate deal access
+    const dealAccess = await validateDealAccess(authResult.user, dealId)
+    if (!dealAccess.success) return dealAccess.response
 
-      // Fetch document directly without auth checks
-      const { data: document, error: docError } = await supabaseServer
-        .from("document_repository")
-        .select(`
-          id,
-          object_path,
-          original_filename,
-          mime_type,
-          deal_id
-        `)
-        .eq("deal_id", dealId)
-        .order("created_at", { ascending: false })
-        .limit(1)
-        .single()
-
-      if (docError || !document) {
-        console.error("Document fetch error (bypass mode):", docError)
-        return NextResponse.json(
-          { error: "Document not found for this deal" },
-          { status: 404 }
-        )
-      }
-
-      if (!document.object_path) {
-        console.error("No object_path for document (bypass mode):", document.id)
-        return NextResponse.json(
-          { error: "Document file path not available" },
-          { status: 404 }
-        )
-      }
-
-      // Generate signed URL (same as production path)
-      const expiresIn = 3600 // 1 hour
-      const { data: signedUrlData, error: urlError } = await supabaseServer
-        .storage
-        .from("contracts")
-        .createSignedUrl(document.object_path, expiresIn)
-
-      if (urlError || !signedUrlData) {
-        console.error("Signed URL generation error (bypass mode):", urlError)
-        return NextResponse.json(
-          { error: "Failed to generate document access URL", details: urlError?.message },
-          { status: 500 }
-        )
-      }
-
-      const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString()
-
-      return NextResponse.json({
-        url: signedUrlData.signedUrl,
-        expires_at: expiresAt,
-        filename: document.original_filename || "contract.pdf",
-        mime_type: document.mime_type || "application/pdf",
-        deal_id: document.deal_id,
-      })
-    }
-    // END TEMPORARY BYPASS
-
-    // Step 1: Authenticate user via request cookies
-    const authClient = await createServerClient()
-    const { data: { user }, error: authError } = await authClient.auth.getUser()
-
-    if (authError || !user) {
-      console.error("Authentication error:", authError)
-      return NextResponse.json(
-        { error: "Unauthorized - authentication required" },
-        { status: 401 }
-      )
-    }
-
-    // Step 2: Get user's tenant_id from user_profiles table
-    const { data: profile, error: profileError } = await supabaseServer
-      .from("user_profiles")
-      .select("tenant_id")
-      .eq("user_id", user.id)
-      .single()
-
-    if (profileError || !profile?.tenant_id) {
-      console.error("User profile fetch error:", profileError, "user_id:", user.id)
-      return NextResponse.json(
-        { error: "Forbidden - user has no tenant association" },
-        { status: 403 }
-      )
-    }
-
-    const userTenantId = profile.tenant_id
-
-    // Step 3: Fetch document metadata with deal tenant validation
+    // Fetch document metadata
     const { data: document, error: docError } = await supabaseServer
       .from("document_repository")
       .select(`
@@ -136,11 +50,7 @@ export async function GET(
         object_path,
         original_filename,
         mime_type,
-        deal_id,
-        deals!inner (
-          id,
-          tenant_id
-        )
+        deal_id
       `)
       .eq("deal_id", dealId)
       .order("created_at", { ascending: false })
@@ -148,34 +58,21 @@ export async function GET(
       .single()
 
     if (docError || !document) {
-      console.error("Document fetch error:", docError)
       return NextResponse.json(
         { error: "Document not found for this deal" },
         { status: 404 }
       )
     }
 
-    // Step 4: Verify tenant ownership
-    const dealTenantId = (document.deals as any).tenant_id
-
-    if (dealTenantId !== userTenantId) {
-      console.error("Tenant mismatch:", { userTenantId, dealTenantId, userId: user.id, dealId })
-      return NextResponse.json(
-        { error: "Forbidden - you do not have access to this deal" },
-        { status: 403 }
-      )
-    }
-
-    // Step 5: Verify object_path exists
+    // Verify object_path exists
     if (!document.object_path) {
-      console.error("No object_path for document:", document.id)
       return NextResponse.json(
         { error: "Document file path not available" },
         { status: 404 }
       )
     }
 
-    // Step 6: Generate signed URL (1 hour expiry as per plan-pdf.md)
+    // Generate signed URL (1 hour expiry as per plan-pdf.md)
     const expiresIn = 3600 // 1 hour in seconds
 
     const { data: signedUrlData, error: urlError } = await supabaseServer
@@ -191,10 +88,10 @@ export async function GET(
       )
     }
 
-    // Step 7: Calculate expiration timestamp
+    // Calculate expiration timestamp
     const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString()
 
-    // Step 8: Return metadata (including deal_id for potential worker reuse)
+    // Return metadata (including deal_id for potential worker reuse)
     return NextResponse.json({
       url: signedUrlData.signedUrl,
       expires_at: expiresAt,
@@ -204,10 +101,6 @@ export async function GET(
     })
 
   } catch (error) {
-    console.error("Unexpected error in GET /api/reconciliation/[dealId]/pdf:", error)
-    return NextResponse.json(
-      { error: "Internal server error", details: String(error) },
-      { status: 500 }
-    )
+    return internalError(error, "GET /api/reconciliation/[dealId]/pdf")
   }
 }

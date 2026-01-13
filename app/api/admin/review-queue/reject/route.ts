@@ -1,12 +1,20 @@
 import { NextRequest, NextResponse } from "next/server"
 import { supabaseServer } from "@/lib/supabase/server"
+import { authenticateAdmin, internalError } from "@/lib/auth/api-auth"
 
 /**
  * POST /api/admin/review-queue/reject
  * Rejects a flagged clause from the review queue
+ * Requires admin or curator role
  */
 export async function POST(request: NextRequest) {
   try {
+    // Authenticate and require admin role
+    const authResult = await authenticateAdmin()
+    if (!authResult.success) return authResult.response
+
+    const { userId } = authResult.user
+
     const body = await request.json()
     const { review_queue_id, reason } = body
 
@@ -39,12 +47,11 @@ export async function POST(request: NextRequest) {
         status: "rejected",
         resolution_action: "reject",
         reviewed_at: new Date().toISOString(),
+        reviewed_by: userId,
         metadata: {
           ...((queueItem.metadata as Record<string, unknown> | null) || {}),
           rejection_reason: reason,
         },
-        // TODO: Get admin user ID from session
-        // reviewed_by: session.user.id,
       })
       .eq("id", review_queue_id)
 
@@ -65,10 +72,6 @@ export async function POST(request: NextRequest) {
       },
     })
   } catch (error) {
-    console.error("Unexpected error:", error)
-    return NextResponse.json(
-      { success: false, error: String(error) },
-      { status: 500 }
-    )
+    return internalError(error, "POST /api/admin/review-queue/reject")
   }
 }

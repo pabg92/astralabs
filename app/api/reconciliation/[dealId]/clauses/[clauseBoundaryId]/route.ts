@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from "next/server"
-import { supabaseServer, createServerClient } from "@/lib/supabase/server"
+import { supabaseServer } from "@/lib/supabase/server"
+import {
+  authenticateRequest,
+  validateDealAccess,
+  internalError,
+} from "@/lib/auth/api-auth"
 
 interface ReviewPayload {
   decision: "approved" | "rejected" | "flagged"
@@ -7,13 +12,10 @@ interface ReviewPayload {
   comments?: string
 }
 
-// E2E testing bypass - matches middleware pattern
-const isE2ETesting = process.env.E2E_TESTING === 'true' || process.env.PLAYWRIGHT_TEST === 'true'
-
 /**
  * PATCH /api/reconciliation/[dealId]/clauses/[clauseBoundaryId]
  * Saves or updates a clause review decision
- * Requires authentication and tenant access verification (bypassed in E2E mode)
+ * Requires authentication and tenant access
  */
 export async function PATCH(
   request: NextRequest,
@@ -21,11 +23,22 @@ export async function PATCH(
 ) {
   try {
     const { dealId, clauseBoundaryId } = await params
+
+    // Authenticate user
+    const authResult = await authenticateRequest()
+    if (!authResult.success) return authResult.response
+
+    // Validate deal access
+    const dealAccess = await validateDealAccess(authResult.user, dealId)
+    if (!dealAccess.success) return dealAccess.response
+
+    const { userId, tenantId } = authResult.user
+
     const body: ReviewPayload = await request.json()
 
-    if (!dealId || !clauseBoundaryId) {
+    if (!clauseBoundaryId) {
       return NextResponse.json(
-        { error: "Deal ID and clause boundary ID are required" },
+        { error: "Clause boundary ID is required" },
         { status: 400 }
       )
     }
@@ -35,78 +48,6 @@ export async function PATCH(
         { error: "Decision is required (approved, rejected, or flagged)" },
         { status: 400 }
       )
-    }
-
-    let userTenantId: string | null = null
-    let reviewerId: string | null = null
-
-    // In E2E testing mode, bypass authentication and get tenant from deal
-    if (isE2ETesting) {
-      // Get tenant from the deal itself
-      const { data: deal, error: dealError } = await supabaseServer
-        .from("deals")
-        .select("tenant_id")
-        .eq("id", dealId)
-        .single()
-
-      if (dealError || !deal) {
-        return NextResponse.json(
-          { error: "Deal not found" },
-          { status: 404 }
-        )
-      }
-
-      userTenantId = deal.tenant_id
-      reviewerId = "e2e-test-user"
-    } else {
-      // Production mode: Authenticate user
-      const supabase = await createServerClient()
-      const { data: { user }, error: authError } = await supabase.auth.getUser()
-
-      if (authError || !user) {
-        return NextResponse.json(
-          { error: "Unauthorized - please sign in" },
-          { status: 401 }
-        )
-      }
-
-      // Get user's tenant from user_profiles
-      const { data: userProfile, error: profileError } = await supabaseServer
-        .from("user_profiles")
-        .select("tenant_id")
-        .eq("clerk_user_id", user.id)
-        .single()
-
-      if (profileError || !userProfile?.tenant_id) {
-        return NextResponse.json(
-          { error: "User profile not found or missing tenant" },
-          { status: 403 }
-        )
-      }
-
-      userTenantId = userProfile.tenant_id
-      reviewerId = user.id
-
-      // Get the deal and verify tenant access
-      const { data: deal, error: dealError } = await supabaseServer
-        .from("deals")
-        .select("tenant_id")
-        .eq("id", dealId)
-        .single()
-
-      if (dealError || !deal) {
-        return NextResponse.json(
-          { error: "Deal not found" },
-          { status: 404 }
-        )
-      }
-
-      if (deal.tenant_id !== userTenantId) {
-        return NextResponse.json(
-          { error: "Access denied - deal belongs to different tenant" },
-          { status: 403 }
-        )
-      }
     }
 
     // Get document_id from clause_boundaries
@@ -125,13 +66,13 @@ export async function PATCH(
 
     // Upsert the review with proper user and tenant tracking
     const reviewData = {
-      document_id: boundary.document_id,
+      document_id: boundary.document_id || "",
       clause_boundary_id: clauseBoundaryId,
       decision: body.decision,
       risk_accepted: body.risk_accepted ?? false,
       comments: body.comments ?? null,
-      reviewer_id: reviewerId,
-      tenant_id: userTenantId,
+      reviewer_id: userId,
+      tenant_id: tenantId,
       approved_at: body.decision === "approved" ? new Date().toISOString() : null,
       updated_at: new Date().toISOString(),
     }
@@ -157,24 +98,29 @@ export async function PATCH(
       data: review,
     })
   } catch (error) {
-    console.error("Unexpected error in PATCH clause review:", error)
-    return NextResponse.json(
-      { error: "Internal server error", details: String(error) },
-      { status: 500 }
-    )
+    return internalError(error, "PATCH /api/reconciliation/[dealId]/clauses/[clauseBoundaryId]")
   }
 }
 
 /**
  * GET /api/reconciliation/[dealId]/clauses/[clauseBoundaryId]
  * Returns the review status for a specific clause
+ * Requires authentication and tenant access
  */
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ dealId: string; clauseBoundaryId: string }> }
 ) {
   try {
-    const { clauseBoundaryId } = await params
+    const { dealId, clauseBoundaryId } = await params
+
+    // Authenticate user
+    const authResult = await authenticateRequest()
+    if (!authResult.success) return authResult.response
+
+    // Validate deal access
+    const dealAccess = await validateDealAccess(authResult.user, dealId)
+    if (!dealAccess.success) return dealAccess.response
 
     const { data: review, error } = await supabaseServer
       .from("clause_reviews")
@@ -195,9 +141,6 @@ export async function GET(
       data: review || null,
     })
   } catch (error) {
-    return NextResponse.json(
-      { error: "Internal server error", details: String(error) },
-      { status: 500 }
-    )
+    return internalError(error, "GET /api/reconciliation/[dealId]/clauses/[clauseBoundaryId]")
   }
 }

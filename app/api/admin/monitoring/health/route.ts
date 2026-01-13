@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server"
 import { supabaseServer } from "@/lib/supabase/server"
+import { authenticateAdmin, internalError } from "@/lib/auth/api-auth"
 
 /**
  * System Health Summary (Query 6.1)
  * Purpose: Single query for dashboard overview showing real-time system health
+ * Requires admin or curator role
  *
  * Returns:
  * - pending_documents: Count of documents waiting to be processed
@@ -23,6 +25,10 @@ const CACHE_TTL_MS = 60 * 1000 // 60 seconds
 
 export async function GET() {
   try {
+    // Authenticate and require admin role
+    const authResult = await authenticateAdmin()
+    if (!authResult.success) return authResult.response
+
     const now = Date.now()
 
     // Check cache validity
@@ -121,14 +127,6 @@ export async function GET() {
     })
 
   } catch (error) {
-    console.error("Unexpected error in GET /api/admin/monitoring/health:", error)
-    return NextResponse.json(
-      {
-        success: false,
-        error: "Internal server error",
-        details: String(error)
-      },
-      { status: 500 }
-    )
+    return internalError(error, "GET /api/admin/monitoring/health")
   }
 }

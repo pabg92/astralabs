@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from "next/server"
 import { supabaseServer } from "@/lib/supabase/server"
+import {
+  authenticateRequest,
+  validateDealAccess,
+  internalError,
+} from "@/lib/auth/api-auth"
 import type { Database } from "@/types/database"
 
 type ClauseComment = Database["public"]["Tables"]["clause_comments"]["Row"]
@@ -10,6 +15,7 @@ type ClauseRedlineInsert = Database["public"]["Tables"]["clause_redlines"]["Inse
 /**
  * GET /api/reconciliation/[dealId]/redlines
  * Returns all redlines and comments for a deal's documents
+ * Requires authentication and tenant access
  */
 export async function GET(
   request: NextRequest,
@@ -18,26 +24,15 @@ export async function GET(
   try {
     const { dealId } = await params
 
-    if (!dealId) {
-      return NextResponse.json(
-        { error: "Deal ID is required" },
-        { status: 400 }
-      )
-    }
+    // Authenticate user
+    const authResult = await authenticateRequest()
+    if (!authResult.success) return authResult.response
 
-    // First, verify deal exists and get its tenant_id
-    const { data: deal, error: dealError } = await supabaseServer
-      .from("deals")
-      .select("id, tenant_id")
-      .eq("id", dealId)
-      .single()
+    // Validate deal access
+    const dealAccess = await validateDealAccess(authResult.user, dealId)
+    if (!dealAccess.success) return dealAccess.response
 
-    if (dealError || !deal) {
-      return NextResponse.json(
-        { error: "Deal not found", details: dealError?.message },
-        { status: 404 }
-      )
-    }
+    const { tenantId } = authResult.user
 
     // Get document(s) for this deal
     const { data: documents, error: docError } = await supabaseServer
@@ -103,7 +98,7 @@ export async function GET(
         )
       `)
       .in("clause_boundary_id", clauseIds)
-      .eq("tenant_id", deal.tenant_id)
+      .eq("tenant_id", tenantId)
       .order("created_at", { ascending: false })
 
     if (redlinesError) {
@@ -126,7 +121,7 @@ export async function GET(
         )
       `)
       .in("clause_boundary_id", clauseIds)
-      .eq("tenant_id", deal.tenant_id)
+      .eq("tenant_id", tenantId)
       .order("created_at", { ascending: false })
 
     if (commentsError) {
@@ -145,17 +140,14 @@ export async function GET(
       },
     })
   } catch (error) {
-    console.error("Unexpected error in GET /api/reconciliation/[dealId]/redlines:", error)
-    return NextResponse.json(
-      { error: "Internal server error", details: String(error) },
-      { status: 500 }
-    )
+    return internalError(error, "GET /api/reconciliation/[dealId]/redlines")
   }
 }
 
 /**
  * POST /api/reconciliation/[dealId]/redlines
  * Create a new redline and optionally a comment
+ * Requires authentication and tenant access
  */
 export async function POST(
   request: NextRequest,
@@ -164,12 +156,15 @@ export async function POST(
   try {
     const { dealId } = await params
 
-    if (!dealId) {
-      return NextResponse.json(
-        { error: "Deal ID is required" },
-        { status: 400 }
-      )
-    }
+    // Authenticate user
+    const authResult = await authenticateRequest()
+    if (!authResult.success) return authResult.response
+
+    // Validate deal access
+    const dealAccess = await validateDealAccess(authResult.user, dealId)
+    if (!dealAccess.success) return dealAccess.response
+
+    const { userId, tenantId } = authResult.user
 
     const body = await request.json()
     const {
@@ -178,7 +173,6 @@ export async function POST(
       proposed_text,
       status = "draft",
       comment_text,
-      author_id,
     } = body
 
     // Validate base required field
@@ -203,20 +197,6 @@ export async function POST(
           details: "Provide redline fields (change_type + proposed_text) and/or comment_text",
         },
         { status: 400 }
-      )
-    }
-
-    // Derive tenant_id from deal (security: never trust client-provided tenant_id)
-    const { data: deal, error: dealError } = await supabaseServer
-      .from("deals")
-      .select("id, tenant_id")
-      .eq("id", dealId)
-      .single()
-
-    if (dealError || !deal) {
-      return NextResponse.json(
-        { error: "Deal not found", details: dealError?.message },
-        { status: 404 }
       )
     }
 
@@ -260,13 +240,7 @@ export async function POST(
       )
     }
 
-    // Resolve author for demo: prefer provided author_id, fall back to DEMO_AUTHOR_ID or seeded demo user
-    const resolvedAuthorId =
-      author_id ??
-      process.env.DEMO_AUTHOR_ID ??
-      "00000000-0000-0000-0000-000000000002"
-
-    // Insert redline
+    // Insert redline using authenticated user
     let redline: ClauseRedline | null = null
     if (hasRedlinePayload) {
       const redlineInsert: ClauseRedlineInsert = {
@@ -274,8 +248,8 @@ export async function POST(
         change_type: change_type as "add" | "delete" | "modify",
         proposed_text,
         status: status as "draft" | "resolved",
-        author_id: resolvedAuthorId,
-        tenant_id: deal.tenant_id,
+        author_id: userId,
+        tenant_id: tenantId,
         resolved_at: status === "resolved" ? new Date().toISOString() : null,
       }
 
@@ -302,8 +276,8 @@ export async function POST(
       const commentInsert: ClauseCommentInsert = {
         clause_boundary_id,
         comment_text,
-        author_id: resolvedAuthorId,
-        tenant_id: deal.tenant_id,
+        author_id: userId,
+        tenant_id: tenantId,
       }
 
       const { data: commentData, error: commentError } = await supabaseServer
@@ -332,10 +306,6 @@ export async function POST(
       { status: 201 }
     )
   } catch (error) {
-    console.error("Unexpected error in POST /api/reconciliation/[dealId]/redlines:", error)
-    return NextResponse.json(
-      { error: "Internal server error", details: String(error) },
-      { status: 500 }
-    )
+    return internalError(error, "POST /api/reconciliation/[dealId]/redlines")
   }
 }

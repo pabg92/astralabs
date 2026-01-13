@@ -1,12 +1,18 @@
 import { NextResponse } from "next/server"
 import { supabaseServer } from "@/lib/supabase/server"
+import { authenticateAdmin, internalError } from "@/lib/auth/api-auth"
 
 /**
  * GET /api/admin/review-queue
  * Fetches all items in the admin review queue
+ * Requires admin or curator role
  */
 export async function GET() {
   try {
+    // Authenticate and require admin role
+    const authResult = await authenticateAdmin()
+    if (!authResult.success) return authResult.response
+
     const { data, error } = await supabaseServer
       .from("admin_review_queue")
       .select(`
@@ -40,10 +46,6 @@ export async function GET() {
       data: data || [],
     })
   } catch (error) {
-    console.error("Unexpected error:", error)
-    return NextResponse.json(
-      { success: false, error: String(error) },
-      { status: 500 }
-    )
+    return internalError(error, "GET /api/admin/review-queue")
   }
 }

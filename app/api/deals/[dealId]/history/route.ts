@@ -1,9 +1,15 @@
 import { NextRequest, NextResponse } from "next/server"
 import { supabaseServer } from "@/lib/supabase/server"
+import {
+  authenticateRequest,
+  validateDealAccess,
+  internalError,
+} from "@/lib/auth/api-auth"
 
 /**
  * GET /api/deals/[dealId]/history
  * Returns version history for a deal including documents and clause changes
+ * Requires authentication and tenant access
  */
 export async function GET(
   request: NextRequest,
@@ -12,14 +18,15 @@ export async function GET(
   try {
     const { dealId } = await params
 
-    if (!dealId) {
-      return NextResponse.json(
-        { success: false, error: "Deal ID is required", data: null },
-        { status: 400 }
-      )
-    }
+    // Authenticate user
+    const authResult = await authenticateRequest()
+    if (!authResult.success) return authResult.response
 
-    // Verify deal exists and get version
+    // Validate deal access
+    const dealAccess = await validateDealAccess(authResult.user, dealId)
+    if (!dealAccess.success) return dealAccess.response
+
+    // Fetch deal details
     const { data: deal, error: dealError } = await supabaseServer
       .from("deals")
       .select("id, version, title")
@@ -137,10 +144,6 @@ export async function GET(
       },
     })
   } catch (error) {
-    console.error("Unexpected error in GET /api/deals/[dealId]/history:", error)
-    return NextResponse.json(
-      { success: false, error: "Internal server error", details: String(error) },
-      { status: 500 }
-    )
+    return internalError(error, "GET /api/deals/[dealId]/history")
   }
 }

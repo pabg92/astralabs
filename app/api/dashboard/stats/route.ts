@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { supabaseServer } from "@/lib/supabase/server"
+import { authenticateRequest, internalError } from "@/lib/auth/api-auth"
 
 /**
  * Response types for dashboard stats
@@ -32,11 +33,17 @@ interface DashboardStats {
 /**
  * GET /api/dashboard/stats
  * Returns dashboard KPIs and recent deals with progress
- * Uses service role client (server-side only)
+ * Requires authentication - filters by user's tenant
  */
 export async function GET() {
   try {
-    // Run all queries in parallel for performance
+    // Authenticate user and get tenant
+    const authResult = await authenticateRequest()
+    if (!authResult.success) return authResult.response
+
+    const { tenantId } = authResult.user
+
+    // Run all queries in parallel for performance - filtered by tenant
     const [
       reconciledResult,
       signedResult,
@@ -48,23 +55,27 @@ export async function GET() {
       supabaseServer
         .from("deals")
         .select("id, document_repository!inner(processing_status)")
+        .eq("tenant_id", tenantId)
         .eq("document_repository.processing_status", "completed"),
 
       // Contracts signed: deals with status = 'signed'
       supabaseServer
         .from("deals")
         .select("id", { count: "exact", head: true })
+        .eq("tenant_id", tenantId)
         .eq("status", "signed"),
 
-      // Clauses reviewed: total count of clause_reviews
+      // Clauses reviewed: count for this tenant
       supabaseServer
         .from("clause_reviews")
-        .select("id", { count: "exact", head: true }),
+        .select("id", { count: "exact", head: true })
+        .eq("tenant_id", tenantId),
 
-      // RAG status distribution for risk reduction calculation
+      // RAG status distribution for this tenant's documents
       supabaseServer
         .from("clause_match_results")
-        .select("rag_status"),
+        .select("rag_status, document_repository!inner(tenant_id)")
+        .eq("document_repository.tenant_id", tenantId),
 
       // Recent deals with document and clause data for progress calculation
       supabaseServer
@@ -82,6 +93,7 @@ export async function GET() {
             clause_boundaries (id)
           )
         `)
+        .eq("tenant_id", tenantId)
         .order("updated_at", { ascending: false })
         .limit(5),
     ])
@@ -115,15 +127,17 @@ export async function GET() {
     }
 
     // Get approved clauses (green RAG status) for progress calculation
-    // This matches how the reconciliation page calculates progress
+    // This matches how the reconciliation page calculates progress - filtered by tenant
     const { data: allMatchResults } = await supabaseServer
       .from("clause_match_results")
-      .select("clause_boundary_id, rag_status")
+      .select("clause_boundary_id, rag_status, document_repository!inner(tenant_id)")
+      .eq("document_repository.tenant_id", tenantId)
 
     const approvedClauseIds = new Set(
       allMatchResults
         ?.filter((r: { rag_status: string }) => r.rag_status === "green")
-        .map((r: { clause_boundary_id: string }) => r.clause_boundary_id) ?? []
+        .map((r: { clause_boundary_id: string | null }) => r.clause_boundary_id)
+        .filter((id): id is string => id !== null) ?? []
     )
 
     // Process recent deals with progress
@@ -188,27 +202,6 @@ export async function GET() {
       data: stats,
     })
   } catch (error) {
-    console.error("Error fetching dashboard stats:", error)
-    return NextResponse.json(
-      {
-        success: false,
-        error: "Failed to fetch dashboard stats",
-        details: String(error),
-        data: {
-          contracts_reconciled: 0,
-          contracts_reconciled_change: 0,
-          contracts_signed: 0,
-          contracts_signed_change: 0,
-          clauses_reviewed: 0,
-          clauses_reviewed_change: 0,
-          hours_saved: 0,
-          hours_saved_change: 0,
-          avg_risk_reduction: 0,
-          avg_risk_reduction_change: 0,
-          recent_deals: [],
-        } as DashboardStats,
-      },
-      { status: 500 }
-    )
+    return internalError(error, "GET /api/dashboard/stats")
   }
 }

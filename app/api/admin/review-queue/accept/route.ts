@@ -1,13 +1,21 @@
 import { NextRequest, NextResponse } from "next/server"
 import { supabaseServer } from "@/lib/supabase/server"
+import { authenticateAdmin, internalError } from "@/lib/auth/api-auth"
 import type { Database } from "@/types/database"
 
 /**
  * POST /api/admin/review-queue/accept
  * Accepts a flagged clause into the Legal Clause Library
+ * Requires admin or curator role
  */
 export async function POST(request: NextRequest) {
   try {
+    // Authenticate and require admin role
+    const authResult = await authenticateAdmin()
+    if (!authResult.success) return authResult.response
+
+    const { userId } = authResult.user
+
     const body = await request.json()
     const {
       review_queue_id,
@@ -96,7 +104,8 @@ export async function POST(request: NextRequest) {
       new_clause_flag: false, // No longer "new" once approved
       parent_clause_id: action === "add_variant" ? parent_clause_id : null,
       variation_letter: action === "add_variant" ? variation_letter : "a",
-      active: true
+      active: true,
+      approved_by: userId,
     }
 
     const { data: newClause, error: insertError } = await supabaseServer
@@ -120,8 +129,7 @@ export async function POST(request: NextRequest) {
         status: "resolved",
         resolution_action: action,
         reviewed_at: new Date().toISOString(),
-        // TODO: Get admin user ID from session
-        // reviewed_by: session.user.id,
+        reviewed_by: userId,
       })
       .eq("id", review_queue_id)
 
@@ -138,10 +146,6 @@ export async function POST(request: NextRequest) {
       },
     })
   } catch (error) {
-    console.error("Unexpected error:", error)
-    return NextResponse.json(
-      { success: false, error: String(error) },
-      { status: 500 }
-    )
+    return internalError(error, "POST /api/admin/review-queue/accept")
   }
 }

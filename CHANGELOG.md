@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- **API Authentication Middleware** - All API routes now require authentication
+  - Created centralized auth helper module: `lib/auth/api-auth.ts`
+  - `authenticateRequest()` - Validates Clerk user and returns tenant info
+  - `authenticateAdmin()` - Requires admin/curator role for admin routes
+  - `validateDealAccess()` - Verifies tenant owns the deal
+  - `validateDocumentAccess()` - Verifies tenant owns the document
+  - `internalError()` - Sanitized error responses (no stack traces to client)
+  - E2E testing bypass preserved (`E2E_TESTING` or `PLAYWRIGHT_TEST` env vars)
+  - **Routes secured (23 handlers)**:
+    - `/api/deals` (GET, POST)
+    - `/api/deals/[dealId]` (GET, PATCH, DELETE)
+    - `/api/deals/[dealId]/upload` (POST)
+    - `/api/deals/[dealId]/history` (GET)
+    - `/api/reconciliation/[dealId]` (GET)
+    - `/api/reconciliation/[dealId]/redlines` (GET, POST)
+    - `/api/reconciliation/[dealId]/redlines/generate` (POST)
+    - `/api/reconciliation/[dealId]/redlines/[redlineId]` (PATCH, DELETE)
+    - `/api/reconciliation/[dealId]/clauses/[clauseBoundaryId]` (GET, PATCH)
+    - `/api/reconciliation/[dealId]/export` (GET)
+    - `/api/reconciliation/[dealId]/pdf` (GET)
+    - `/api/reconciliation/[dealId]/share` (POST)
+    - `/api/admin/review-queue` (GET)
+    - `/api/admin/review-queue/accept` (POST)
+    - `/api/admin/review-queue/reject` (POST)
+    - `/api/admin/dedup` (GET, POST)
+    - `/api/admin/monitoring/health` (GET)
+    - `/api/admin/monitoring/alerts` (GET)
+    - `/api/admin/monitoring/stuck` (GET)
+    - `/api/dashboard/stats` (GET) - now tenant-filtered
+  - Multi-tenant isolation enforced via `tenant_id` checks
+  - Admin routes require `admin` or `curator` role (403 if unauthorized)
+  - Cross-tenant data access blocked (403 if wrong tenant)
+  - Files: `lib/auth/api-auth.ts`, `app/api/**/*.ts`
+
 ### Fixed
 - **Clause text not updating after accepting redline** - Clause card/inline view now shows accepted proposed text
   - After accepting an AI-suggested redline, the clause displays the revised text instead of original

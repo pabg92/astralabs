@@ -1,13 +1,18 @@
 import { NextRequest, NextResponse } from "next/server"
 import { supabaseServer } from "@/lib/supabase/server"
+import {
+  authenticateRequest,
+  validateDealAccess,
+  internalError,
+} from "@/lib/auth/api-auth"
 import type { Database } from "@/types/database"
 
-type ClauseRedline = Database["public"]["Tables"]["clause_redlines"]["Row"]
 type ClauseRedlineUpdate = Database["public"]["Tables"]["clause_redlines"]["Update"]
 
 /**
  * PATCH /api/reconciliation/[dealId]/redlines/[redlineId]
  * Update a redline (typically to mark it as resolved)
+ * Requires authentication and tenant access
  */
 export async function PATCH(
   request: NextRequest,
@@ -16,9 +21,19 @@ export async function PATCH(
   try {
     const { dealId, redlineId } = await params
 
-    if (!dealId || !redlineId) {
+    // Authenticate user
+    const authResult = await authenticateRequest()
+    if (!authResult.success) return authResult.response
+
+    // Validate deal access
+    const dealAccess = await validateDealAccess(authResult.user, dealId)
+    if (!dealAccess.success) return dealAccess.response
+
+    const { tenantId } = authResult.user
+
+    if (!redlineId) {
       return NextResponse.json(
-        { error: "Deal ID and Redline ID are required" },
+        { error: "Redline ID is required" },
         { status: 400 }
       )
     }
@@ -61,20 +76,6 @@ export async function PATCH(
       )
     }
 
-    // Verify deal exists and get tenant_id
-    const { data: deal, error: dealError } = await supabaseServer
-      .from("deals")
-      .select("id, tenant_id")
-      .eq("id", dealId)
-      .single()
-
-    if (dealError || !deal) {
-      return NextResponse.json(
-        { error: "Deal not found", details: dealError?.message },
-        { status: 404 }
-      )
-    }
-
     // Verify redline exists and belongs to this deal's tenant
     const { data: existingRedline, error: redlineError } = await supabaseServer
       .from("clause_redlines")
@@ -88,7 +89,7 @@ export async function PATCH(
         )
       `)
       .eq("id", redlineId)
-      .eq("tenant_id", deal.tenant_id)
+      .eq("tenant_id", tenantId)
       .single()
 
     if (redlineError || !existingRedline) {
@@ -128,17 +129,14 @@ export async function PATCH(
       data: updatedRedline,
     })
   } catch (error) {
-    console.error("Unexpected error in PATCH /api/reconciliation/[dealId]/redlines/[redlineId]:", error)
-    return NextResponse.json(
-      { error: "Internal server error", details: String(error) },
-      { status: 500 }
-    )
+    return internalError(error, "PATCH /api/reconciliation/[dealId]/redlines/[redlineId]")
   }
 }
 
 /**
  * DELETE /api/reconciliation/[dealId]/redlines/[redlineId]
  * Delete a redline
+ * Requires authentication and tenant access
  */
 export async function DELETE(
   request: NextRequest,
@@ -147,24 +145,20 @@ export async function DELETE(
   try {
     const { dealId, redlineId } = await params
 
-    if (!dealId || !redlineId) {
+    // Authenticate user
+    const authResult = await authenticateRequest()
+    if (!authResult.success) return authResult.response
+
+    // Validate deal access
+    const dealAccess = await validateDealAccess(authResult.user, dealId)
+    if (!dealAccess.success) return dealAccess.response
+
+    const { tenantId } = authResult.user
+
+    if (!redlineId) {
       return NextResponse.json(
-        { error: "Deal ID and Redline ID are required" },
+        { error: "Redline ID is required" },
         { status: 400 }
-      )
-    }
-
-    // Verify deal exists and get tenant_id
-    const { data: deal, error: dealError } = await supabaseServer
-      .from("deals")
-      .select("id, tenant_id")
-      .eq("id", dealId)
-      .single()
-
-    if (dealError || !deal) {
-      return NextResponse.json(
-        { error: "Deal not found", details: dealError?.message },
-        { status: 404 }
       )
     }
 
@@ -173,7 +167,7 @@ export async function DELETE(
       .from("clause_redlines")
       .delete()
       .eq("id", redlineId)
-      .eq("tenant_id", deal.tenant_id)
+      .eq("tenant_id", tenantId)
 
     if (deleteError) {
       console.error("Error deleting redline:", deleteError)
@@ -188,10 +182,6 @@ export async function DELETE(
       message: "Redline deleted",
     })
   } catch (error) {
-    console.error("Unexpected error in DELETE /api/reconciliation/[dealId]/redlines/[redlineId]:", error)
-    return NextResponse.json(
-      { error: "Internal server error", details: String(error) },
-      { status: 500 }
-    )
+    return internalError(error, "DELETE /api/reconciliation/[dealId]/redlines/[redlineId]")
   }
 }

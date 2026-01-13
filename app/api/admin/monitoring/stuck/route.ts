@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server"
 import { supabaseServer } from "@/lib/supabase/server"
+import { authenticateAdmin, internalError } from "@/lib/auth/api-auth"
 
 /**
  * Stuck Documents (Query 2.2)
  * Purpose: Identify documents pending/processing for >1 hour that may need manual intervention
+ * Requires admin or curator role
  *
  * Returns:
  * - document_id: ID of stuck document
@@ -26,6 +28,10 @@ const CACHE_TTL_MS = 60 * 1000 // 60 seconds
 
 export async function GET() {
   try {
+    // Authenticate and require admin role
+    const authResult = await authenticateAdmin()
+    if (!authResult.success) return authResult.response
+
     const now = Date.now()
 
     // Check cache validity
@@ -138,14 +144,6 @@ export async function GET() {
     })
 
   } catch (error) {
-    console.error("Unexpected error in GET /api/admin/monitoring/stuck:", error)
-    return NextResponse.json(
-      {
-        success: false,
-        error: "Internal server error",
-        details: String(error)
-      },
-      { status: 500 }
-    )
+    return internalError(error, "GET /api/admin/monitoring/stuck")
   }
 }

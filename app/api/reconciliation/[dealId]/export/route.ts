@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from "next/server"
 import { supabaseServer } from "@/lib/supabase/server"
+import {
+  authenticateRequest,
+  validateDealAccess,
+  internalError,
+} from "@/lib/auth/api-auth"
 import type { Database } from "@/types/database"
 import { formatDiffForExport } from "@/lib/diff-utils"
 
@@ -9,8 +14,7 @@ type RAGStatus = Database["public"]["Enums"]["rag_status"]
  * GET /api/reconciliation/[dealId]/export
  * Exports reconciliation data as a text-based report with color markup
  * Returns a downloadable text file with [GREEN]/[AMBER]/[RED] tags
- *
- * This is a placeholder implementation until PDF export with highlighting is implemented
+ * Requires authentication and tenant access
  */
 export async function GET(
   request: NextRequest,
@@ -18,16 +22,18 @@ export async function GET(
 ) {
   try {
     const { dealId } = await params
+
+    // Authenticate user
+    const authResult = await authenticateRequest()
+    if (!authResult.success) return authResult.response
+
+    // Validate deal access
+    const dealAccess = await validateDealAccess(authResult.user, dealId)
+    if (!dealAccess.success) return dealAccess.response
+
     const { searchParams } = new URL(request.url)
     const format = searchParams.get("format") || "text" // text, json, or markdown
     const documentId = searchParams.get("document_id") // optional: specific document to export
-
-    if (!dealId) {
-      return NextResponse.json(
-        { error: "Deal ID is required" },
-        { status: 400 }
-      )
-    }
 
     // Fetch deal details
     const { data: deal, error: dealError } = await supabaseServer
@@ -381,10 +387,6 @@ export async function GET(
       },
     })
   } catch (error) {
-    console.error("Unexpected error in GET /api/reconciliation/[dealId]/export:", error)
-    return NextResponse.json(
-      { error: "Internal server error", details: String(error) },
-      { status: 500 }
-    )
+    return internalError(error, "GET /api/reconciliation/[dealId]/export")
   }
 }

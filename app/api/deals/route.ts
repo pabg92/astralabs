@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { supabaseServer } from "@/lib/supabase/server"
+import { authenticateRequest, internalError } from "@/lib/auth/api-auth"
 import type { Database } from "@/types/database"
 
 type Deal = Database["public"]["Tables"]["deals"]["Row"]
@@ -13,15 +14,19 @@ interface DealWithRelations extends Deal {
 
 /**
  * GET /api/deals
- * Returns all deals with their pre-agreed terms and latest document status
+ * Returns all deals for the authenticated user's tenant
+ * Requires authentication
  */
 export async function GET(request: NextRequest) {
   try {
-    const { searchParams } = new URL(request.url)
-    const tenantId = searchParams.get("tenant_id")
+    // Authenticate user and get tenant
+    const authResult = await authenticateRequest()
+    if (!authResult.success) return authResult.response
 
-    // Build query for deals
-    let query = supabaseServer
+    const { tenantId } = authResult.user
+
+    // Build query for deals - always filtered by user's tenant
+    const { data: deals, error } = await supabaseServer
       .from("deals")
       .select(
         `
@@ -30,14 +35,8 @@ export async function GET(request: NextRequest) {
         document_repository (*)
       `
       )
+      .eq("tenant_id", tenantId)
       .order("created_at", { ascending: false })
-
-    // Filter by tenant if provided
-    if (tenantId) {
-      query = query.eq("tenant_id", tenantId)
-    }
-
-    const { data: deals, error } = await query
 
     if (error) {
       console.error("Error fetching deals:", error)
@@ -74,25 +73,27 @@ export async function GET(request: NextRequest) {
       count: dealsWithLatestDoc.length,
     })
   } catch (error) {
-    console.error("Unexpected error in GET /api/deals:", error)
-    return NextResponse.json(
-      { success: false, error: "Internal server error", details: String(error), data: [], count: 0 },
-      { status: 500 }
-    )
+    return internalError(error, "GET /api/deals")
   }
 }
 
 /**
  * POST /api/deals
  * Creates a new deal with pre-agreed terms and optional contract upload
+ * Requires authentication - tenant_id and created_by derived from authenticated user
  * Expects FormData with:
  * - title, client_name, talent_name, value, currency, status
- * - tenant_id, created_by
  * - terms (JSON array of pre-agreed terms)
  * - file (optional contract file)
  */
 export async function POST(request: NextRequest) {
   try {
+    // Authenticate user and get tenant
+    const authResult = await authenticateRequest()
+    if (!authResult.success) return authResult.response
+
+    const { userId, tenantId } = authResult.user
+
     const formData = await request.formData()
 
     // Extract deal data
@@ -103,33 +104,22 @@ export async function POST(request: NextRequest) {
     const currency = formData.get("currency") as string
     const status = formData.get("status") as string
     const description = formData.get("description") as string | null
-    const tenantId = formData.get("tenant_id") as string
-    const createdBy = formData.get("created_by") as string
     const termsJson = formData.get("terms") as string
     const file = formData.get("file") as File | null
 
-    // Validate required fields
-    if (
-      !title ||
-      !clientName ||
-      !talentName ||
-      !tenantId ||
-      !createdBy
-    ) {
+    // Validate required fields (tenant_id and created_by now come from auth)
+    if (!title || !clientName || !talentName) {
       return NextResponse.json(
         {
           error: "Missing required fields",
-          required: [
-            "title",
-            "client_name",
-            "talent_name",
-            "tenant_id",
-            "created_by",
-          ],
+          required: ["title", "client_name", "talent_name"],
         },
         { status: 400 }
       )
     }
+
+    // Use authenticated user as creator
+    const createdBy = userId
 
     // Parse pre-agreed terms
     let terms: Array<{
@@ -316,10 +306,6 @@ export async function POST(request: NextRequest) {
         : "Deal created successfully",
     })
   } catch (error) {
-    console.error("Unexpected error in POST /api/deals:", error)
-    return NextResponse.json(
-      { error: "Internal server error", details: String(error) },
-      { status: 500 }
-    )
+    return internalError(error, "POST /api/deals")
   }
 }
