@@ -6,6 +6,9 @@ import { supabaseServer } from "@/lib/supabase/server"
 const isE2ETesting =
   process.env.E2E_TESTING === "true" || process.env.PLAYWRIGHT_TEST === "true"
 
+// Development mode - auto-provision users to default tenant
+const isDevelopment = process.env.NODE_ENV === "development"
+
 // User roles for authorization
 export type UserRole = "admin" | "curator" | "user" | "viewer"
 
@@ -81,6 +84,44 @@ export async function authenticateRequest(): Promise<AuthResponse> {
     .single()
 
   if (profileError || !userProfile?.tenant_id) {
+    // In development, auto-provision user to default tenant
+    if (isDevelopment) {
+      console.log(`[DEV] Auto-provisioning user ${userId} to default tenant`)
+
+      // Get or create default tenant
+      const { data: defaultTenant } = await supabaseServer
+        .from("tenants")
+        .select("id")
+        .limit(1)
+        .single()
+
+      if (defaultTenant) {
+        // Create user profile with default tenant
+        const { error: insertError } = await supabaseServer
+          .from("user_profiles")
+          .upsert({
+            clerk_user_id: userId,
+            tenant_id: defaultTenant.id,
+            role: "admin", // Dev users get admin for testing
+          }, {
+            onConflict: "clerk_user_id"
+          })
+
+        if (!insertError) {
+          return {
+            success: true,
+            user: {
+              userId,
+              tenantId: defaultTenant.id,
+              role: "admin" as UserRole,
+              email: undefined,
+            },
+          }
+        }
+        console.error("[DEV] Failed to create user profile:", insertError)
+      }
+    }
+
     console.error("User profile lookup failed:", profileError)
     return {
       success: false,

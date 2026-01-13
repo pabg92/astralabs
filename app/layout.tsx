@@ -7,7 +7,6 @@ import {
   SignedIn,
   UserButton,
 } from "@clerk/nextjs"
-import Link from "next/link"
 import "./globals.css"
 
 const _inter = Inter({ subsets: ["latin"] })
@@ -33,16 +32,7 @@ export default function RootLayout({
       <html lang="en">
         <body className={`font-sans antialiased`}>
           <SignedIn>
-            <header className="fixed top-4 right-4 z-50 flex items-center gap-3">
-              <Link
-                href="/deals"
-                className="px-3 py-1.5 text-sm font-medium text-gray-500 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors flex items-center gap-1.5"
-              >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" />
-                </svg>
-                Back to Deals
-              </Link>
+            <header className="fixed top-4 right-4 z-50">
               <UserButton
                 afterSignOutUrl="/"
                 appearance={{
