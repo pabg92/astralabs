@@ -3,6 +3,9 @@ import path from 'path'
 import { parseChangelog } from '@/lib/changelog/parser'
 import { ChangelogView } from './changelog-view'
 
+// Revalidate on every request to show latest changelog
+export const revalidate = 0
+
 export const metadata = {
   title: 'Changelog - ContractBuddy',
   description: 'All notable changes to ContractBuddy - AI-powered contract reconciliation platform',
