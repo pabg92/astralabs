@@ -71,7 +71,14 @@ describeIntegration('similarity-adapter integration tests', () => {
       hasClausesWithEmbeddings = true
       // Use the first clause's embedding as our test query
       // This should give us at least one match (itself)
-      testEmbedding = clauses[0].embedding
+      // Note: Supabase returns embeddings as strings in PostgreSQL vector format
+      const rawEmbedding = clauses[0].embedding
+      if (typeof rawEmbedding === 'string') {
+        // Parse PostgreSQL vector format: "[0.1,0.2,...]"
+        testEmbedding = JSON.parse(rawEmbedding)
+      } else if (Array.isArray(rawEmbedding)) {
+        testEmbedding = rawEmbedding
+      }
       console.log(`Found test clause: ${clauses[0].clause_id}`)
     } else {
       console.warn('No clauses with embeddings found - some tests will be skipped')

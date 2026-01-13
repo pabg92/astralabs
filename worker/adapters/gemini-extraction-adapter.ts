@@ -191,7 +191,8 @@ export function isRetryableGeminiError(error: unknown): boolean {
   if (errorName === 'TypeError' && /fetch/i.test(message)) return true
 
   // JSON parsing errors (truncated response from Gemini)
-  if (/unterminated|unexpected.?end|JSON|parse/i.test(message)) return true
+  // Be specific: match "JSON parse", "parse JSON", "JSON error", "invalid JSON" - but NOT generic "Parse error"
+  if (/unterminated|unexpected.?end|JSON.?(parse|error)|parse.?JSON|invalid.?JSON/i.test(message)) return true
 
   return false
 }
@@ -620,6 +621,6 @@ export function createGeminiExtractionAdapterFromEnv(): GeminiExtractionAdapter 
 
   return new GeminiExtractionAdapter({
     apiKey,
-    model: (process.env.EXTRACTION_MODEL as GeminiModel) || 'gemini-3-flash-preview',
+    model: (process.env.EXTRACTION_MODEL as GeminiModel) || 'gemini-3-flash',
   })
 }
