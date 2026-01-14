@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Gemini 3 Flash support for P1 reconciliation** - Added Gemini as an alternative to GPT-4o for P1 clause-vs-PAT comparisons, providing ~80% cost reduction and ~3x speed improvement
+  - New adapter: `worker/adapters/gemini-p1-adapter.ts` - Gemini API wrapper with Zod schemas
+  - New factory: `worker/adapters/p1-adapter-factory.ts` - Selects GPT or Gemini based on model name
+  - Provider auto-detection: Models starting with `gemini-` use Gemini, others use GPT
+  - Fallback support: Falls back to available provider if primary API key missing
+  - To enable: Set `P1_MODEL=gemini-3-flash-preview` and provide `GEMINI_API_KEY`
+  - Files: `worker/adapters/gemini-p1-adapter.ts`, `worker/adapters/p1-adapter-factory.ts`, `worker/p1-reconciliation.ts`, `worker/worker.ts`, `worker/config/p1-config.ts`
+
 ### Security
 - **API Authentication Middleware** - All API routes now require authentication
   - Created centralized auth helper module: `lib/auth/api-auth.ts`

@@ -73,7 +73,12 @@ export type { PATComparison, ReviewPriority } from './services/rag-calculator'
 
 // ============ ADAPTERS - Import and Re-export ============
 
-// GPT Adapter
+// P1 Adapter Factory (supports GPT and Gemini)
+import { createP1AdapterFromKeys } from './adapters/p1-adapter-factory'
+export { createP1Adapter, createP1AdapterFromKeys, isGeminiModel, getP1Provider } from './adapters/p1-adapter-factory'
+export type { P1Adapter, P1Provider } from './adapters/p1-adapter-factory'
+
+// GPT Adapter (for backward compatibility)
 import { normalizePatTerms, executeBatchComparison } from './adapters/gpt-adapter'
 export {
   normalizePatTerms,
@@ -81,6 +86,15 @@ export {
   callWithBackoff,
   calculateTimeout,
 } from './adapters/gpt-adapter'
+
+// Gemini P1 Adapter
+export {
+  normalizePatTermsGemini,
+  executeBatchComparisonGemini,
+  GeminiP1Adapter,
+  createGeminiP1Adapter,
+} from './adapters/gemini-p1-adapter'
+export type { GeminiP1Model } from './adapters/gemini-p1-adapter'
 
 // Database Adapter
 import {
@@ -116,15 +130,21 @@ export {
 /**
  * Perform P1 reconciliation: compare contract clauses against pre-agreed terms
  *
+ * Supports both GPT and Gemini models. The provider is selected based on P1_MODEL:
+ * - If P1_MODEL starts with 'gemini-', uses Gemini (requires geminiApiKey)
+ * - Otherwise uses GPT (requires openaiApiKey)
+ *
  * @param documentId - Document to reconcile
  * @param supabase - Supabase client
- * @param openaiApiKey - OpenAI API key for GPT comparisons
+ * @param openaiApiKey - OpenAI API key for GPT comparisons (optional if using Gemini)
+ * @param geminiApiKey - Gemini API key for Gemini comparisons (optional if using GPT)
  * @returns Reconciliation statistics
  */
 export async function performP1Reconciliation(
   documentId: string,
   supabase: TypedSupabaseClient,
-  openaiApiKey: string
+  openaiApiKey?: string,
+  geminiApiKey?: string
 ) {
   const startTime = Date.now()
   console.log(`   4️⃣ P1: Comparing against pre-agreed terms (batched)...`)
@@ -151,8 +171,14 @@ export async function performP1Reconciliation(
 
   console.log(`   Found ${preAgreedTerms.length} pre-agreed terms`)
 
-  // ============ STEP 2: Normalize and fetch clauses ============
-  const normalizedTerms = await normalizePatTerms(preAgreedTerms, openaiApiKey, supabase)
+  // ============ STEP 2: Create adapter and normalize PATs ============
+  const adapter = createP1AdapterFromKeys(openaiApiKey, geminiApiKey)
+  if (!adapter) {
+    console.log(`   ℹ️ No AI API key available, skipping P1 comparison`)
+    return { p1_comparisons_made: 0, clauses_updated: 0, discrepancies_created: 0, missing_terms: 0 }
+  }
+
+  const normalizedTerms = await adapter.normalizePATs(preAgreedTerms, supabase)
   const clauses = await fetchClauses(supabase, documentId)
   const matchResults = await fetchMatchResults(supabase, documentId)
   const fullContractText = document.extracted_text || ''
@@ -181,9 +207,9 @@ export async function performP1Reconciliation(
     }
   }
 
-  // ============ STEP 5: Execute GPT comparison ============
+  // ============ STEP 5: Execute AI comparison ============
   console.log(`   Using model: ${P1_MODEL} (estimated ${comparisons.length * 150} tokens)`)
-  const batchResults = await executeBatchComparison(comparisons, openaiApiKey, P1_MODEL)
+  const batchResults = await adapter.compareBatch(comparisons)
   console.log(`   Got ${batchResults.size}/${comparisons.length} results`)
 
   // ============ STEP 6: Select best matches and prepare updates ============

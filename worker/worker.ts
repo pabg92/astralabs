@@ -273,18 +273,20 @@ class DocumentProcessingWorker {
       // Heartbeat: Extend visibility timeout after step 3
       await this.extendVisibilityTimeout(msg.msg_id)
 
-      // Step 4: P1 Reconciliation (batched GPT comparison)
+      // Step 4: P1 Reconciliation (batched AI comparison - supports GPT and Gemini)
       // Issue #2: Track P1 status separately from document processing status
       const openaiApiKey = process.env.OPENAI_API_KEY
+      const geminiApiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_API_KEY
       let p1Status: 'completed' | 'failed' | 'skipped' = 'skipped'
       let p1Error: string | null = null
 
-      if (openaiApiKey) {
+      if (openaiApiKey || geminiApiKey) {
         try {
           const p1Result = await performP1Reconciliation(
             document_id,
             this.supabase,
-            openaiApiKey
+            openaiApiKey,
+            geminiApiKey
           )
           if (p1Result.skipped) {
             console.log(`   ℹ️ P1: ${p1Result.reason}`)
@@ -300,7 +302,7 @@ class DocumentProcessingWorker {
           // Don't throw - P1 is enhancement, not required for document processing
         }
       } else {
-        console.log(`   ℹ️ Skipping P1: OPENAI_API_KEY not set`)
+        console.log(`   ℹ️ Skipping P1: No AI API key set (OPENAI_API_KEY or GEMINI_API_KEY)`)
         p1Status = 'skipped'
       }
 

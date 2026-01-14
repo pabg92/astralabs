@@ -8,10 +8,20 @@
 import { SIMILARITY_THRESHOLDS } from '../../lib/constants/thresholds'
 import type { TermToClauseMap, MatchReason } from '../types/p1-types'
 
-// ============ GPT CONFIGURATION ============
+// ============ MODEL CONFIGURATION ============
 
-/** GPT model for P1 comparisons */
+/** Model for P1 comparisons (supports both GPT and Gemini models) */
 export const P1_MODEL = process.env.P1_MODEL || 'gpt-4o'
+
+/** Check if a model name indicates a Gemini model */
+export function isGeminiModel(model: string): boolean {
+  return model.startsWith('gemini-')
+}
+
+/** Get the AI provider for P1 based on model name */
+export function getP1Provider(): 'gemini' | 'openai' {
+  return isGeminiModel(P1_MODEL) ? 'gemini' : 'openai'
+}
 
 /** GPT model for PAT normalization (lightweight) */
 export const NORMALIZATION_MODEL = process.env.P1_NORMALIZATION_MODEL || 'gpt-4o-mini'
