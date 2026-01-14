@@ -11,7 +11,7 @@ import type { TermToClauseMap, MatchReason } from '../types/p1-types'
 // ============ MODEL CONFIGURATION ============
 
 /** Model for P1 comparisons (supports both GPT and Gemini models) */
-export const P1_MODEL = process.env.P1_MODEL || 'gpt-4o'
+export const P1_MODEL = process.env.P1_MODEL || 'gemini-3-flash-preview'
 
 /** Check if a model name indicates a Gemini model */
 export function isGeminiModel(model: string): boolean {
@@ -23,8 +23,8 @@ export function getP1Provider(): 'gemini' | 'openai' {
   return isGeminiModel(P1_MODEL) ? 'gemini' : 'openai'
 }
 
-/** GPT model for PAT normalization (lightweight) */
-export const NORMALIZATION_MODEL = process.env.P1_NORMALIZATION_MODEL || 'gpt-4o-mini'
+/** Model for PAT normalization (lightweight) */
+export const NORMALIZATION_MODEL = process.env.P1_NORMALIZATION_MODEL || 'gemini-2.5-flash'
 
 /** Maximum comparisons per GPT batch call */
 export const BATCH_SIZE = parseInt(process.env.P1_BATCH_SIZE || '50', 10)

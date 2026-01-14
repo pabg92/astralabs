@@ -216,20 +216,20 @@ COHERE_API_KEY=
 
 # P1 Reconciliation (Optional - all have sensible defaults)
 # Supports both GPT and Gemini models. Set P1_MODEL to switch providers:
-#   - gpt-4o (default)           → uses OpenAI
-#   - gemini-3-flash-preview     → uses Gemini (faster, cheaper)
-P1_MODEL=gpt-4o                    # Model for comparisons (gpt-* or gemini-*)
-P1_NORMALIZATION_MODEL=gpt-4o-mini # Model for PAT normalization
+#   - gemini-3-flash-preview (default) → uses Gemini (faster, cheaper)
+#   - gpt-4o                           → uses OpenAI
+P1_MODEL=gemini-3-flash-preview    # Model for comparisons (gpt-* or gemini-*)
+P1_NORMALIZATION_MODEL=gemini-2.5-flash # Model for PAT normalization
 P1_BATCH_SIZE=50                   # Comparisons per batch
 P1_MAX_RETRIES=3                   # Retry attempts on rate limit
 P1_BASE_TIMEOUT_MS=30000           # Base timeout (30s)
 P1_PER_COMPARISON_MS=2000          # Additional timeout per comparison
 P1_MAX_TIMEOUT_MS=120000           # Maximum timeout cap (2min)
 
-# To use Gemini for P1 (recommended - ~80% cheaper, 3x faster):
-# P1_MODEL=gemini-3-flash-preview
-# P1_NORMALIZATION_MODEL=gemini-2.5-flash
-# GEMINI_API_KEY=your-gemini-api-key
+# To use GPT instead of Gemini:
+# P1_MODEL=gpt-4o
+# P1_NORMALIZATION_MODEL=gpt-4o-mini
+# OPENAI_API_KEY=your-openai-api-key
 ```
 
 ## Database

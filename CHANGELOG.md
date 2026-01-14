@@ -13,7 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - New factory: `worker/adapters/p1-adapter-factory.ts` - Selects GPT or Gemini based on model name
   - Provider auto-detection: Models starting with `gemini-` use Gemini, others use GPT
   - Fallback support: Falls back to available provider if primary API key missing
-  - To enable: Set `P1_MODEL=gemini-3-flash-preview` and provide `GEMINI_API_KEY`
+  - **Now the default**: `P1_MODEL=gemini-3-flash-preview`, `P1_NORMALIZATION_MODEL=gemini-2.5-flash`
+  - To use GPT instead: Set `P1_MODEL=gpt-4o` and provide `OPENAI_API_KEY`
   - Files: `worker/adapters/gemini-p1-adapter.ts`, `worker/adapters/p1-adapter-factory.ts`, `worker/p1-reconciliation.ts`, `worker/worker.ts`, `worker/config/p1-config.ts`
 
 ### Security
