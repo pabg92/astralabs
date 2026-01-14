@@ -205,24 +205,49 @@ export function isRetryableGeminiError(error: unknown): boolean {
  * Clause type definitions with descriptions for the extraction prompt
  */
 const CLAUSE_TYPE_GUIDE = `
-CONTRACT METADATA (extract as single block - ALWAYS check for this first):
-- contract_metadata: Preamble/intro section with party definitions, dates, and identifiers
+CRITICAL DATA - NEVER TRUNCATE THESE:
+- Social media handles: ALWAYS capture the FULL @username (e.g., @kimebrahimi, @nike)
+- URLs and links: Capture complete URLs
+- Email addresses: Capture in full
+- Dollar amounts: Capture exact figures ($10,000 not "amount")
+- Dates: Capture complete dates (May 14th, 2024)
+- Follower counts: Capture exact numbers (245K followers)
+
+LABEL:VALUE PATTERNS - ALWAYS extend to include the VALUE:
+- If a line contains "Instagram:" or "TikTok:" or similar, the @handle is on the SAME LINE or NEXT LINE
+- Your end_line MUST include the line with the actual @username, not stop at the label
+- Example: If "Instagram:" is on line 14 and "@kimebrahimi" is also on line 14, end_line must be >= 14
+- Example: If "Talent Name:" is on line 11 and "Kim Ebrahimi" is on line 11, end_line must be >= 11
+- NEVER return end_line that stops at just "Instagram:" or "Talent Name:" - always include the value!
+
+PARTY & IDENTIFICATION CLAUSES (extract completely - capture ALL names and handles):
+- talent_details: Talent name, social media handles (@username), follower counts, contact info
+  EXAMPLES:
+  - "Talent Name: Kim Ebrahimi"
+  - "Instagram: @kimebrahimi (245K followers)"
+  - "TikTok: @kimebrahimi_official"
+  CRITICAL: When you see "Talent Name" followed by "Social Media Links" and "Instagram:",
+  include ALL of these lines in ONE talent_details clause. Your end_line must extend to
+  include the @handle on the Instagram line, not stop at "Talent Name" alone.
+  Example correct output for lines like:
+    [11] Talent Name: Kim Ebrahimi
+    [12] Talent's Social Media
+    [13] Links
+    [14] Instagram: @kimebrahimi
+  → Return start_line: 11, end_line: 14 (captures the full @handle)
+
+- brand_details: Brand name, campaign name, agency, client company
+  EXAMPLES:
+  - "Brand: Lucky Brand"
+  - "Campaign Name: Lucky Brand x Cotton Summer 2024"
+  - "Agency: Viral Nation"
+
+- contract_metadata: Full preamble with effective date, parties, campaign period as ONE clause
   EXAMPLES:
   - "Effective Date: May 14th, 2024"
-  - "Parties: Brand and Talent"
-  - "Representative: Kim Ebrahimi"
-  - "Campaign Name: Lucky Brand X Cotton"
   - "Campaign Period: May 14th, 2024 – June 14th, 2024"
-  - "Talent's Social Media Links = Instagram: @kimebrahimi"
-  NOTE: Extract the ENTIRE preamble/header section as ONE clause. Include:
-  - Party definitions (Brand, Talent, Agency, Client names)
-  - Effective Date and Campaign Period
-  - Campaign Name and Project identifiers
-  - Representative identification
-  - Independent contractor status declarations
-  - Social media handles and links
-  Do NOT split individual definitions into separate clauses.
-  This is typically the first section before the actual contract terms begin.
+  NOTE: If talent/brand details are in a separate section from the preamble, use talent_details/brand_details instead.
+  Extract the ENTIRE preamble/header section as ONE clause when it contains multiple definitions.
   Include BOTH labels AND values (e.g., "Campaign Period = May 14th – June 14th").
   STOP EXTRACTION when you encounter:
   - Section headers like "SECTION 1:", "SECTION 2:", "1.", "2.", "Article I", etc.
@@ -287,7 +312,11 @@ STANDARD CONTRACT CLAUSES:
 
 CATCH-ALL (use sparingly):
 - miscellaneous: ONLY for true boilerplate (signatures, counterparts, electronic delivery, entire agreement)
-  NOTE: If uncertain between miscellaneous and a specific type, prefer the specific type`
+  NOTE: If uncertain between miscellaneous and a specific type, prefer the specific type
+  NEVER use miscellaneous for:
+  - Talent names or social media handles (use talent_details)
+  - Brand or campaign names (use brand_details)
+  - Party identification (use contract_metadata or talent_details/brand_details)`
 
 /**
  * Builds the system prompt for Gemini extraction

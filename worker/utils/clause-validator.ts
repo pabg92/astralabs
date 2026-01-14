@@ -75,7 +75,9 @@ export interface ValidationResult {
 // ============================================================================
 
 /** Characters that typically end sentences */
-export const SENTENCE_END_CHARS = new Set(['.', '!', '?', ':', ';'])
+// Note: Colon removed from sentence end chars to avoid truncating "Instagram: @handle" patterns
+// Colons in contracts often precede important values (labels), not end sentences
+export const SENTENCE_END_CHARS = new Set(['.', '!', '?', ';'])
 
 /** Characters after which new sentences start */
 export const SENTENCE_START_AFTER = new Set(['.', '!', '?', ':', ';', '\n'])
@@ -327,6 +329,52 @@ export function trimLeadingHeaders(
   }
 
   return startIndex
+}
+
+/**
+ * Extend clause end if it ends with a truncated label pattern like "Instagram:" without the value
+ * This handles cases where the model returned end_line that stops at the label but not the @handle
+ */
+export function extendTruncatedLabels(
+  text: string,
+  endIndex: number,
+  textLength: number,
+  maxExtend: number = 100
+): number {
+  // Look backwards from endIndex to find the last line
+  let lineStart = endIndex - 1
+  while (lineStart > 0 && text[lineStart - 1] !== '\n') {
+    lineStart--
+  }
+
+  const lastLine = text.slice(lineStart, endIndex).trim()
+
+  // Check if last line ends with a label pattern (word followed by colon)
+  // Common patterns: "Instagram:", "TikTok:", "YouTube:", "Twitter:", "Email:", "Phone:"
+  const labelPattern = /^(Instagram|TikTok|YouTube|Twitter|Facebook|Email|Phone|Talent Name|Brand|Campaign Name|Agency|Social Media|Links):\s*$/i
+
+  if (labelPattern.test(lastLine) || lastLine.endsWith(':')) {
+    // Extend to include the next line (which should contain the value)
+    let newEnd = endIndex
+
+    // Skip any whitespace/newlines
+    while (newEnd < textLength && newEnd < endIndex + maxExtend && /[\s\n]/.test(text[newEnd])) {
+      newEnd++
+    }
+
+    // Include the next line's content until newline or end
+    while (newEnd < textLength && newEnd < endIndex + maxExtend && text[newEnd] !== '\n') {
+      newEnd++
+    }
+
+    // Only extend if we found meaningful content (has @ for social handles or alphanumeric)
+    const extended = text.slice(endIndex, newEnd)
+    if (extended.includes('@') || /[a-zA-Z0-9]{3,}/.test(extended)) {
+      return newEnd
+    }
+  }
+
+  return endIndex
 }
 
 /**
@@ -653,6 +701,9 @@ export function validateClauseIndices(
     // Trim headers and trailing content
     globalStart = trimLeadingHeaders(fullText, globalStart, globalEnd, cfg.minClauseLength)
     globalEnd = trimTrailingContent(fullText, globalStart, globalEnd, cfg.minClauseLength)
+
+    // Extend truncated labels (e.g., "Instagram:" without the @handle)
+    globalEnd = extendTruncatedLabels(fullText, globalEnd, textLength)
 
     // Re-validate bounds
     if (globalStart < 0 || globalEnd > textLength || globalStart >= globalEnd) {

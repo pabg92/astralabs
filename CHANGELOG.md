@@ -139,7 +139,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `archive_queue_message(queue_name, msg_id)` - Archive to DLQ on failure
   - File: `supabase/migrations/100_add_queue_helper_functions.sql`
 
+### Fixed
+- **Social media handles now captured in clause extraction** - Fixed truncation of @usernames like `@kimebrahimi`
+  - Root cause: Colon treated as sentence boundary, causing "Instagram: @handle" to truncate at "Instagram:"
+  - Removed colon from `SENTENCE_END_CHARS` in clause validator
+  - Added `extendTruncatedLabels()` function to auto-extend clauses ending with label patterns (e.g., "Instagram:", "TikTok:")
+  - Added new clause types: `talent_details`, `brand_details`, `party_identification`
+  - Added explicit prompt guidance for label:value patterns in Gemini extraction
+  - Files: `worker/utils/clause-validator.ts`, `worker/adapters/gemini-extraction-adapter.ts`
+
 ### Changed
+- **Enhanced AI prompts for extraction and P1 comparison** - Improved accuracy with research-backed prompt engineering
+  - Added XML tag structure for Gemini 3 compatibility (`<role>`, `<task>`, `<examples>`, etc.)
+  - Added few-shot examples for each RAG classification (GREEN/AMBER/RED)
+  - Added detailed clause type definitions with influencer marketing context
+  - Added bidirectional NLI approach for comparison (term→clause entailment + clause→term conflict check)
+  - Added quantitative thresholds (25% timing variance = AMBER, 50% = RED)
+  - Added confidence scoring guidance (0.90+ = clear, 0.75-0.89 = some ambiguity, etc.)
+  - Added special handling rules for placeholders, mandatory terms, and implicit terms
+  - Files: `supabase/functions/extract-clauses/index.ts`, `worker/adapters/gemini-p1-adapter.ts`, `worker/adapters/gpt-adapter.ts`
+
 - **Gemini 3 Flash Upgrade** - Now using `gemini-3-flash-preview` (latest)
   - 1M token context, $0.50/$3 per 1M tokens
   - Built-in reasoning with thinking levels
