@@ -350,10 +350,12 @@ export function extendTruncatedLabels(
   const lastLine = text.slice(lineStart, endIndex).trim()
 
   // Check if last line ends with a label pattern (word followed by colon)
-  // Common patterns: "Instagram:", "TikTok:", "YouTube:", "Twitter:", "Email:", "Phone:"
-  const labelPattern = /^(Instagram|TikTok|YouTube|Twitter|Facebook|Email|Phone|Talent Name|Brand|Campaign Name|Agency|Social Media|Links):\s*$/i
+  // Generic pattern: any word(s) followed by colon at end of line
+  // Catches: Instagram:, TikTok:, Snapchat:, BeReal:, LinkedIn:, Twitch:, Website:, etc.
+  const labelPattern = /^[\w\s\-\.]+:\s*$/i
 
-  if (labelPattern.test(lastLine) || lastLine.endsWith(':')) {
+  // Also check for specific multi-word labels and any line ending with colon
+  if (labelPattern.test(lastLine) || lastLine.endsWith(':') || /:\s*$/.test(lastLine)) {
     // Extend to include the next line (which should contain the value)
     let newEnd = endIndex
 
@@ -627,7 +629,7 @@ export interface ValidationConfig {
 const DEFAULT_VALIDATION_CONFIG: Required<ValidationConfig> = {
   minClauseLength: MIN_CLAUSE_LENGTH,
   maxClauseLength: MAX_CLAUSE_LENGTH,
-  snapBaseMaxAdjust: 80,
+  snapBaseMaxAdjust: 120, // Increased from 80 to better handle multi-line sentences
   forceMaxExpand: 300,
   chunkStart: 0,
   enableSnapping: true,
@@ -715,11 +717,13 @@ export function validateClauseIndices(
     const length = globalEnd - globalStart
     if (length <= cfg.minClauseLength) {
       telemetry.dropped_for_length++
+      console.warn(`[ClauseValidator] Dropping clause too short: type=${raw.clause_type}, length=${length}, min=${cfg.minClauseLength}`)
       continue
     }
     // Allow up to 2x max due to aggressive boundary expansion
     if (length > cfg.maxClauseLength * 2) {
       telemetry.dropped_for_length++
+      console.warn(`[ClauseValidator] Dropping clause too long: type=${raw.clause_type}, length=${length}, max=${cfg.maxClauseLength * 2}`)
       continue
     }
 
@@ -758,6 +762,8 @@ export function validateClauseIndices(
     // Allow touching, reject true overlaps
     if (clause._globalStart < lastEnd) {
       telemetry.dropped_for_overlap++
+      // Log dropped overlaps for debugging extraction quality issues
+      console.warn(`[ClauseValidator] Dropping overlapping clause: type=${clause.clause_type}, start=${clause._globalStart}, end=${clause._globalEnd}, lastEnd=${lastEnd}, overlap=${lastEnd - clause._globalStart} chars`)
       continue
     }
 

@@ -21,6 +21,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - To use GPT instead: Set `P1_MODEL=gpt-4o` and provide `OPENAI_API_KEY`
   - Files: `worker/adapters/gemini-p1-adapter.ts`, `worker/adapters/p1-adapter-factory.ts`, `worker/p1-reconciliation.ts`, `worker/worker.ts`, `worker/config/p1-config.ts`
 
+### Fixed
+- **Clause extraction quality improvements** - Multiple fixes to improve clause boundary detection and reduce missing/truncated clauses:
+  - Generic label pattern regex catches all `Label:` patterns (Snapchat, BeReal, LinkedIn, Twitch, Website, etc.) instead of hardcoded list
+  - Increased MAX_CLAUSE_LENGTH from 400 to 600 chars to accommodate metadata clauses
+  - Increased snap window from 80 to 120 chars for better multi-line sentence completion
+  - Added logging for dropped clauses (overlap, length issues) for better debugging
+  - Files: `worker/utils/clause-validator.ts`, `worker/config/extraction-config.ts`
+
 ### Changed
 - **GREEN clauses auto-approved** - GREEN clauses now automatically count as approved in progress calculations. If 95 out of 100 clauses are GREEN, the page loads showing 95% complete. Users only need to manually approve AMBER/RED clauses to reach 100%.
   - Reconciliation page: GREEN clauses start with "match" status (checks `rag_status`, `rag_parsing`, and `rag_risk`)

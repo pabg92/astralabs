@@ -78,9 +78,11 @@ export const EXTRACTION_MAX_ATTEMPTS = parseInt(
 
 /**
  * Maximum clause content length (reject if longer)
+ * Increased to 600 to accommodate metadata clauses (talent details, contract metadata)
+ * which often span 500-800 chars with multiple fields
  */
 export const MAX_CLAUSE_LENGTH = parseInt(
-  process.env.MAX_CLAUSE_LENGTH || '400',
+  process.env.MAX_CLAUSE_LENGTH || '600',
   10
 )
 
