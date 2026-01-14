@@ -163,15 +163,21 @@ class DocumentProcessingWorker {
       return
     }
 
-    console.log(`📨 Processing ${messages.length} messages`)
+    console.log(`📨 Processing ${messages.length} messages in parallel`)
 
-    for (const msg of messages as QueueMessage[]) {
+    // Process all documents in parallel for better throughput
+    const results = await Promise.allSettled(
+      (messages as QueueMessage[]).map(msg => this.processDocument(msg))
+    )
+
+    // Handle results for each message
+    for (let i = 0; i < results.length; i++) {
+      const result = results[i]
+      const msg = (messages as QueueMessage[])[i]
       const docId = msg.message.document_id
 
-      try {
-        await this.processDocument(msg)
-
-        // Delete message from queue after successful processing
+      if (result.status === 'fulfilled') {
+        // Success - delete message from queue
         const { error: deleteError } = await this.supabase.rpc('delete_queue_message', {
           p_queue_name: 'document_processing_queue',
           p_msg_id: msg.msg_id
@@ -182,12 +188,13 @@ class DocumentProcessingWorker {
         } else {
           console.log(`✅ Message ${msg.msg_id} processed and deleted (document: ${docId})`)
         }
-      } catch (error: unknown) {
+      } else {
+        // Failure - archive to DLQ
+        const error = result.reason
         const wasTransient = isTransientError(error)
         const errorType = wasTransient ? 'transient (retries exhausted)' : 'non-retryable'
         console.error(`❌ Failed to process document ${docId} (msg ${msg.msg_id}) - ${errorType}:`, getErrorMessage(error))
 
-        // Archive failed message to DLQ
         const { error: archiveError } = await this.supabase.rpc('archive_queue_message', {
           p_queue_name: 'document_processing_queue',
           p_msg_id: msg.msg_id
@@ -195,7 +202,7 @@ class DocumentProcessingWorker {
 
         if (archiveError) {
           console.error(`🔴 CRITICAL: Failed to archive msg ${msg.msg_id} for document ${docId}:`, archiveError)
-          throw new Error(`Queue archive failed for msg ${msg.msg_id}, document ${docId}`)
+          // Don't throw here - continue processing other results
         } else {
           console.log(`📦 Message ${msg.msg_id} archived to DLQ after ${wasTransient ? 'exhausting retries' : 'non-retryable error'} (document: ${docId})`)
         }

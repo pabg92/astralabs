@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Parallel document processing** - Worker now processes multiple documents concurrently instead of sequentially, providing up to 5x throughput improvement
+  - Uses `Promise.allSettled` to handle individual document failures gracefully
+  - File: `worker/worker.ts`
+
 - **Gemini 3 Flash support for P1 reconciliation** - Added Gemini as an alternative to GPT-4o for P1 clause-vs-PAT comparisons, providing ~80% cost reduction and ~3x speed improvement
   - New adapter: `worker/adapters/gemini-p1-adapter.ts` - Gemini API wrapper with Zod schemas
   - New factory: `worker/adapters/p1-adapter-factory.ts` - Selects GPT or Gemini based on model name
