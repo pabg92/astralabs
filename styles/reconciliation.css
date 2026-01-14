@@ -329,6 +329,19 @@
   background: rgba(196, 69, 54, 0.15);
 }
 
+/* Metadata - Neutral (contract preamble/header info) */
+.clause-highlight--metadata {
+  background: rgba(148, 163, 184, 0.12);
+}
+
+.clause-highlight--metadata::after {
+  background: #94a3b8;
+}
+
+.clause-highlight--metadata:hover {
+  background: rgba(148, 163, 184, 0.2);
+}
+
 /* Selected state */
 .clause-highlight--selected {
   box-shadow: 0 0 0 2px var(--ui-accent);

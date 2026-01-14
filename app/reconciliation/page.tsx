@@ -1334,21 +1334,27 @@ function ReconciliationContent() {
     return clauseStatuses[clause.id] ?? clause.status
   }, [clauseStatuses])
 
+  // Filter out contract_metadata clauses from RAG card display
+  // These are shown in a separate "Contract Details" summary section
+  const ragClauses = clauses.filter((c) => c.clauseType !== "contract_metadata")
+  const metadataClauses = clauses.filter((c) => c.clauseType === "contract_metadata")
+
   const statusCounts = {
-    match: clauses.filter((c) => getClauseStatus(c) === "match").length,
-    review: clauses.filter((c) => getClauseStatus(c) === "review").length,
-    issue: clauses.filter((c) => getClauseStatus(c) === "issue").length,
+    match: ragClauses.filter((c) => getClauseStatus(c) === "match").length,
+    review: ragClauses.filter((c) => getClauseStatus(c) === "review").length,
+    issue: ragClauses.filter((c) => getClauseStatus(c) === "issue").length,
   }
 
   const filteredClauses =
-    activeFilter === "all" ? clauses : clauses.filter((c) => getClauseStatus(c) === activeFilter)
+    activeFilter === "all" ? ragClauses : ragClauses.filter((c) => getClauseStatus(c) === activeFilter)
 
   const clauseHighlights = useMemo(
     () =>
       clauses.map((clause) => ({
         id: clause.id,
         text: clause.text,
-        status: getClauseStatus(clause),
+        // Use "metadata" status for contract_metadata clauses (neutral grey highlight)
+        status: clause.clauseType === "contract_metadata" ? "metadata" as const : getClauseStatus(clause),
       })),
     [clauses, clauseStatuses, riskAcceptedClauses, getClauseStatus],
   )
@@ -1375,6 +1381,20 @@ function ReconciliationContent() {
       case "issue":
         return <AlertCircle className="w-4 h-4" />
     }
+  }
+
+  // Parse metadata clause content into key-value pairs for display
+  const parseMetadataContent = (content: string): Array<{ key: string; value: string }> => {
+    const lines = content.split('\n').filter(Boolean)
+    return lines.map(line => {
+      // Match patterns like "Key: Value", "Key = Value", or "Key Value" (for simple cases)
+      const colonMatch = line.match(/^([^:=]+)[=:](.+)$/)
+      if (colonMatch) {
+        return { key: colonMatch[1].trim(), value: colonMatch[2].trim() }
+      }
+      // Fallback: treat entire line as a value with empty key
+      return { key: '', value: line.trim() }
+    }).filter(item => item.value) // Only keep entries with values
   }
 
   const handleReset = () => {
@@ -1937,9 +1957,15 @@ function ReconciliationContent() {
 
     // Helper to get colors based on clause status - muted, professional palette
     const getBackgroundColor = (clause: Clause) => {
-      const status = getClauseStatus(clause)
       const isSelected = selectedClause?.id === clause.id
       const isRiskAccepted = riskAcceptedClauses.has(clause.id)
+
+      // Neutral grey for contract_metadata clauses (preamble/header info)
+      if (clause.clauseType === "contract_metadata") {
+        return isSelected ? "rgba(59, 130, 246, 0.18)" : "rgba(148, 163, 184, 0.25)"
+      }
+
+      const status = getClauseStatus(clause)
 
       // Soft blue for selection
       if (isSelected) return "rgba(59, 130, 246, 0.18)"
@@ -1952,9 +1978,15 @@ function ReconciliationContent() {
 
     // Muted underline colors for professional appearance
     const getUnderlineColor = (clause: Clause) => {
-      const status = getClauseStatus(clause)
       const isSelected = selectedClause?.id === clause.id
       const isRiskAccepted = riskAcceptedClauses.has(clause.id)
+
+      // Neutral slate for contract_metadata clauses
+      if (clause.clauseType === "contract_metadata") {
+        return isSelected ? "#3b82f6" : "#94a3b8"
+      }
+
+      const status = getClauseStatus(clause)
 
       if (isSelected) return "#3b82f6"
       if (status === "match") return isRiskAccepted ? "#d4a21a" : "#5b9a67"
@@ -1969,8 +2001,16 @@ function ReconciliationContent() {
 
     // Helper to get CSS class for clause status
     const getClauseHighlightClass = (clause: Clause) => {
-      const status = getClauseStatus(clause)
       const isSelected = selectedClause?.id === clause.id
+
+      // Metadata clauses get neutral styling
+      if (clause.clauseType === "contract_metadata") {
+        let className = 'clause-highlight clause-highlight--metadata'
+        if (isSelected) className += ' clause-highlight--selected'
+        return className
+      }
+
+      const status = getClauseStatus(clause)
       let className = 'clause-highlight'
       if (status === 'match') className += ' clause-highlight--green'
       else if (status === 'review') className += ' clause-highlight--amber'
@@ -2813,6 +2853,42 @@ function ReconciliationContent() {
             {/* Overview tab */}
             <div className={activeTab === "overview" ? "block" : "hidden"}>
               <div className="w-full">
+                {/* Contract Details (Metadata) Section */}
+                {metadataClauses.length > 0 && (
+                  <Card className="p-4 shadow-sm rounded-2xl border-slate-200 mb-6 bg-slate-50">
+                    <div className="flex items-center gap-2 mb-3">
+                      <div className="w-2 h-2 bg-slate-400 rounded-full" />
+                      <h3 className="text-sm font-semibold text-slate-700">Contract Details</h3>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <tbody>
+                          {metadataClauses.flatMap((clause) =>
+                            parseMetadataContent(clause.text).map((item, idx) => (
+                              <tr key={`${clause.id}-${idx}`} className="border-b border-slate-200 last:border-0">
+                                {item.key ? (
+                                  <>
+                                    <td className="py-2 pr-4 text-slate-500 font-medium whitespace-nowrap w-1/3">
+                                      {item.key}
+                                    </td>
+                                    <td className="py-2 text-slate-800">
+                                      {item.value}
+                                    </td>
+                                  </>
+                                ) : (
+                                  <td colSpan={2} className="py-2 text-slate-800">
+                                    {item.value}
+                                  </td>
+                                )}
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </Card>
+                )}
+
                 {/* P1 Reconciliation In Progress Banner */}
                 {isStillProcessing && clauses.length > 0 && (
                   <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-6 flex items-center gap-3 shadow-sm">

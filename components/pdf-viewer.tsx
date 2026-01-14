@@ -11,7 +11,7 @@ import "react-pdf/dist/Page/TextLayer.css"
 // Version 3.11.174 uses .js worker files instead of .mjs
 pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.js`
 
-type PdfHighlightStatus = "match" | "review" | "issue"
+type PdfHighlightStatus = "match" | "review" | "issue" | "metadata"
 
 interface HighlightClause {
   id: number
@@ -182,6 +182,9 @@ export function PDFViewer({
       .pdf-highlight-issue {
         background-color: rgba(248, 196, 196, 0.65);
       }
+      .pdf-highlight-metadata {
+        background-color: rgba(148, 163, 184, 0.35);
+      }
       .pdf-highlight-active {
         box-shadow: 0 0 0 2px rgba(148, 163, 184, 0.8);
       }
@@ -201,6 +204,7 @@ export function PDFViewer({
           "pdf-highlight-match",
           "pdf-highlight-review",
           "pdf-highlight-issue",
+          "pdf-highlight-metadata",
           "pdf-highlight-active"
         )
         delete span.dataset.clauseId

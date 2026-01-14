@@ -205,6 +205,31 @@ export function isRetryableGeminiError(error: unknown): boolean {
  * Clause type definitions with descriptions for the extraction prompt
  */
 const CLAUSE_TYPE_GUIDE = `
+CONTRACT METADATA (extract as single block - ALWAYS check for this first):
+- contract_metadata: Preamble/intro section with party definitions, dates, and identifiers
+  EXAMPLES:
+  - "Effective Date: May 14th, 2024"
+  - "Parties: Brand and Talent"
+  - "Representative: Kim Ebrahimi"
+  - "Campaign Name: Lucky Brand X Cotton"
+  - "Campaign Period: May 14th, 2024 – June 14th, 2024"
+  - "Talent's Social Media Links = Instagram: @kimebrahimi"
+  NOTE: Extract the ENTIRE preamble/header section as ONE clause. Include:
+  - Party definitions (Brand, Talent, Agency, Client names)
+  - Effective Date and Campaign Period
+  - Campaign Name and Project identifiers
+  - Representative identification
+  - Independent contractor status declarations
+  - Social media handles and links
+  Do NOT split individual definitions into separate clauses.
+  This is typically the first section before the actual contract terms begin.
+  Include BOTH labels AND values (e.g., "Campaign Period = May 14th – June 14th").
+  STOP EXTRACTION when you encounter:
+  - Section headers like "SECTION 1:", "SECTION 2:", "1.", "2.", "Article I", etc.
+  - Numbered clauses that begin substantive contract terms
+  - Headings like "TERMS AND CONDITIONS", "AGREEMENT", "SCOPE OF WORK"
+  The preamble is ONLY the introductory metadata - NOT the contract terms themselves.
+
 INFLUENCER-SPECIFIC CLAUSES:
 - morality_clause: Talent conduct, reputation, criminal history, behavior that could damage brand
   EXAMPLES: "Talent represents no criminal record", "shall not engage in conduct that would disparage", "Morals clause"
@@ -280,6 +305,16 @@ WHAT IS A CLAUSE?
 - Typically 1-10 lines of text
 - MUST include COMPLETE sentences - never cut mid-sentence
 
+PREAMBLE HANDLING (extract FIRST, before other clauses):
+- The document intro/preamble section containing Effective Date, Parties,
+  Representative, Campaign details should be extracted as ONE contract_metadata clause
+- This includes label=value rows like "Campaign Name = Lucky Brand X Cotton"
+- Extract the FULL row including BOTH label AND value
+- Do NOT skip the preamble - it contains important contract metadata
+- The preamble typically appears at the very beginning, before substantive terms
+- CRITICAL: STOP the preamble BEFORE any "SECTION X:" headers or numbered sections begin
+- Do NOT include "SECTION 1:", "SECTION 2:", etc. in the contract_metadata clause
+
 SPLITTING RULES (each becomes separate clause):
 1. Each bullet point (bullet, dash, asterisk) = separate clause
 2. Each numbered item (1., 2., a)) = separate clause
@@ -323,7 +358,8 @@ RAG_STATUS:
 
 CRITICAL RULES:
 - Extract EVERY substantive clause - do not skip content
-- Section headers like "PAYMENT TERMS" are NOT clauses themselves
+- Section headers like "PAYMENT TERMS" are NOT clauses themselves (except preamble metadata)
+- The preamble/intro section IS a clause (contract_metadata) - do not skip it
 - start_line and end_line are 0-indexed and inclusive
 - Confidence must be between 0.0 and 1.0
 - If a clause spans lines 5-7, use start_line: 5, end_line: 7`
