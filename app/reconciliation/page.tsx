@@ -472,7 +472,15 @@ function ReconciliationContent() {
 
             // Check if there's a persisted review that overrides the RAG status
             const review = boundary.review
-            let effectiveStatus = mapRAGStatusToClauseStatus(matchResult.rag_status)
+
+            // GREEN clauses are auto-approved: check all RAG status fields
+            const isGreen = matchResult.rag_status === 'green' ||
+                           matchResult.rag_parsing === 'green' ||
+                           matchResult.rag_risk === 'green'
+
+            let effectiveStatus: ClauseStatus = isGreen ? "match" : mapRAGStatusToClauseStatus(matchResult.rag_status)
+
+            // User review decisions override auto-approval
             if (review?.decision === "approved") {
               effectiveStatus = "match"
             } else if (review?.decision === "rejected" || review?.decision === "flagged") {
@@ -1334,10 +1342,36 @@ function ReconciliationContent() {
     return clauseStatuses[clause.id] ?? clause.status
   }, [clauseStatuses])
 
-  // Filter out contract_metadata clauses from RAG card display
+  // Metadata clause types that should not appear in RAG cards or document highlighting (Option C)
+  // These are displayed in the Contract Details table instead
+  const METADATA_CLAUSE_TYPES = new Set([
+    "contract_metadata",  // Preamble: effective date, parties, campaign period
+    "talent_details",     // Talent name, social media handles, follower counts
+    "brand_details",      // Brand name, campaign name, agency
+  ])
+
+  // Filter out metadata clauses from RAG card display
   // These are shown in a separate "Contract Details" summary section
-  const ragClauses = clauses.filter((c) => c.clauseType !== "contract_metadata")
-  const metadataClauses = clauses.filter((c) => c.clauseType === "contract_metadata")
+  const ragClauses = clauses.filter((c) => !METADATA_CLAUSE_TYPES.has(c.clauseType))
+  const metadataClauses = clauses.filter((c) => METADATA_CLAUSE_TYPES.has(c.clauseType))
+
+  // DEBUG: Log clause filtering (remove after verification)
+  // Only log once when clauses change to avoid spam
+  useEffect(() => {
+    if (clauses.length > 0) {
+      console.log('[UI Clause Filtering Debug]', {
+        total: clauses.length,
+        metadata: {
+          count: metadataClauses.length,
+          types: metadataClauses.map(c => ({ id: c.id, type: c.clauseType, preview: c.text.slice(0, 50) }))
+        },
+        substantive: {
+          count: ragClauses.length,
+          types: [...new Set(ragClauses.map(c => c.clauseType))]
+        }
+      })
+    }
+  }, [clauses.length]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const statusCounts = {
     match: ragClauses.filter((c) => getClauseStatus(c) === "match").length,
@@ -1350,12 +1384,15 @@ function ReconciliationContent() {
 
   const clauseHighlights = useMemo(
     () =>
-      clauses.map((clause) => ({
-        id: clause.id,
-        text: clause.text,
-        // Use "metadata" status for contract_metadata clauses (neutral grey highlight)
-        status: clause.clauseType === "contract_metadata" ? "metadata" as const : getClauseStatus(clause),
-      })),
+      // Exclude metadata clause types from highlighting (Option C)
+      // Metadata is displayed in the Contract Details table, not highlighted in document
+      clauses
+        .filter((clause) => !METADATA_CLAUSE_TYPES.has(clause.clauseType))
+        .map((clause) => ({
+          id: clause.id,
+          text: clause.text,
+          status: getClauseStatus(clause),
+        })),
     [clauses, clauseStatuses, riskAcceptedClauses, getClauseStatus],
   )
 
@@ -1872,9 +1909,11 @@ function ReconciliationContent() {
   // ============ END TEXT SEGMENTATION HELPERS ============
 
   // Memoize segments for performance - only recalculate when clauses or extractedText change
+  // Exclude metadata clause types from highlighting (Option C) - they appear as plain text
   const allSegments = useMemo(() => {
     if (!extractedText) return []
-    return buildTextSegments(clauses, extractedText)
+    const highlightableClauses = clauses.filter((c) => !METADATA_CLAUSE_TYPES.has(c.clauseType))
+    return buildTextSegments(highlightableClauses, extractedText)
   }, [clauses, extractedText])
 
   // Handle mouse enter on clause spans - calculate position for fixed popover
@@ -2002,14 +2041,6 @@ function ReconciliationContent() {
     // Helper to get CSS class for clause status
     const getClauseHighlightClass = (clause: Clause) => {
       const isSelected = selectedClause?.id === clause.id
-
-      // Metadata clauses get neutral styling
-      if (clause.clauseType === "contract_metadata") {
-        let className = 'clause-highlight clause-highlight--metadata'
-        if (isSelected) className += ' clause-highlight--selected'
-        return className
-      }
-
       const status = getClauseStatus(clause)
       let className = 'clause-highlight'
       if (status === 'match') className += ' clause-highlight--green'

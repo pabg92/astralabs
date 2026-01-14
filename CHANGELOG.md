@@ -21,6 +21,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - To use GPT instead: Set `P1_MODEL=gpt-4o` and provide `OPENAI_API_KEY`
   - Files: `worker/adapters/gemini-p1-adapter.ts`, `worker/adapters/p1-adapter-factory.ts`, `worker/p1-reconciliation.ts`, `worker/worker.ts`, `worker/config/p1-config.ts`
 
+### Changed
+- **GREEN clauses auto-approved** - GREEN clauses now automatically count as approved in progress calculations. If 95 out of 100 clauses are GREEN, the page loads showing 95% complete. Users only need to manually approve AMBER/RED clauses to reach 100%.
+  - Reconciliation page: GREEN clauses start with "match" status (checks `rag_status`, `rag_parsing`, and `rag_risk`)
+  - Completion page: GREEN clauses without explicit review count toward completion rate
+  - Files: `app/reconciliation/page.tsx`, `app/reconciliation/complete/page.tsx`
+
+- **SOW preamble/metadata no longer highlighted** - Metadata clause types are now displayed only in the Contract Details table, not as highlighted clauses in Inline or PDF view (Option C). Eliminates "striped cheese" effect where only labels were highlighted.
+  - Excluded types: `contract_metadata` (preamble), `talent_details` (name, social handles), `brand_details` (brand, campaign, agency)
+  - File: `app/reconciliation/page.tsx`
+
 ### Security
 - **API Authentication Middleware** - All API routes now require authentication
   - Created centralized auth helper module: `lib/auth/api-auth.ts`

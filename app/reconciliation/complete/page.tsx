@@ -61,6 +61,7 @@ interface Clause {
   ragRisk?: string | null
   gptSummary?: string | null
   revisedByUser?: boolean
+  isAutoApproved?: boolean // GREEN clauses without explicit review
 }
 
 interface PreAgreedTerm {
@@ -202,11 +203,15 @@ function ResolutionPageContent() {
             } | null
             review?: { decision?: string; risk_accepted?: boolean } | null
           }) => {
+            // GREEN clauses are auto-approved: check all RAG status fields
+            const ragStatus = boundary.match_result?.rag_status
+            const ragParsing = boundary.match_result?.rag_parsing
+            const ragRisk = boundary.match_result?.rag_risk
+            const isGreen = ragStatus === "green" || ragParsing === "green" || ragRisk === "green"
+
             // Determine status from RAG status
             let status: ClauseStatus = "review"
-            const ragStatus = boundary.match_result?.rag_status
-
-            if (ragStatus === "green") status = "match"
+            if (isGreen) status = "match"
             else if (ragStatus === "amber") status = "review"
             else if (ragStatus === "red") status = "issue"
             else if (ragStatus === "blue") status = "info"
@@ -222,10 +227,11 @@ function ResolutionPageContent() {
               confidence: Math.round((boundary.match_result?.similarity_score || 0) * 100),
               clauseType: boundary.clause_type || "General",
               reviewDecision,
-              ragParsing: boundary.match_result?.rag_parsing || null,
-              ragRisk: boundary.match_result?.rag_risk || null,
+              ragParsing: ragParsing || null,
+              ragRisk: ragRisk || null,
               gptSummary: boundary.match_result?.gpt_summary || null,
               revisedByUser: hasUserRevision,
+              isAutoApproved: isGreen && !reviewDecision, // Track auto-approved GREEN clauses
             }
           })
 
@@ -244,9 +250,14 @@ function ResolutionPageContent() {
   }, [dealId])
 
   // Calculate statistics based on review decisions
-  const acceptedClauses = clauses.filter((c) => c.reviewDecision === "approved")
+  // GREEN clauses are auto-approved and count toward completion
+  const acceptedClauses = clauses.filter((c) =>
+    c.reviewDecision === "approved" || c.isAutoApproved
+  )
   const rejectedClauses = clauses.filter((c) => c.reviewDecision === "rejected")
-  const pendingClauses = clauses.filter((c) => !c.reviewDecision)
+  const pendingClauses = clauses.filter((c) =>
+    !c.reviewDecision && !c.isAutoApproved
+  )
 
   const totalClauses = clauses.length
   const acceptedCount = acceptedClauses.length
