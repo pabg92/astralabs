@@ -8,9 +8,11 @@ import { RedlineDiffViewer } from "@/components/redlines/redline-diff-viewer"
 import "react-pdf/dist/Page/AnnotationLayer.css"
 import "react-pdf/dist/Page/TextLayer.css"
 
-// Configure PDF.js worker for pdfjs-dist 3.x (using legacy build for stability)
-// Version 3.11.174 uses .js worker files instead of .mjs
-pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.js`
+// Configure PDF.js worker for pdfjs-dist 3.x
+// Use local worker to avoid CDN timing issues
+if (typeof window !== 'undefined') {
+  pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.js`
+}
 
 type PdfHighlightStatus = "match" | "review" | "issue" | "metadata"
 
@@ -66,11 +68,19 @@ export function PDFViewer({
   const [fileName, setFileName] = useState<string>("contract.pdf")
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [workerReady, setWorkerReady] = useState(false)
 
   const [numPages, setNumPages] = useState<number>(0)
   const [pageNumber, setPageNumber] = useState(1)
   const [containerWidth, setContainerWidth] = useState(0)
   const [documentReady, setDocumentReady] = useState(false)
+
+  // Ensure PDF.js worker is ready before rendering
+  useEffect(() => {
+    if (typeof window !== 'undefined' && pdfjs.GlobalWorkerOptions.workerSrc) {
+      setWorkerReady(true)
+    }
+  }, [])
 
   // Popover state for clause actions
   const [popoverClauseId, setPopoverClauseId] = useState<number | null>(null)
@@ -532,11 +542,11 @@ export function PDFViewer({
     setPopoverPosition(null)
   }, [pageNumber])
 
-  if (loading) {
+  if (loading || !workerReady) {
     return (
       <div className="flex flex-col items-center justify-center h-full bg-slate-50">
         <div className="w-16 h-16 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin mb-4" />
-        <p className="text-slate-600">Loading PDF...</p>
+        <p className="text-slate-600">{loading ? "Loading PDF..." : "Initializing viewer..."}</p>
       </div>
     )
   }
