@@ -1791,23 +1791,22 @@ function ReconciliationContent() {
   // ============ TEXT SEGMENTATION HELPERS ============
 
   // Segment interface for continuous text rendering
+  // Supports multiple clauses per segment for overlapping clause handling
   interface Segment {
     id: string | number
     start: number
     end: number
     type: 'clause' | 'plain'
-    clause: Clause | null
+    clauses: Clause[] // Multiple clauses can cover same text (overlaps)
     text: string
   }
 
-  // Build text segments from clauses - divides extractedText into clause and plain text segments
+  // Build text segments from clauses - handles overlapping clauses with stacked highlights
+  // Algorithm: Find all boundary points, then determine which clauses are active in each segment
   function buildTextSegments(clauseList: Clause[], fullText: string): Segment[] {
-    const segments: Segment[] = []
-
-    // Filter and sort clauses by startChar
+    // Filter clauses with valid character positions
     const validClauses = clauseList
-      .filter((c) => c.startChar != null && c.endChar != null)
-      .sort((a, b) => (a.startChar ?? 0) - (b.startChar ?? 0))
+      .filter((c) => c.startChar != null && c.endChar != null && c.startChar < c.endChar)
 
     if (validClauses.length === 0) {
       // No valid clauses - return entire text as plain
@@ -1816,56 +1815,45 @@ function ReconciliationContent() {
         start: 0,
         end: fullText.length,
         type: 'plain',
-        clause: null,
+        clauses: [],
         text: fullText
       }]
     }
 
-    let currentPos = 0
-
+    // Collect all boundary points (clause starts and ends)
+    const boundaries = new Set<number>([0, fullText.length])
     for (const clause of validClauses) {
-      const clauseStart = clause.startChar!
-      const clauseEnd = clause.endChar!
-
-      // Handle overlapping clauses - skip if this starts before current position
-      if (clauseStart < currentPos) {
-        continue
-      }
-
-      // Add plain text segment before this clause (if any gap)
-      if (clauseStart > currentPos) {
-        segments.push({
-          id: `plain-${currentPos}`,
-          start: currentPos,
-          end: clauseStart,
-          type: 'plain',
-          clause: null,
-          text: fullText.slice(currentPos, clauseStart)
-        })
-      }
-
-      // Add clause segment
-      segments.push({
-        id: clause.id,
-        start: clauseStart,
-        end: clauseEnd,
-        type: 'clause',
-        clause: clause,
-        text: fullText.slice(clauseStart, clauseEnd)
-      })
-
-      currentPos = clauseEnd
+      boundaries.add(clause.startChar!)
+      boundaries.add(clause.endChar!)
     }
 
-    // Add trailing plain text (if any)
-    if (currentPos < fullText.length) {
+    // Sort boundaries
+    const sortedBoundaries = Array.from(boundaries).sort((a, b) => a - b)
+
+    // Build segments between each pair of boundaries
+    const segments: Segment[] = []
+
+    for (let i = 0; i < sortedBoundaries.length - 1; i++) {
+      const segStart = sortedBoundaries[i]
+      const segEnd = sortedBoundaries[i + 1]
+
+      if (segStart >= segEnd) continue
+
+      // Find all clauses that cover this segment
+      const activeClauses = validClauses.filter((clause) => {
+        const clauseStart = clause.startChar!
+        const clauseEnd = clause.endChar!
+        // Clause is active if it spans this segment (starts before/at segStart and ends after segStart)
+        return clauseStart <= segStart && clauseEnd > segStart
+      })
+
       segments.push({
-        id: `plain-${currentPos}`,
-        start: currentPos,
-        end: fullText.length,
-        type: 'plain',
-        clause: null,
-        text: fullText.slice(currentPos)
+        id: activeClauses.length > 0 ? `seg-${segStart}-${activeClauses.map(c => c.id).join('-')}` : `plain-${segStart}`,
+        start: segStart,
+        end: segEnd,
+        type: activeClauses.length > 0 ? 'clause' : 'plain',
+        clauses: activeClauses,
+        text: fullText.slice(segStart, segEnd)
       })
     }
 
@@ -2050,6 +2038,39 @@ function ReconciliationContent() {
       return className
     }
 
+    // Helper to get CSS class for segments with multiple clauses (stacked highlights)
+    const getStackedHighlightClass = (clauses: Clause[]) => {
+      if (clauses.length === 0) return ''
+
+      // Determine if any clause is selected
+      const isSelected = clauses.some(c => selectedClause?.id === c.id)
+
+      // Get the "worst" status (RED > AMBER > GREEN)
+      const statuses = clauses.map(c => getClauseStatus(c))
+      let worstStatus: 'issue' | 'review' | 'match' = 'match'
+      for (const status of statuses) {
+        if (status === 'issue') {
+          worstStatus = 'issue'
+          break
+        } else if (status === 'review') {
+          worstStatus = 'review'
+        }
+      }
+
+      let className = 'clause-highlight'
+      if (worstStatus === 'match') className += ' clause-highlight--green'
+      else if (worstStatus === 'review') className += ' clause-highlight--amber'
+      else className += ' clause-highlight--red'
+
+      // Add stacked modifier for multiple clauses
+      if (clauses.length > 1) {
+        className += ' clause-highlight--stacked'
+      }
+
+      if (isSelected) className += ' clause-highlight--selected'
+      return className
+    }
+
     return (
       <div data-testid="inline-text-container" className="doc-viewer">
         {/* Pagination Controls */}
@@ -2091,19 +2112,26 @@ function ReconciliationContent() {
                 )
               }
 
-              const clause = segment.clause!
+              // Use first clause as primary (for click/hover), but apply stacked styling
+              const primaryClause = segment.clauses[0]
+              const clauseCount = segment.clauses.length
 
               return (
                 <span
                   key={segment.id}
-                  className={getClauseHighlightClass(clause)}
-                  onClick={() => handleClauseSelect(clause)}
-                  onMouseEnter={(e) => handleClauseMouseEnter(e, clause)}
+                  className={getStackedHighlightClass(segment.clauses)}
+                  onClick={() => handleClauseSelect(primaryClause)}
+                  onMouseEnter={(e) => handleClauseMouseEnter(e, primaryClause)}
                   onMouseLeave={handleClauseMouseLeave}
-                  data-testid={`clause-highlight-${clause.id}`}
-                  data-clause-id={clause.id}
+                  data-testid={`clause-highlight-${primaryClause.id}`}
+                  data-clause-id={primaryClause.id}
+                  data-clause-count={clauseCount}
+                  title={clauseCount > 1 ? `${clauseCount} overlapping clauses: ${segment.clauses.map(c => c.clauseType).join(', ')}` : undefined}
                 >
                   {segment.text}
+                  {clauseCount > 1 && (
+                    <span className="clause-overlap-badge">{clauseCount}</span>
+                  )}
                 </span>
               )
             })}

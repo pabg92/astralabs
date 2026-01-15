@@ -348,6 +348,50 @@
   border-radius: 3px;
 }
 
+/* Stacked highlights (multiple overlapping clauses) */
+.clause-highlight--stacked {
+  /* Darker background to indicate multiple clauses */
+  position: relative;
+}
+
+.clause-highlight--stacked.clause-highlight--green {
+  background: rgba(61, 140, 92, 0.2);
+  box-shadow: inset 0 0 0 1px rgba(61, 140, 92, 0.3);
+}
+
+.clause-highlight--stacked.clause-highlight--amber {
+  background: rgba(181, 133, 10, 0.2);
+  box-shadow: inset 0 0 0 1px rgba(181, 133, 10, 0.3);
+}
+
+.clause-highlight--stacked.clause-highlight--red {
+  background: rgba(196, 69, 54, 0.2);
+  box-shadow: inset 0 0 0 1px rgba(196, 69, 54, 0.3);
+}
+
+.clause-highlight--stacked::after {
+  height: 3px;
+}
+
+/* Overlap badge (shows count of overlapping clauses) */
+.clause-overlap-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  margin-left: 2px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  color: white;
+  background: var(--ui-accent, #2563eb);
+  border-radius: 8px;
+  vertical-align: middle;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+}
+
 /* ===== Pagination ===== */
 .doc-pagination {
   display: flex;

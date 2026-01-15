@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Inline view stacked highlights for overlapping clauses** - When multiple clauses cover the same text (e.g., a sentence that is both a payment_terms and deliverables clause), the inline view now shows all clauses with stacked/layered highlighting:
+  - Boundary-point algorithm builds segments that can have multiple clauses
+  - Darker background for overlapping regions with worst status (RED > AMBER > GREEN)
+  - Badge showing overlap count (e.g., "2" for two overlapping clauses)
+  - Tooltip shows all clause types on hover
+  - Files: `app/reconciliation/page.tsx`, `styles/reconciliation.css`
+
 - **Parallel document processing** - Worker now processes multiple documents concurrently instead of sequentially, providing up to 5x throughput improvement
   - Uses `Promise.allSettled` to handle individual document failures gracefully
   - File: `worker/worker.ts`
