@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from "react"
 import { Document, Page, pdfjs } from "react-pdf"
 import { Button } from "@/components/ui/button"
 import { ZoomIn, ZoomOut, ChevronLeft, ChevronRight, Maximize2, ThumbsUp, ThumbsDown, MessageSquare } from "lucide-react"
+import { RedlineDiffViewer } from "@/components/redlines/redline-diff-viewer"
 import "react-pdf/dist/Page/AnnotationLayer.css"
 import "react-pdf/dist/Page/TextLayer.css"
 
@@ -694,31 +695,20 @@ export function PDFViewer({
             </span>
           )}
 
-          {/* Redline diff section */}
+          {/* Redline diff section - uses same diff viewer as clause cards */}
           {popoverClause.redline && (
             <div className="pdf-clause-popover__redline">
               <div className="pdf-clause-popover__redline-label">Suggested Change</div>
               <div className="pdf-clause-popover__redline-diff">
-                {popoverClause.redline.changeType === 'delete' ? (
-                  <span className="pdf-clause-popover__redline-del">
-                    {popoverClause.redline.originalText}
-                  </span>
-                ) : popoverClause.redline.changeType === 'insert' ? (
-                  <span className="pdf-clause-popover__redline-ins">
-                    {popoverClause.redline.proposedText}
-                  </span>
-                ) : (
-                  <>
-                    <span className="pdf-clause-popover__redline-del">
-                      {popoverClause.redline.originalText.slice(0, 50)}
-                      {popoverClause.redline.originalText.length > 50 ? '...' : ''}
-                    </span>
-                    {' → '}
-                    <span className="pdf-clause-popover__redline-ins">
-                      {popoverClause.redline.proposedText.slice(0, 50)}
-                      {popoverClause.redline.proposedText.length > 50 ? '...' : ''}
-                    </span>
-                  </>
+                <RedlineDiffViewer
+                  originalText={popoverClause.redline.originalText.slice(0, 150)}
+                  proposedText={popoverClause.redline.proposedText.slice(0, 150)}
+                  showStats={false}
+                  className="text-xs"
+                />
+                {(popoverClause.redline.originalText.length > 150 ||
+                  popoverClause.redline.proposedText.length > 150) && (
+                  <span className="text-xs text-slate-400 italic">...truncated</span>
                 )}
               </div>
               <div className="pdf-clause-popover__redline-actions">
