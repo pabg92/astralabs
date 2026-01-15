@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Interactive PDF clause actions** - Users can now approve/reject clauses directly from the PDF view by clicking on highlighted clauses:
+  - Click any highlighted clause in PDF → popover appears with Approve/Reject/Comment buttons
+  - Actions sync immediately with clause cards and update highlight colors
+  - Comment button opens the redline modal for that clause
+  - Escape key or clicking outside closes popover
+  - Files: `components/pdf-viewer.tsx`, `app/reconciliation/page.tsx`
+
 - **Inline view stacked highlights for overlapping clauses** - When multiple clauses cover the same text (e.g., a sentence that is both a payment_terms and deliverables clause), the inline view now shows all clauses with stacked/layered highlighting:
   - Boundary-point algorithm builds segments that can have multiple clauses
   - Darker background for overlapping regions with worst status (RED > AMBER > GREEN)

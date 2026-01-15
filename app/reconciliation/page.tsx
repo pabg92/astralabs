@@ -2986,6 +2986,24 @@ function ReconciliationContent() {
                     hideToolbarZoom={true}
                     highlightClauses={clauseHighlights}
                     selectedClauseId={selectedClause?.id ?? null}
+                    onClauseClick={(clauseId) => {
+                      const clause = clauses.find(c => c.id === clauseId)
+                      if (clause) handleClauseSelect(clause)
+                    }}
+                    onClauseAction={(clauseId, action) => {
+                      const clause = clauses.find(c => c.id === clauseId)
+                      if (!clause) return
+                      if (action === 'approve') {
+                        handleApprove(clause)
+                      } else if (action === 'reject') {
+                        handleReject(clause)
+                      } else if (action === 'comment') {
+                        // Select clause and open redline modal for comments
+                        handleClauseSelect(clause)
+                        setRedlineModalClause(clause)
+                        setRedlineModalOpen(true)
+                      }
+                    }}
                   />
                 </div>
               ) : (

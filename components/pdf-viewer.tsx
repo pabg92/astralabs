@@ -1,9 +1,9 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { Document, Page, pdfjs } from "react-pdf"
 import { Button } from "@/components/ui/button"
-import { ZoomIn, ZoomOut, ChevronLeft, ChevronRight, Maximize2 } from "lucide-react"
+import { ZoomIn, ZoomOut, ChevronLeft, ChevronRight, Maximize2, ThumbsUp, ThumbsDown, MessageSquare } from "lucide-react"
 import "react-pdf/dist/Page/AnnotationLayer.css"
 import "react-pdf/dist/Page/TextLayer.css"
 
@@ -19,6 +19,8 @@ interface HighlightClause {
   status: PdfHighlightStatus
 }
 
+type ClauseAction = "approve" | "reject" | "comment"
+
 interface PDFViewerProps {
   dealId: string
   onError?: (error: Error) => void
@@ -27,6 +29,8 @@ interface PDFViewerProps {
   hideToolbarZoom?: boolean // Hide zoom controls when parent toolbar manages zoom
   highlightClauses?: HighlightClause[]
   selectedClauseId?: number | null
+  onClauseClick?: (clauseId: number) => void // Called when user clicks a highlighted clause
+  onClauseAction?: (clauseId: number, action: ClauseAction) => void // Called when user approves/rejects
 }
 
 type ZoomLevel = "fit" | "page" | 50 | 75 | 100 | 125 | 150 | 200
@@ -45,6 +49,8 @@ export function PDFViewer({
   hideToolbarZoom = false,
   highlightClauses,
   selectedClauseId = null,
+  onClauseClick,
+  onClauseAction,
 }: PDFViewerProps) {
   const [signedUrl, setSignedUrl] = useState<string | null>(null)
   const [fileName, setFileName] = useState<string>("contract.pdf")
@@ -56,10 +62,65 @@ export function PDFViewer({
   const [containerWidth, setContainerWidth] = useState(0)
   const [documentReady, setDocumentReady] = useState(false)
 
+  // Popover state for clause actions
+  const [popoverClauseId, setPopoverClauseId] = useState<number | null>(null)
+  const [popoverPosition, setPopoverPosition] = useState<{ x: number; y: number } | null>(null)
+
   // Use external zoom if provided, otherwise use internal state
   const [internalZoom, setInternalZoom] = useState<ZoomLevel>("fit")
   const zoomLevel = externalZoom ?? internalZoom
   const setZoomLevel = onZoomChange ?? setInternalZoom
+
+  // Get clause info for popover
+  const popoverClause = popoverClauseId != null
+    ? highlightClauses?.find(c => c.id === popoverClauseId)
+    : null
+
+  // Handle click on highlighted clause span
+  const handleClauseSpanClick = useCallback((e: MouseEvent) => {
+    const target = e.target as HTMLElement
+    const clauseId = target.dataset?.clauseId
+    if (!clauseId) return
+
+    const id = parseInt(clauseId, 10)
+    if (isNaN(id)) return
+
+    // Calculate popover position relative to viewport
+    const rect = target.getBoundingClientRect()
+    setPopoverPosition({
+      x: rect.left + rect.width / 2,
+      y: rect.top - 10
+    })
+    setPopoverClauseId(id)
+
+    // Notify parent of clause selection
+    onClauseClick?.(id)
+
+    e.stopPropagation()
+  }, [onClauseClick])
+
+  // Close popover when clicking outside
+  const handleDocumentClick = useCallback((e: MouseEvent) => {
+    const target = e.target as HTMLElement
+    // Don't close if clicking on the popover itself
+    if (target.closest('.pdf-clause-popover')) return
+    // Don't close if clicking on a highlighted clause
+    if (target.dataset?.clauseId) return
+    setPopoverClauseId(null)
+    setPopoverPosition(null)
+  }, [])
+
+  // Handle clause action (approve/reject/comment)
+  const handleAction = useCallback((action: ClauseAction) => {
+    if (popoverClauseId != null) {
+      onClauseAction?.(popoverClauseId, action)
+      // Close popover after action (except comment which might need to stay open)
+      if (action !== 'comment') {
+        setPopoverClauseId(null)
+        setPopoverPosition(null)
+      }
+    }
+  }, [popoverClauseId, onClauseAction])
 
   // Fetch signed URL on mount
   useEffect(() => {
@@ -188,6 +249,81 @@ export function PDFViewer({
       .pdf-highlight-active {
         box-shadow: 0 0 0 2px rgba(148, 163, 184, 0.8);
       }
+      .pdf-highlight[data-clause-id] {
+        cursor: pointer;
+      }
+      .pdf-highlight[data-clause-id]:hover {
+        filter: brightness(0.95);
+      }
+      .pdf-clause-popover {
+        position: fixed;
+        z-index: 1000;
+        background: white;
+        border-radius: 8px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        padding: 8px;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        transform: translate(-50%, -100%);
+      }
+      .pdf-clause-popover__btn {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 32px;
+        height: 32px;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+        transition: background-color 0.15s;
+      }
+      .pdf-clause-popover__btn--approve {
+        background: #dcfce7;
+        color: #16a34a;
+      }
+      .pdf-clause-popover__btn--approve:hover {
+        background: #bbf7d0;
+      }
+      .pdf-clause-popover__btn--reject {
+        background: #fee2e2;
+        color: #dc2626;
+      }
+      .pdf-clause-popover__btn--reject:hover {
+        background: #fecaca;
+      }
+      .pdf-clause-popover__btn--comment {
+        background: #f1f5f9;
+        color: #64748b;
+      }
+      .pdf-clause-popover__btn--comment:hover {
+        background: #e2e8f0;
+      }
+      .pdf-clause-popover__divider {
+        width: 1px;
+        height: 20px;
+        background: #e2e8f0;
+        margin: 0 4px;
+      }
+      .pdf-clause-popover__status {
+        font-size: 11px;
+        font-weight: 500;
+        padding: 2px 8px;
+        border-radius: 4px;
+        text-transform: capitalize;
+      }
+      .pdf-clause-popover__status--match {
+        background: #dcfce7;
+        color: #16a34a;
+      }
+      .pdf-clause-popover__status--review {
+        background: #fef3c7;
+        color: #d97706;
+      }
+      .pdf-clause-popover__status--issue {
+        background: #fee2e2;
+        color: #dc2626;
+      }
     `
     document.head.appendChild(style)
   }, [])
@@ -249,11 +385,38 @@ export function PDFViewer({
       if (e.key === "ArrowRight") handleNextPage()
       if (e.key === "+" || e.key === "=") handleZoomIn()
       if (e.key === "-" || e.key === "_") handleZoomOut()
+      if (e.key === "Escape") {
+        setPopoverClauseId(null)
+        setPopoverPosition(null)
+      }
     }
 
     window.addEventListener("keydown", handleKeyPress)
     return () => window.removeEventListener("keydown", handleKeyPress)
   }, [pageNumber, numPages, zoomLevel])
+
+  // Attach click handlers to highlighted clause spans
+  useEffect(() => {
+    if (!documentReady) return
+
+    const container = document.getElementById("pdf-container")
+    if (!container) return
+
+    // Use event delegation on the container
+    container.addEventListener("click", handleClauseSpanClick as EventListener)
+    document.addEventListener("click", handleDocumentClick as EventListener)
+
+    return () => {
+      container.removeEventListener("click", handleClauseSpanClick as EventListener)
+      document.removeEventListener("click", handleDocumentClick as EventListener)
+    }
+  }, [documentReady, handleClauseSpanClick, handleDocumentClick])
+
+  // Close popover when page changes
+  useEffect(() => {
+    setPopoverClauseId(null)
+    setPopoverPosition(null)
+  }, [pageNumber])
 
   if (loading) {
     return (
@@ -379,6 +542,41 @@ export function PDFViewer({
           </Document>
         </div>
       </div>
+
+      {/* Clause Action Popover */}
+      {popoverClause && popoverPosition && (
+        <div
+          className="pdf-clause-popover"
+          style={{ left: popoverPosition.x, top: popoverPosition.y }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            className="pdf-clause-popover__btn pdf-clause-popover__btn--approve"
+            onClick={() => handleAction('approve')}
+            title="Approve clause"
+          >
+            <ThumbsUp className="w-4 h-4" />
+          </button>
+          <button
+            className="pdf-clause-popover__btn pdf-clause-popover__btn--reject"
+            onClick={() => handleAction('reject')}
+            title="Flag for review"
+          >
+            <ThumbsDown className="w-4 h-4" />
+          </button>
+          <button
+            className="pdf-clause-popover__btn pdf-clause-popover__btn--comment"
+            onClick={() => handleAction('comment')}
+            title="Add comment"
+          >
+            <MessageSquare className="w-4 h-4" />
+          </button>
+          <div className="pdf-clause-popover__divider" />
+          <span className={`pdf-clause-popover__status pdf-clause-popover__status--${popoverClause.status}`}>
+            {popoverClause.status === 'match' ? 'approved' : popoverClause.status}
+          </span>
+        </div>
+      )}
     </div>
   )
 }
