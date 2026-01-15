@@ -1388,12 +1388,29 @@ function ReconciliationContent() {
       // Metadata is displayed in the Contract Details table, not highlighted in document
       clauses
         .filter((clause) => !METADATA_CLAUSE_TYPES.has(clause.clauseType))
-        .map((clause) => ({
-          id: clause.id,
-          text: clause.text,
-          status: getClauseStatus(clause),
-        })),
-    [clauses, clauseStatuses, riskAcceptedClauses, getClauseStatus],
+        .map((clause) => {
+          // Get latest redline for this clause (if any)
+          const clauseRedlines = clause.clauseBoundaryId
+            ? redlinesByClause[clause.clauseBoundaryId] || []
+            : []
+          const latestRedline = clauseRedlines.length > 0
+            ? clauseRedlines[clauseRedlines.length - 1]
+            : null
+
+          return {
+            id: clause.id,
+            text: clause.text,
+            status: getClauseStatus(clause),
+            redline: latestRedline ? {
+              id: latestRedline.id,
+              proposedText: latestRedline.proposed_text,
+              originalText: clause.originalText || clause.text,
+              status: latestRedline.status as "pending" | "accepted" | "rejected",
+              changeType: latestRedline.change_type as "modify" | "delete" | "insert",
+            } : undefined,
+          }
+        }),
+    [clauses, clauseStatuses, riskAcceptedClauses, getClauseStatus, redlinesByClause],
   )
 
   // Updated getStatusColor to only include 3 categories
@@ -2993,15 +3010,46 @@ function ReconciliationContent() {
                     onClauseAction={(clauseId, action) => {
                       const clause = clauses.find(c => c.id === clauseId)
                       if (!clause) return
+
                       if (action === 'approve') {
                         handleApprove(clause)
                       } else if (action === 'reject') {
                         handleReject(clause)
-                      } else if (action === 'comment') {
-                        // Select clause and open redline modal for comments
+                      } else if (action === 'comment' || action === 'edit-redline') {
+                        // Select clause and open redline modal for creating/editing
                         handleClauseSelect(clause)
                         setRedlineModalClause(clause)
                         setRedlineModalOpen(true)
+                      } else if (action === 'accept-redline') {
+                        // Accept the latest redline for this clause
+                        const clauseRedlines = clause.clauseBoundaryId
+                          ? redlinesByClause[clause.clauseBoundaryId] || []
+                          : []
+                        const latestRedline = clauseRedlines[clauseRedlines.length - 1]
+                        if (latestRedline) {
+                          handleClauseSelect(clause)
+                          handleAcceptRedline(latestRedline.id)
+                        }
+                      } else if (action === 'remove-redline') {
+                        // Remove the latest redline (mark as rejected)
+                        const clauseRedlines = clause.clauseBoundaryId
+                          ? redlinesByClause[clause.clauseBoundaryId] || []
+                          : []
+                        const latestRedline = clauseRedlines[clauseRedlines.length - 1]
+                        if (latestRedline && clause.clauseBoundaryId) {
+                          // Update local state to remove the redline
+                          setRedlinesByClause((prev) => {
+                            const existing = prev[clause.clauseBoundaryId!] || []
+                            return {
+                              ...prev,
+                              [clause.clauseBoundaryId!]: existing.filter(r => r.id !== latestRedline.id),
+                            }
+                          })
+                          toast({
+                            title: "Redline Removed",
+                            description: "The suggested change has been removed.",
+                          })
+                        }
                       }
                     }}
                   />

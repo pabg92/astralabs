@@ -13,13 +13,22 @@ pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/b
 
 type PdfHighlightStatus = "match" | "review" | "issue" | "metadata"
 
+interface ClauseRedlineInfo {
+  id: string
+  proposedText: string
+  originalText: string
+  status: "pending" | "accepted" | "rejected"
+  changeType: "modify" | "delete" | "insert"
+}
+
 interface HighlightClause {
   id: number
   text: string
   status: PdfHighlightStatus
+  redline?: ClauseRedlineInfo // Latest redline for this clause, if any
 }
 
-type ClauseAction = "approve" | "reject" | "comment"
+type ClauseAction = "approve" | "reject" | "comment" | "accept-redline" | "edit-redline" | "remove-redline"
 
 interface PDFViewerProps {
   dealId: string
@@ -30,7 +39,7 @@ interface PDFViewerProps {
   highlightClauses?: HighlightClause[]
   selectedClauseId?: number | null
   onClauseClick?: (clauseId: number) => void // Called when user clicks a highlighted clause
-  onClauseAction?: (clauseId: number, action: ClauseAction) => void // Called when user approves/rejects
+  onClauseAction?: (clauseId: number, action: ClauseAction) => void // Called when user approves/rejects/redline actions
 }
 
 type ZoomLevel = "fit" | "page" | 50 | 75 | 100 | 125 | 150 | 200
@@ -324,6 +333,103 @@ export function PDFViewer({
         background: #fee2e2;
         color: #dc2626;
       }
+      /* Redline badge indicator */
+      .pdf-highlight-has-redline::after {
+        content: '✏️';
+        position: absolute;
+        top: -8px;
+        right: -4px;
+        font-size: 10px;
+        z-index: 10;
+      }
+      .pdf-highlight-has-redline {
+        position: relative;
+      }
+      /* Popover redline section */
+      .pdf-clause-popover__redline {
+        margin-top: 8px;
+        padding-top: 8px;
+        border-top: 1px solid #e2e8f0;
+        font-size: 12px;
+        line-height: 1.4;
+        max-width: 300px;
+      }
+      .pdf-clause-popover__redline-label {
+        font-size: 10px;
+        font-weight: 600;
+        color: #64748b;
+        text-transform: uppercase;
+        margin-bottom: 4px;
+      }
+      .pdf-clause-popover__redline-diff {
+        background: #f8fafc;
+        padding: 6px 8px;
+        border-radius: 4px;
+        font-family: inherit;
+      }
+      .pdf-clause-popover__redline-del {
+        text-decoration: line-through;
+        color: #dc2626;
+        background: #fee2e2;
+        padding: 0 2px;
+        border-radius: 2px;
+      }
+      .pdf-clause-popover__redline-ins {
+        color: #16a34a;
+        background: #dcfce7;
+        padding: 0 2px;
+        border-radius: 2px;
+      }
+      .pdf-clause-popover__redline-actions {
+        display: flex;
+        gap: 4px;
+        margin-top: 8px;
+      }
+      .pdf-clause-popover__redline-btn {
+        flex: 1;
+        padding: 4px 8px;
+        font-size: 11px;
+        font-weight: 500;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        transition: background-color 0.15s;
+      }
+      .pdf-clause-popover__redline-btn--accept {
+        background: #dcfce7;
+        color: #16a34a;
+      }
+      .pdf-clause-popover__redline-btn--accept:hover {
+        background: #bbf7d0;
+      }
+      .pdf-clause-popover__redline-btn--edit {
+        background: #f1f5f9;
+        color: #64748b;
+      }
+      .pdf-clause-popover__redline-btn--edit:hover {
+        background: #e2e8f0;
+      }
+      .pdf-clause-popover__redline-btn--remove {
+        background: #fee2e2;
+        color: #dc2626;
+      }
+      .pdf-clause-popover__redline-btn--remove:hover {
+        background: #fecaca;
+      }
+      .pdf-clause-popover__redline-status {
+        font-size: 10px;
+        padding: 2px 6px;
+        border-radius: 3px;
+        margin-left: 4px;
+      }
+      .pdf-clause-popover__redline-status--pending {
+        background: #fef3c7;
+        color: #d97706;
+      }
+      .pdf-clause-popover__redline-status--accepted {
+        background: #dcfce7;
+        color: #16a34a;
+      }
     `
     document.head.appendChild(style)
   }, [])
@@ -341,9 +447,11 @@ export function PDFViewer({
           "pdf-highlight-review",
           "pdf-highlight-issue",
           "pdf-highlight-metadata",
-          "pdf-highlight-active"
+          "pdf-highlight-active",
+          "pdf-highlight-has-redline"
         )
         delete span.dataset.clauseId
+        delete span.dataset.hasRedline
       })
 
       if (!highlightClauses || highlightClauses.length === 0) return
@@ -359,9 +467,14 @@ export function PDFViewer({
         const matchedSpans = sanitizedSpans.filter(({ text }) => text.length >= 6 && clauseText.includes(text))
         if (matchedSpans.length === 0) return
 
-        matchedSpans.forEach(({ span }) => {
+        matchedSpans.forEach(({ span }, index) => {
           span.classList.add("pdf-highlight", `pdf-highlight-${clause.status}`)
           span.dataset.clauseId = String(clause.id)
+          // Add redline badge to first span of the clause
+          if (clause.redline && index === 0) {
+            span.classList.add("pdf-highlight-has-redline")
+            span.dataset.hasRedline = "true"
+          }
         })
       })
 
@@ -567,7 +680,7 @@ export function PDFViewer({
           <button
             className="pdf-clause-popover__btn pdf-clause-popover__btn--comment"
             onClick={() => handleAction('comment')}
-            title="Add comment"
+            title={popoverClause.redline ? "Edit redline" : "Suggest change"}
           >
             <MessageSquare className="w-4 h-4" />
           </button>
@@ -575,6 +688,63 @@ export function PDFViewer({
           <span className={`pdf-clause-popover__status pdf-clause-popover__status--${popoverClause.status}`}>
             {popoverClause.status === 'match' ? 'approved' : popoverClause.status}
           </span>
+          {popoverClause.redline && (
+            <span className={`pdf-clause-popover__redline-status pdf-clause-popover__redline-status--${popoverClause.redline.status}`}>
+              ✏️ {popoverClause.redline.status}
+            </span>
+          )}
+
+          {/* Redline diff section */}
+          {popoverClause.redline && (
+            <div className="pdf-clause-popover__redline">
+              <div className="pdf-clause-popover__redline-label">Suggested Change</div>
+              <div className="pdf-clause-popover__redline-diff">
+                {popoverClause.redline.changeType === 'delete' ? (
+                  <span className="pdf-clause-popover__redline-del">
+                    {popoverClause.redline.originalText}
+                  </span>
+                ) : popoverClause.redline.changeType === 'insert' ? (
+                  <span className="pdf-clause-popover__redline-ins">
+                    {popoverClause.redline.proposedText}
+                  </span>
+                ) : (
+                  <>
+                    <span className="pdf-clause-popover__redline-del">
+                      {popoverClause.redline.originalText.slice(0, 50)}
+                      {popoverClause.redline.originalText.length > 50 ? '...' : ''}
+                    </span>
+                    {' → '}
+                    <span className="pdf-clause-popover__redline-ins">
+                      {popoverClause.redline.proposedText.slice(0, 50)}
+                      {popoverClause.redline.proposedText.length > 50 ? '...' : ''}
+                    </span>
+                  </>
+                )}
+              </div>
+              <div className="pdf-clause-popover__redline-actions">
+                {popoverClause.redline.status === 'pending' && (
+                  <button
+                    className="pdf-clause-popover__redline-btn pdf-clause-popover__redline-btn--accept"
+                    onClick={() => handleAction('accept-redline')}
+                  >
+                    Accept
+                  </button>
+                )}
+                <button
+                  className="pdf-clause-popover__redline-btn pdf-clause-popover__redline-btn--edit"
+                  onClick={() => handleAction('edit-redline')}
+                >
+                  Edit
+                </button>
+                <button
+                  className="pdf-clause-popover__redline-btn pdf-clause-popover__redline-btn--remove"
+                  onClick={() => handleAction('remove-redline')}
+                >
+                  Remove
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

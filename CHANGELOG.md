@@ -8,10 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **Interactive PDF clause actions** - Users can now approve/reject clauses directly from the PDF view by clicking on highlighted clauses:
+- **Interactive PDF clause actions with redline support** - Users can now approve/reject clauses and manage redlines directly from the PDF view:
   - Click any highlighted clause in PDF → popover appears with Approve/Reject/Comment buttons
   - Actions sync immediately with clause cards and update highlight colors
-  - Comment button opens the redline modal for that clause
+  - **Redline integration**: Clauses with suggested changes show ✏️ badge on PDF
+  - **Redline diff in popover**: Shows strikethrough original → proposed text preview
+  - **Redline actions**: Accept/Edit/Remove buttons directly in the PDF popover
   - Escape key or clicking outside closes popover
   - Files: `components/pdf-viewer.tsx`, `app/reconciliation/page.tsx`
 
