@@ -546,7 +546,7 @@ describe('validateClauseIndices', () => {
   })
 
   describe('overlap handling', () => {
-    it('should remove overlapping clauses', () => {
+    it('should keep overlapping clauses (talent managers need to see all clauses)', () => {
       const text = 'This is the first clause content that should be long enough. This is second clause content here.'
       // text.length = 96
       const clauses = [
@@ -557,9 +557,12 @@ describe('validateClauseIndices', () => {
 
       const { valid, telemetry } = validateClauseIndices(clauses, text, config)
 
-      expect(valid).toHaveLength(1)
+      // Both clauses should be kept - we never drop overlapping clauses
+      expect(valid).toHaveLength(2)
       expect(valid[0].clause_type).toBe('first')
-      expect(telemetry.dropped_for_overlap).toBe(1)
+      expect(valid[1].clause_type).toBe('second')
+      // Telemetry tracks overlap count but clauses are still kept
+      expect(telemetry.dropped_for_overlap).toBe(1) // Tracks overlaps, not drops
     })
 
     it('should allow touching clauses', () => {

@@ -759,17 +759,18 @@ export function validateClauseIndices(
   let lastEnd = -1
 
   for (const clause of withContent) {
-    // Allow touching, reject true overlaps
+    // Track overlaps for telemetry but KEEP ALL CLAUSES
+    // Talent managers need to see every clause - dropping any could mean missing critical terms
     if (clause._globalStart < lastEnd) {
-      telemetry.dropped_for_overlap++
-      // Log dropped overlaps for debugging extraction quality issues
-      console.warn(`[ClauseValidator] Dropping overlapping clause: type=${clause.clause_type}, start=${clause._globalStart}, end=${clause._globalEnd}, lastEnd=${lastEnd}, overlap=${lastEnd - clause._globalStart} chars`)
-      continue
+      telemetry.dropped_for_overlap++ // Renamed but kept for telemetry tracking (now means "overlap_count")
+      console.info(`[ClauseValidator] Overlapping clause kept: type=${clause.clause_type}, start=${clause._globalStart}, end=${clause._globalEnd}, lastEnd=${lastEnd}, overlap=${lastEnd - clause._globalStart} chars`)
+      // NOTE: We intentionally DO NOT skip/drop - all clauses are kept
     }
 
     const { _globalStart, _globalEnd, ...cleaned } = clause
     valid.push(cleaned)
-    lastEnd = clause._globalEnd
+    // Update lastEnd to track the furthest extent we've seen
+    lastEnd = Math.max(lastEnd, clause._globalEnd)
   }
 
   telemetry.clauses_valid = valid.length

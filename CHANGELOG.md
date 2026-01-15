@@ -26,7 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Generic label pattern regex catches all `Label:` patterns (Snapchat, BeReal, LinkedIn, Twitch, Website, etc.) instead of hardcoded list
   - Increased MAX_CLAUSE_LENGTH from 400 to 600 chars to accommodate metadata clauses
   - Increased snap window from 80 to 120 chars for better multi-line sentence completion
-  - Added logging for dropped clauses (overlap, length issues) for better debugging
+  - Added logging for clause validation (overlap, length issues) for better debugging
+  - **CRITICAL: Overlapping clauses are now KEPT instead of dropped** - Talent managers need to see every clause; dropping overlaps was hiding critical contract terms (deliverables, payment terms, termination rights)
   - Files: `worker/utils/clause-validator.ts`, `worker/config/extraction-config.ts`
 
 ### Changed

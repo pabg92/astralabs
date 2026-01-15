@@ -153,7 +153,7 @@ async function reprocessDocument(documentId: string): Promise<boolean> {
   }
 
   // Enqueue for processing
-  const { error: enqueueError } = await supabase.rpc('enqueue_document', {
+  const { error: enqueueError } = await supabase.rpc('manual_enqueue_document', {
     p_document_id: documentId
   })
 
