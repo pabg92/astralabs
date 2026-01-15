@@ -3011,12 +3011,28 @@ function ReconciliationContent() {
                       const clause = clauses.find(c => c.id === clauseId)
                       if (!clause) return
 
+                      // Get existing redlines for this clause
+                      const clauseRedlines = clause.clauseBoundaryId
+                        ? redlinesByClause[clause.clauseBoundaryId] || []
+                        : []
+                      const hasRedlines = clauseRedlines.length > 0
+
                       if (action === 'approve') {
                         handleApprove(clause)
                       } else if (action === 'reject') {
                         handleReject(clause)
-                      } else if (action === 'comment' || action === 'edit-redline') {
-                        // Select clause and open redline modal for creating/editing
+                      } else if (action === 'comment') {
+                        // AI Suggest: Generate suggestion if no redlines, or view existing
+                        handleClauseSelect(clause)
+                        if (hasRedlines) {
+                          // View existing redlines in diff modal
+                          setSuggestedRedlinesModalOpen(true)
+                        } else {
+                          // Generate AI suggestion
+                          handleGenerateSuggestionForClause(clause)
+                        }
+                      } else if (action === 'edit-redline') {
+                        // Open manual editor for editing existing redline
                         handleClauseSelect(clause)
                         setRedlineModalClause(clause)
                         setRedlineModalOpen(true)

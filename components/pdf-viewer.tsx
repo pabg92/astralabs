@@ -691,7 +691,7 @@ export function PDFViewer({
           <button
             className="pdf-clause-popover__btn pdf-clause-popover__btn--comment"
             onClick={() => handleAction('comment')}
-            title={popoverClause.redline ? "Edit redline" : "Suggest change"}
+            title={popoverClause.redline ? "View AI suggestion" : "AI Suggest"}
           >
             <MessageSquare className="w-4 h-4" />
           </button>
