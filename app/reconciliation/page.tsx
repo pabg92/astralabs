@@ -3912,7 +3912,7 @@ function ReconciliationContent() {
         open={suggestedRedlinesModalOpen && !!selectedClause && (selectedClauseRedlines?.length || 0) > 0}
         onOpenChange={setSuggestedRedlinesModalOpen}
         clauseType={selectedClause?.clauseType || ""}
-        originalText={selectedClause?.text || ""}
+        originalText={selectedClause?.originalText || selectedClause?.text || ""}
         redlines={selectedClauseRedlines || []}
         onAcceptChanges={handleAcceptRedline}
         isAccepting={isAcceptingRedline}
