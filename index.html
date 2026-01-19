@@ -1,0 +1,1305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Astra Labs | Exploring the Agentic Frontier</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Exo+2:wght@200;300;400;500;600&family=Oxanium:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        *, *::before, *::after {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg-deep: #050810;
+            --bg-space: #0D1117;
+            --bg-nebula: #0f0a1f;
+            --cyan-glow: #00FFFF;
+            --cyan-dim: #00b8b8;
+            --purple-muted: #9D8DF1;
+            --purple-deep: #6B5DD3;
+            --white: #ffffff;
+            --white-dim: rgba(255, 255, 255, 0.7);
+            --white-faint: rgba(255, 255, 255, 0.4);
+            --star-color: rgba(255, 255, 255, 0.8);
+        }
+
+        html {
+            scroll-behavior: smooth;
+        }
+
+        body {
+            font-family: 'Exo 2', sans-serif;
+            background: var(--bg-deep);
+            color: var(--white);
+            overflow-x: hidden;
+            line-height: 1.6;
+        }
+
+        /* Star Field Canvas */
+        #starfield {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 0;
+            pointer-events: none;
+        }
+
+        /* Nebula Overlay */
+        .nebula-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+            pointer-events: none;
+            background:
+                radial-gradient(ellipse 80% 50% at 20% 40%, rgba(157, 141, 241, 0.08) 0%, transparent 50%),
+                radial-gradient(ellipse 60% 40% at 80% 20%, rgba(0, 255, 255, 0.05) 0%, transparent 40%),
+                radial-gradient(ellipse 100% 60% at 50% 100%, rgba(107, 93, 211, 0.1) 0%, transparent 50%);
+        }
+
+        /* Main Content */
+        main {
+            position: relative;
+            z-index: 10;
+        }
+
+        /* Navigation */
+        nav {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 100;
+            padding: 1.5rem 4rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: linear-gradient(to bottom, rgba(5, 8, 16, 0.9) 0%, transparent 100%);
+            backdrop-filter: blur(10px);
+        }
+
+        .nav-logo {
+            font-family: 'Oxanium', sans-serif;
+            font-weight: 600;
+            font-size: 1.2rem;
+            letter-spacing: 0.15em;
+            color: var(--cyan-glow);
+            text-shadow: 0 0 20px rgba(0, 255, 255, 0.5);
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 2.5rem;
+            list-style: none;
+        }
+
+        .nav-links a {
+            font-family: 'Exo 2', sans-serif;
+            font-weight: 300;
+            font-size: 0.85rem;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--white-dim);
+            text-decoration: none;
+            transition: all 0.3s ease;
+            position: relative;
+        }
+
+        .nav-links a::after {
+            content: '';
+            position: absolute;
+            bottom: -4px;
+            left: 0;
+            width: 0;
+            height: 1px;
+            background: var(--cyan-glow);
+            box-shadow: 0 0 10px var(--cyan-glow);
+            transition: width 0.3s ease;
+        }
+
+        .nav-links a:hover {
+            color: var(--white);
+        }
+
+        .nav-links a:hover::after {
+            width: 100%;
+        }
+
+        /* Hero Section */
+        .hero {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+            padding: 6rem 2rem;
+            position: relative;
+        }
+
+        .hero-constellation {
+            position: absolute;
+            width: 600px;
+            height: 600px;
+            opacity: 0.3;
+            animation: rotate-slow 120s linear infinite;
+        }
+
+        @keyframes rotate-slow {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
+        .hero-logo {
+            font-family: 'Oxanium', sans-serif;
+            font-weight: 700;
+            font-size: clamp(2.5rem, 6vw, 4.5rem);
+            letter-spacing: 0.3em;
+            margin-bottom: 0.5rem;
+            background: linear-gradient(135deg, var(--white) 0%, var(--cyan-glow) 50%, var(--purple-muted) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            text-shadow: none;
+            filter: drop-shadow(0 0 30px rgba(0, 255, 255, 0.3));
+            animation: logo-glow 4s ease-in-out infinite;
+        }
+
+        @keyframes logo-glow {
+            0%, 100% { filter: drop-shadow(0 0 30px rgba(0, 255, 255, 0.3)); }
+            50% { filter: drop-shadow(0 0 50px rgba(0, 255, 255, 0.5)); }
+        }
+
+        .hero-tagline {
+            font-family: 'Exo 2', sans-serif;
+            font-weight: 200;
+            font-size: clamp(1.1rem, 2.5vw, 1.6rem);
+            letter-spacing: 0.15em;
+            color: var(--white-dim);
+            margin-bottom: 1rem;
+            opacity: 0;
+            animation: fade-up 1s ease 0.3s forwards;
+        }
+
+        .hero-subline {
+            font-family: 'Space Mono', monospace;
+            font-size: 0.9rem;
+            letter-spacing: 0.05em;
+            color: var(--cyan-dim);
+            margin-bottom: 3rem;
+            opacity: 0;
+            animation: fade-up 1s ease 0.5s forwards;
+        }
+
+        @keyframes fade-up {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .hero-cta {
+            display: flex;
+            gap: 1.5rem;
+            flex-wrap: wrap;
+            justify-content: center;
+            opacity: 0;
+            animation: fade-up 1s ease 0.7s forwards;
+        }
+
+        .btn {
+            font-family: 'Exo 2', sans-serif;
+            font-weight: 400;
+            font-size: 0.85rem;
+            letter-spacing: 0.1em;
+            padding: 1rem 2rem;
+            border: none;
+            border-radius: 2px;
+            cursor: pointer;
+            text-decoration: none;
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, var(--cyan-glow) 0%, var(--purple-muted) 100%);
+            color: var(--bg-deep);
+        }
+
+        .btn-primary:hover {
+            box-shadow: 0 0 30px rgba(0, 255, 255, 0.4), 0 0 60px rgba(157, 141, 241, 0.2);
+            transform: translateY(-2px);
+        }
+
+        .btn-secondary {
+            background: transparent;
+            border: 1px solid rgba(0, 255, 255, 0.3);
+            color: var(--cyan-glow);
+        }
+
+        .btn-secondary:hover {
+            background: rgba(0, 255, 255, 0.1);
+            border-color: var(--cyan-glow);
+            box-shadow: 0 0 20px rgba(0, 255, 255, 0.2);
+        }
+
+        .scroll-indicator {
+            position: absolute;
+            bottom: 3rem;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0.5rem;
+            opacity: 0;
+            animation: fade-up 1s ease 1s forwards;
+        }
+
+        .scroll-indicator span {
+            font-size: 0.7rem;
+            letter-spacing: 0.2em;
+            color: var(--white-faint);
+            text-transform: uppercase;
+        }
+
+        .scroll-line {
+            width: 1px;
+            height: 40px;
+            background: linear-gradient(to bottom, var(--cyan-glow), transparent);
+            animation: scroll-pulse 2s ease-in-out infinite;
+        }
+
+        @keyframes scroll-pulse {
+            0%, 100% { opacity: 0.3; height: 40px; }
+            50% { opacity: 1; height: 50px; }
+        }
+
+        /* Section Styling */
+        section {
+            padding: 8rem 4rem;
+            position: relative;
+        }
+
+        .section-divider {
+            width: 100%;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, rgba(0, 255, 255, 0.3), transparent);
+            margin: 0 auto;
+        }
+
+        /* About Section */
+        .about {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 6rem;
+            align-items: center;
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .about-visual {
+            position: relative;
+            height: 400px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .neural-sphere {
+            width: 300px;
+            height: 300px;
+            border-radius: 50%;
+            background:
+                radial-gradient(circle at 30% 30%, rgba(0, 255, 255, 0.2) 0%, transparent 50%),
+                radial-gradient(circle at 70% 70%, rgba(157, 141, 241, 0.2) 0%, transparent 50%);
+            border: 1px solid rgba(0, 255, 255, 0.2);
+            position: relative;
+            animation: sphere-float 6s ease-in-out infinite;
+        }
+
+        .neural-sphere::before {
+            content: '';
+            position: absolute;
+            inset: -20px;
+            border-radius: 50%;
+            border: 1px dashed rgba(157, 141, 241, 0.3);
+            animation: rotate-slow 30s linear infinite reverse;
+        }
+
+        .neural-sphere::after {
+            content: '';
+            position: absolute;
+            inset: -40px;
+            border-radius: 50%;
+            border: 1px dashed rgba(0, 255, 255, 0.2);
+            animation: rotate-slow 45s linear infinite;
+        }
+
+        @keyframes sphere-float {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-20px); }
+        }
+
+        .sphere-core {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            background: radial-gradient(circle, var(--cyan-glow) 0%, transparent 70%);
+            animation: core-pulse 3s ease-in-out infinite;
+        }
+
+        @keyframes core-pulse {
+            0%, 100% { opacity: 0.5; transform: translate(-50%, -50%) scale(1); }
+            50% { opacity: 1; transform: translate(-50%, -50%) scale(1.2); }
+        }
+
+        .about-content h2 {
+            font-family: 'Oxanium', sans-serif;
+            font-weight: 500;
+            font-size: 2.5rem;
+            letter-spacing: 0.1em;
+            margin-bottom: 1.5rem;
+            color: var(--white);
+        }
+
+        .about-content p {
+            font-weight: 300;
+            font-size: 1.1rem;
+            line-height: 1.8;
+            color: var(--white-dim);
+            margin-bottom: 2rem;
+        }
+
+        .feature-list {
+            list-style: none;
+            display: grid;
+            gap: 1rem;
+        }
+
+        .feature-list li {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            font-weight: 300;
+            color: var(--white-dim);
+        }
+
+        .feature-list li::before {
+            content: '';
+            width: 8px;
+            height: 8px;
+            background: var(--cyan-glow);
+            border-radius: 50%;
+            box-shadow: 0 0 10px var(--cyan-glow);
+        }
+
+        /* Ecosystem Section */
+        .ecosystem {
+            max-width: 1400px;
+            margin: 0 auto;
+            text-align: center;
+        }
+
+        .ecosystem h2 {
+            font-family: 'Oxanium', sans-serif;
+            font-weight: 500;
+            font-size: 2.5rem;
+            letter-spacing: 0.1em;
+            margin-bottom: 0.5rem;
+        }
+
+        .ecosystem-subtitle {
+            font-family: 'Space Mono', monospace;
+            font-size: 0.9rem;
+            color: var(--purple-muted);
+            margin-bottom: 4rem;
+        }
+
+        .ecosystem-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 2rem;
+            position: relative;
+        }
+
+        .ecosystem-card {
+            background: rgba(13, 17, 23, 0.6);
+            border: 1px solid rgba(0, 255, 255, 0.1);
+            padding: 2.5rem;
+            text-align: left;
+            position: relative;
+            transition: all 0.4s ease;
+            overflow: hidden;
+        }
+
+        .ecosystem-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: linear-gradient(90deg, var(--cyan-glow), var(--purple-muted));
+            opacity: 0;
+            transition: opacity 0.4s ease;
+        }
+
+        .ecosystem-card::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: radial-gradient(circle at 50% 0%, rgba(0, 255, 255, 0.05) 0%, transparent 50%);
+            opacity: 0;
+            transition: opacity 0.4s ease;
+        }
+
+        .ecosystem-card:hover {
+            border-color: rgba(0, 255, 255, 0.3);
+            transform: translateY(-5px);
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3), 0 0 30px rgba(0, 255, 255, 0.1);
+        }
+
+        .ecosystem-card:hover::before,
+        .ecosystem-card:hover::after {
+            opacity: 1;
+        }
+
+        .card-icon {
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            background: rgba(0, 255, 255, 0.1);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 1.5rem;
+            font-size: 1.5rem;
+            position: relative;
+            z-index: 1;
+        }
+
+        .ecosystem-card h3 {
+            font-family: 'Oxanium', sans-serif;
+            font-weight: 500;
+            font-size: 1.3rem;
+            letter-spacing: 0.05em;
+            margin-bottom: 0.75rem;
+            color: var(--cyan-glow);
+            position: relative;
+            z-index: 1;
+        }
+
+        .ecosystem-card p {
+            font-weight: 300;
+            font-size: 0.95rem;
+            color: var(--white-dim);
+            line-height: 1.6;
+            position: relative;
+            z-index: 1;
+        }
+
+        /* Philosophy Section */
+        .philosophy {
+            max-width: 1000px;
+            margin: 0 auto;
+            text-align: center;
+            position: relative;
+        }
+
+        .orbit-container {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 500px;
+            height: 500px;
+            opacity: 0.2;
+            pointer-events: none;
+        }
+
+        .orbit {
+            position: absolute;
+            border: 1px dashed rgba(157, 141, 241, 0.5);
+            border-radius: 50%;
+        }
+
+        .orbit-1 {
+            width: 200px;
+            height: 200px;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            animation: rotate-slow 20s linear infinite;
+        }
+
+        .orbit-2 {
+            width: 350px;
+            height: 350px;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            animation: rotate-slow 35s linear infinite reverse;
+        }
+
+        .orbit-3 {
+            width: 500px;
+            height: 500px;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            animation: rotate-slow 50s linear infinite;
+        }
+
+        .orbit-dot {
+            position: absolute;
+            width: 8px;
+            height: 8px;
+            background: var(--cyan-glow);
+            border-radius: 50%;
+            box-shadow: 0 0 10px var(--cyan-glow);
+        }
+
+        .orbit-1 .orbit-dot { top: -4px; left: 50%; }
+        .orbit-2 .orbit-dot { top: 50%; right: -4px; }
+        .orbit-3 .orbit-dot { bottom: -4px; left: 30%; }
+
+        .quote-block {
+            position: relative;
+            z-index: 1;
+            padding: 4rem 0;
+        }
+
+        .quote-block blockquote {
+            font-family: 'Oxanium', sans-serif;
+            font-weight: 300;
+            font-size: clamp(1.5rem, 3vw, 2.2rem);
+            font-style: italic;
+            color: var(--white);
+            margin-bottom: 1rem;
+            line-height: 1.5;
+        }
+
+        .quote-block cite {
+            font-family: 'Space Mono', monospace;
+            font-size: 0.85rem;
+            color: var(--purple-muted);
+            font-style: normal;
+        }
+
+        .philosophy-text {
+            font-weight: 300;
+            font-size: 1.1rem;
+            line-height: 1.8;
+            color: var(--white-dim);
+            max-width: 700px;
+            margin: 3rem auto 0;
+            position: relative;
+            z-index: 1;
+        }
+
+        /* Experiments Section */
+        .experiments {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .experiments h2 {
+            font-family: 'Oxanium', sans-serif;
+            font-weight: 500;
+            font-size: 2.5rem;
+            letter-spacing: 0.1em;
+            margin-bottom: 3rem;
+            text-align: center;
+        }
+
+        .experiments-table {
+            width: 100%;
+            border-collapse: collapse;
+            background: rgba(13, 17, 23, 0.4);
+            border: 1px solid rgba(0, 255, 255, 0.1);
+        }
+
+        .experiments-table thead {
+            background: rgba(0, 255, 255, 0.05);
+        }
+
+        .experiments-table th {
+            font-family: 'Oxanium', sans-serif;
+            font-weight: 500;
+            font-size: 0.85rem;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--cyan-glow);
+            padding: 1.25rem 1.5rem;
+            text-align: left;
+            border-bottom: 1px solid rgba(0, 255, 255, 0.2);
+        }
+
+        .experiments-table td {
+            padding: 1.25rem 1.5rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            vertical-align: middle;
+        }
+
+        .experiments-table tr {
+            transition: background 0.3s ease;
+        }
+
+        .experiments-table tbody tr:hover {
+            background: rgba(0, 255, 255, 0.03);
+        }
+
+        .project-name {
+            font-family: 'Space Mono', monospace;
+            font-weight: 700;
+            color: var(--white);
+        }
+
+        .project-desc {
+            font-weight: 300;
+            color: var(--white-dim);
+        }
+
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-family: 'Space Mono', monospace;
+            font-size: 0.8rem;
+            padding: 0.4rem 0.8rem;
+            border-radius: 2px;
+        }
+
+        .status-progress {
+            background: rgba(157, 141, 241, 0.2);
+            color: var(--purple-muted);
+        }
+
+        .status-prototype {
+            background: rgba(0, 255, 255, 0.15);
+            color: var(--cyan-glow);
+        }
+
+        .status-concept {
+            background: rgba(255, 255, 255, 0.1);
+            color: var(--white-dim);
+        }
+
+        .experiments-cta {
+            text-align: center;
+            margin-top: 2.5rem;
+        }
+
+        .experiments-cta a {
+            font-family: 'Space Mono', monospace;
+            font-size: 0.9rem;
+            color: var(--cyan-glow);
+            text-decoration: none;
+            transition: all 0.3s ease;
+        }
+
+        .experiments-cta a:hover {
+            text-shadow: 0 0 10px var(--cyan-glow);
+        }
+
+        /* Join Section */
+        .join {
+            max-width: 900px;
+            margin: 0 auto;
+            text-align: center;
+        }
+
+        .join h2 {
+            font-family: 'Oxanium', sans-serif;
+            font-weight: 500;
+            font-size: 2.5rem;
+            letter-spacing: 0.1em;
+            margin-bottom: 1.5rem;
+        }
+
+        .join p {
+            font-weight: 300;
+            font-size: 1.1rem;
+            line-height: 1.8;
+            color: var(--white-dim);
+            margin-bottom: 3rem;
+        }
+
+        .join-cta {
+            display: flex;
+            gap: 1rem;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        /* Coming Soon Banner */
+        .coming-soon-banner {
+            position: fixed;
+            top: 50%;
+            right: -120px;
+            transform: rotate(-90deg) translateX(50%);
+            z-index: 50;
+            background: linear-gradient(90deg, var(--purple-deep), var(--cyan-dim));
+            padding: 0.6rem 3rem;
+            font-family: 'Space Mono', monospace;
+            font-size: 0.75rem;
+            letter-spacing: 0.2em;
+            text-transform: uppercase;
+            color: var(--bg-deep);
+            font-weight: 700;
+            box-shadow: 0 0 30px rgba(157, 141, 241, 0.3);
+        }
+
+        /* Footer */
+        footer {
+            padding: 4rem;
+            text-align: center;
+            position: relative;
+            background: linear-gradient(to top, rgba(5, 8, 16, 1) 0%, transparent 100%);
+        }
+
+        .footer-constellation {
+            position: absolute;
+            top: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 400px;
+            height: 100px;
+            opacity: 0.15;
+        }
+
+        .footer-logo {
+            font-family: 'Oxanium', sans-serif;
+            font-weight: 600;
+            font-size: 1.1rem;
+            letter-spacing: 0.15em;
+            color: var(--cyan-glow);
+            margin-bottom: 0.5rem;
+        }
+
+        .footer-tagline {
+            font-family: 'Space Mono', monospace;
+            font-size: 0.8rem;
+            color: var(--white-faint);
+            margin-bottom: 2rem;
+        }
+
+        .footer-links {
+            display: flex;
+            justify-content: center;
+            gap: 2rem;
+            margin-bottom: 2rem;
+        }
+
+        .footer-links a {
+            font-size: 0.85rem;
+            color: var(--white-dim);
+            text-decoration: none;
+            transition: color 0.3s ease;
+        }
+
+        .footer-links a:hover {
+            color: var(--cyan-glow);
+        }
+
+        .footer-copyright {
+            font-size: 0.75rem;
+            color: var(--white-faint);
+            letter-spacing: 0.05em;
+        }
+
+        /* Responsive */
+        @media (max-width: 1024px) {
+            section {
+                padding: 6rem 2rem;
+            }
+
+            .about {
+                grid-template-columns: 1fr;
+                gap: 4rem;
+            }
+
+            .about-visual {
+                order: -1;
+                height: 300px;
+            }
+
+            nav {
+                padding: 1rem 2rem;
+            }
+
+            .nav-links {
+                display: none;
+            }
+        }
+
+        @media (max-width: 768px) {
+            .hero-logo {
+                letter-spacing: 0.15em;
+            }
+
+            .hero-cta {
+                flex-direction: column;
+                align-items: center;
+            }
+
+            .btn {
+                width: 100%;
+                max-width: 280px;
+                text-align: center;
+            }
+
+            .experiments-table {
+                font-size: 0.9rem;
+            }
+
+            .experiments-table th,
+            .experiments-table td {
+                padding: 1rem;
+            }
+
+            .coming-soon-banner {
+                position: relative;
+                right: auto;
+                top: auto;
+                transform: none;
+                margin: 2rem auto;
+                display: inline-block;
+            }
+        }
+
+        /* Constellation SVG Animation */
+        .constellation-line {
+            stroke: var(--cyan-glow);
+            stroke-width: 0.5;
+            opacity: 0.3;
+            stroke-dasharray: 5, 5;
+            animation: dash 20s linear infinite;
+        }
+
+        @keyframes dash {
+            to { stroke-dashoffset: -100; }
+        }
+
+        .constellation-node {
+            fill: var(--cyan-glow);
+            filter: url(#glow);
+        }
+    </style>
+</head>
+<body>
+    <canvas id="starfield"></canvas>
+    <div class="nebula-overlay"></div>
+
+    <div class="coming-soon-banner">Coming Soon</div>
+
+    <nav>
+        <div class="nav-logo">ASTRA LABS</div>
+        <ul class="nav-links">
+            <li><a href="#about">About</a></li>
+            <li><a href="#ecosystem">Ecosystem</a></li>
+            <li><a href="#experiments">Experiments</a></li>
+            <li><a href="#join">Connect</a></li>
+        </ul>
+    </nav>
+
+    <main>
+        <!-- Hero Section -->
+        <section class="hero">
+            <svg class="hero-constellation" viewBox="0 0 200 200">
+                <defs>
+                    <filter id="glow">
+                        <feGaussianBlur stdDeviation="2" result="coloredBlur"/>
+                        <feMerge>
+                            <feMergeNode in="coloredBlur"/>
+                            <feMergeNode in="SourceGraphic"/>
+                        </feMerge>
+                    </filter>
+                </defs>
+                <line class="constellation-line" x1="50" y1="30" x2="100" y2="50"/>
+                <line class="constellation-line" x1="100" y1="50" x2="150" y2="40"/>
+                <line class="constellation-line" x1="100" y1="50" x2="80" y2="100"/>
+                <line class="constellation-line" x1="80" y1="100" x2="120" y2="120"/>
+                <line class="constellation-line" x1="120" y1="120" x2="150" y2="100"/>
+                <line class="constellation-line" x1="80" y1="100" x2="40" y2="130"/>
+                <line class="constellation-line" x1="120" y1="120" x2="100" y2="170"/>
+                <circle class="constellation-node" cx="50" cy="30" r="3"/>
+                <circle class="constellation-node" cx="100" cy="50" r="4"/>
+                <circle class="constellation-node" cx="150" cy="40" r="2.5"/>
+                <circle class="constellation-node" cx="80" cy="100" r="3.5"/>
+                <circle class="constellation-node" cx="120" cy="120" r="3"/>
+                <circle class="constellation-node" cx="150" cy="100" r="2"/>
+                <circle class="constellation-node" cx="40" cy="130" r="2.5"/>
+                <circle class="constellation-node" cx="100" cy="170" r="3"/>
+            </svg>
+
+            <h1 class="hero-logo">ASTRA LABS</h1>
+            <p class="hero-tagline">Exploring the frontier of Agentic Intelligence.</p>
+            <p class="hero-subline">Where AI systems learn, connect, and evolve.</p>
+
+            <div class="hero-cta">
+                <a href="#ecosystem" class="btn btn-primary">Explore Our Tools</a>
+                <a href="#philosophy" class="btn btn-secondary">Read the Manifesto</a>
+            </div>
+
+            <div class="scroll-indicator">
+                <span>Scroll</span>
+                <div class="scroll-line"></div>
+            </div>
+        </section>
+
+        <div class="section-divider"></div>
+
+        <!-- About Section -->
+        <section id="about">
+            <div class="about">
+                <div class="about-visual">
+                    <div class="neural-sphere">
+                        <div class="sphere-core"></div>
+                    </div>
+                </div>
+                <div class="about-content">
+                    <h2>What is Astra Labs?</h2>
+                    <p>
+                        Astra Labs (labs.ax) is a research & development hub focused on building
+                        autonomous, interconnected systems. From legal reasoning to multi-agent
+                        orchestration, we prototype the infrastructure behind the next era of
+                        intelligent software.
+                    </p>
+                    <ul class="feature-list">
+                        <li>Agentic infrastructure</li>
+                        <li>Multi-model experimentation</li>
+                        <li>Research-driven engineering</li>
+                        <li>Open innovation via the AstraX ecosystem</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <div class="section-divider"></div>
+
+        <!-- Ecosystem Section -->
+        <section id="ecosystem">
+            <div class="ecosystem">
+                <h2>The Astra Ecosystem</h2>
+                <p class="ecosystem-subtitle">One constellation, many stars.</p>
+
+                <div class="ecosystem-grid">
+                    <div class="ecosystem-card">
+                        <div class="card-icon">⚡</div>
+                        <h3>AgentX</h3>
+                        <p>A modular agent framework for research and automation. Build, test, and deploy intelligent agents at scale.</p>
+                    </div>
+
+                    <div class="ecosystem-card">
+                        <div class="card-icon">📜</div>
+                        <h3>ContractBuddy</h3>
+                        <p>AI-powered contract intelligence for legal teams. Extract, analyze, and reconcile complex agreements.</p>
+                    </div>
+
+                    <div class="ecosystem-card">
+                        <div class="card-icon">🎯</div>
+                        <h3>NED Advisor</h3>
+                        <p>Smart matching for Non-Executive Directors and boards. Find the perfect fit for governance roles.</p>
+                    </div>
+
+                    <div class="ecosystem-card">
+                        <div class="card-icon">🔬</div>
+                        <h3>p4blo.dev</h3>
+                        <p>The open lab notebook — experiments, thoughts, and builds. A window into the research process.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <div class="section-divider"></div>
+
+        <!-- Philosophy Section -->
+        <section id="philosophy" class="philosophy">
+            <div class="orbit-container">
+                <div class="orbit orbit-1"><div class="orbit-dot"></div></div>
+                <div class="orbit orbit-2"><div class="orbit-dot"></div></div>
+                <div class="orbit orbit-3"><div class="orbit-dot"></div></div>
+            </div>
+
+            <div class="quote-block">
+                <blockquote>"Intelligence isn't built — it's cultivated."</blockquote>
+                <cite>— Astra Labs Manifesto</cite>
+            </div>
+
+            <p class="philosophy-text">
+                We believe in transparency, modularity, and open experimentation. Every agent,
+                model, and dataset in Astra Labs exists to teach, connect, and improve the next.
+                The future of AI isn't a single breakthrough — it's an ecosystem evolving together.
+            </p>
+        </section>
+
+        <div class="section-divider"></div>
+
+        <!-- Experiments Section -->
+        <section id="experiments">
+            <div class="experiments">
+                <h2>Current Missions</h2>
+
+                <table class="experiments-table">
+                    <thead>
+                        <tr>
+                            <th>Project</th>
+                            <th>Description</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td class="project-name">nano-ContractBuddy</td>
+                            <td class="project-desc">Training micro LLMs on contract snippets locally.</td>
+                            <td><span class="status-badge status-progress">🧩 In Progress</span></td>
+                        </tr>
+                        <tr>
+                            <td class="project-name">AgentX-CLI</td>
+                            <td class="project-desc">Command-line orchestrator for autonomous agents.</td>
+                            <td><span class="status-badge status-prototype">⚙️ Prototype</span></td>
+                        </tr>
+                        <tr>
+                            <td class="project-name">Astra Archive</td>
+                            <td class="project-desc">Semantic search over all lab experiments.</td>
+                            <td><span class="status-badge status-concept">🌌 Concept</span></td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="experiments-cta">
+                    <a href="/experiments">View all experiments →</a>
+                </div>
+            </div>
+        </section>
+
+        <div class="section-divider"></div>
+
+        <!-- Join Section -->
+        <section id="join">
+            <div class="join">
+                <h2>Join the Exploration</h2>
+                <p>
+                    Astra Labs is where builders, researchers, and dreamers connect.
+                    Whether you're an engineer, lawyer, or data scientist — there's a star for you here.
+                </p>
+                <div class="join-cta">
+                    <a href="https://www.linkedin.com/in/p4blo/" target="_blank" rel="noopener noreferrer" class="btn btn-secondary">💬 Connect on LinkedIn</a>
+                    <a href="#" class="btn btn-secondary">🧩 Contribute a Tool</a>
+                    <a href="#" class="btn btn-primary">📧 Get Updates</a>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <svg class="footer-constellation" viewBox="0 0 400 100">
+            <line class="constellation-line" x1="50" y1="60" x2="120" y2="40"/>
+            <line class="constellation-line" x1="120" y1="40" x2="200" y2="50"/>
+            <line class="constellation-line" x1="200" y1="50" x2="280" y2="35"/>
+            <line class="constellation-line" x1="280" y1="35" x2="350" y2="55"/>
+            <circle class="constellation-node" cx="50" cy="60" r="2"/>
+            <circle class="constellation-node" cx="120" cy="40" r="2.5"/>
+            <circle class="constellation-node" cx="200" cy="50" r="3"/>
+            <circle class="constellation-node" cx="280" cy="35" r="2"/>
+            <circle class="constellation-node" cx="350" cy="55" r="2.5"/>
+        </svg>
+
+        <div class="footer-logo">ASTRA LABS — labs.ax</div>
+        <p class="footer-tagline">Exploring the agentic frontier.</p>
+
+        <div class="footer-links">
+            <a href="#">Twitter</a>
+            <a href="#">GitHub</a>
+            <a href="#">Blog</a>
+            <a href="#">Manifesto</a>
+        </div>
+
+        <p class="footer-copyright">© 2025 AstraX / p4blo.dev</p>
+    </footer>
+
+    <script>
+        // Starfield Animation
+        const canvas = document.getElementById('starfield');
+        const ctx = canvas.getContext('2d');
+        let stars = [];
+        let shootingStars = [];
+
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            initStars();
+        }
+
+        function initStars() {
+            stars = [];
+            const numStars = Math.floor((canvas.width * canvas.height) / 3000);
+
+            for (let i = 0; i < numStars; i++) {
+                stars.push({
+                    x: Math.random() * canvas.width,
+                    y: Math.random() * canvas.height,
+                    radius: Math.random() * 1.5 + 0.5,
+                    opacity: Math.random() * 0.8 + 0.2,
+                    twinkleSpeed: Math.random() * 0.02 + 0.005,
+                    twinkleOffset: Math.random() * Math.PI * 2
+                });
+            }
+        }
+
+        function createShootingStar() {
+            if (Math.random() < 0.002 && shootingStars.length < 2) {
+                shootingStars.push({
+                    x: Math.random() * canvas.width,
+                    y: Math.random() * canvas.height * 0.5,
+                    length: Math.random() * 80 + 40,
+                    speed: Math.random() * 8 + 6,
+                    angle: Math.PI / 4 + (Math.random() - 0.5) * 0.3,
+                    opacity: 1
+                });
+            }
+        }
+
+        function updateShootingStars() {
+            for (let i = shootingStars.length - 1; i >= 0; i--) {
+                const star = shootingStars[i];
+                star.x += Math.cos(star.angle) * star.speed;
+                star.y += Math.sin(star.angle) * star.speed;
+                star.opacity -= 0.015;
+
+                if (star.opacity <= 0 || star.x > canvas.width || star.y > canvas.height) {
+                    shootingStars.splice(i, 1);
+                }
+            }
+        }
+
+        function draw(time) {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Draw stars
+            stars.forEach(star => {
+                const twinkle = Math.sin(time * star.twinkleSpeed + star.twinkleOffset);
+                const currentOpacity = star.opacity * (0.6 + 0.4 * twinkle);
+
+                ctx.beginPath();
+                ctx.arc(star.x, star.y, star.radius, 0, Math.PI * 2);
+                ctx.fillStyle = `rgba(255, 255, 255, ${currentOpacity})`;
+                ctx.fill();
+
+                // Glow effect for brighter stars
+                if (star.radius > 1) {
+                    ctx.beginPath();
+                    ctx.arc(star.x, star.y, star.radius * 2, 0, Math.PI * 2);
+                    ctx.fillStyle = `rgba(0, 255, 255, ${currentOpacity * 0.1})`;
+                    ctx.fill();
+                }
+            });
+
+            // Create and update shooting stars
+            createShootingStar();
+            updateShootingStars();
+
+            // Draw shooting stars
+            shootingStars.forEach(star => {
+                const gradient = ctx.createLinearGradient(
+                    star.x, star.y,
+                    star.x - Math.cos(star.angle) * star.length,
+                    star.y - Math.sin(star.angle) * star.length
+                );
+                gradient.addColorStop(0, `rgba(255, 255, 255, ${star.opacity})`);
+                gradient.addColorStop(0.3, `rgba(0, 255, 255, ${star.opacity * 0.5})`);
+                gradient.addColorStop(1, 'rgba(0, 255, 255, 0)');
+
+                ctx.beginPath();
+                ctx.moveTo(star.x, star.y);
+                ctx.lineTo(
+                    star.x - Math.cos(star.angle) * star.length,
+                    star.y - Math.sin(star.angle) * star.length
+                );
+                ctx.strokeStyle = gradient;
+                ctx.lineWidth = 2;
+                ctx.stroke();
+
+                // Head glow
+                ctx.beginPath();
+                ctx.arc(star.x, star.y, 3, 0, Math.PI * 2);
+                ctx.fillStyle = `rgba(255, 255, 255, ${star.opacity})`;
+                ctx.fill();
+            });
+
+            requestAnimationFrame(draw);
+        }
+
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+        requestAnimationFrame(draw);
+
+        // Smooth scroll for navigation
+        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+            anchor.addEventListener('click', function(e) {
+                e.preventDefault();
+                const target = document.querySelector(this.getAttribute('href'));
+                if (target) {
+                    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }
+            });
+        });
+
+        // Parallax effect on scroll
+        window.addEventListener('scroll', () => {
+            const scrolled = window.pageYOffset;
+            const hero = document.querySelector('.hero-constellation');
+            if (hero) {
+                hero.style.transform = `rotate(${scrolled * 0.02}deg)`;
+            }
+        });
+
+        // Intersection Observer for fade-in animations
+        const observerOptions = {
+            threshold: 0.1,
+            rootMargin: '0px 0px -50px 0px'
+        };
+
+        const observer = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    entry.target.style.opacity = '1';
+                    entry.target.style.transform = 'translateY(0)';
+                }
+            });
+        }, observerOptions);
+
+        document.querySelectorAll('.ecosystem-card, .about-content, .about-visual, .quote-block, .experiments-table').forEach(el => {
+            el.style.opacity = '0';
+            el.style.transform = 'translateY(30px)';
+            el.style.transition = 'opacity 0.8s ease, transform 0.8s ease';
+            observer.observe(el);
+        });
+
+        // Staggered animation for ecosystem cards
+        document.querySelectorAll('.ecosystem-card').forEach((card, index) => {
+            card.style.transitionDelay = `${index * 0.1}s`;
+        });
+    </script>
+</body>
+</html>
