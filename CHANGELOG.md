@@ -8,6 +8,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Match Explanation Feature for LCL Sandbox** - AI-powered explanations for why clauses match at a given similarity percentage
+  - Flip card animation on resolved match - click info icon to flip card and see explanation
+  - Popover explanation for "Other Matches" list items
+  - Lazy-load API call to keep initial matching fast
+  - Uses Gemini 2.5 Flash to analyze semantic similarity between clauses
+  - Explanation includes: summary, key overlap concepts, key differences, threshold context, semantic analysis
+  - Caches explanations to avoid redundant API calls
+  - Files: `lib/sandbox-v2/explanation-service.ts`, `app/api/sandbox-v2/match/explain/route.ts`, `components/sandbox/match-flip-card.tsx`
+  - Types: `MatchExplanation`, `ExplainMatchRequest` in `lib/sandbox-v2/types.ts`
+
+### Changed
+- **Contract Buddy LCL Sandbox - Unified Workbench with V2 Schema** - Merged sandbox v1 and v2 into a single unified interface at `/sandbox` that feels like v1 but uses v2's proper two-table architecture:
+  - **V2 schema under the hood**: Uses `sandbox_v2.lcl` (clause types) + `sandbox_v2.lcstx` (variants) instead of single v1 table
+  - **Clause types**: Select from existing types or create new ones inline (Code, Category, Name fields appear when "Create New Type" selected)
+  - **"Highest risk wins" matching**: Uses `find_similar_with_risk_resolution()` RPC - resolved match shows highest risk, not just highest similarity
+  - **Flat table display**: Variants shown in simple table format, not accordion/tree view
+  - **Simple add dialog**: Select clause type from dropdown, fill variant details (code auto-generates as TYPE-001, TYPE-002, etc.)
+  - **Optional PAT context**: Hidden checkbox expands to show Pre-Agreed Terms fields for comparison
+  - **Live matching**: Auto-runs v2 similarity search as you type (500ms debounce)
+  - **Results panel**: Shows "Resolved Match" prominently with risk badge, collapsible "Other Matches" section
+  - **Type/Risk filtering**: Filter table by clause type and risk level (low/medium/high)
+  - **Threshold reference bar**: Shows GREEN (≥75%)/AMBER (≥60%)/RED (<60%) plus risk resolution info
+  - Files: `app/sandbox/page.tsx`, APIs: `/api/sandbox-v2/lcl`, `/api/sandbox-v2/lcstx`, `/api/sandbox-v2/match`
+
+### Added
+- **Sandbox V2 - Three-Tier Clause Architecture** - New sandbox environment implementing PMS recommendations for clause matching architecture
+  - **Two-table MVP schema** (`sandbox_v2.lcl` + `sandbox_v2.lcstx`) - Concepts (Tier 1) + Meanings/Patterns (Tier 2)
+  - **"Highest risk wins" logic** - Risk-based resolution across multiple matches (high > medium > low, then similarity)
+  - **PAT override hierarchy** - Surfaces BOTH pre-agreed mismatch AND market-risk (either RED → RED)
+  - **HITL queue before auto-discovery** - Escalates uncertain matches (new_pattern, low_confidence, variant_candidate, pat_conflict)
+  - Database migration: `supabase/migrations/20260127000001_create_sandbox_v2_schema.sql`
+  - Tables: `sandbox_v2.lcl`, `sandbox_v2.lcstx`, `sandbox_v2.match_results`, `sandbox_v2.pattern_review_queue`, `sandbox_v2.test_cases`
+  - RPC functions: `sandbox_v2.find_similar_with_risk_resolution()`, `sandbox_v2.get_sandbox_stats()`
+  - Matching service: `lib/sandbox-v2/matching-service.ts` - Embedding generation, risk resolution, PAT comparison, escalation logic
+  - Types and thresholds: `lib/sandbox-v2/types.ts`, `lib/sandbox-v2/thresholds.ts`
+  - API routes: `/api/sandbox-v2/lcl`, `/api/sandbox-v2/lcstx`, `/api/sandbox-v2/lcstx/[variantCode]`, `/api/sandbox-v2/match`, `/api/sandbox-v2/review`, `/api/sandbox-v2/test`, `/api/sandbox-v2/stats`
+  - UI pages: Dashboard (`/sandbox-v2`), LCL Browser (`/sandbox-v2/lcl`), LCSTX Editor (`/sandbox-v2/lcstx`), Match Tester (`/sandbox-v2/matching`), Review Queue (`/sandbox-v2/review`), Test Runner (`/sandbox-v2/test`)
+  - Seed script: `scripts/seed-sandbox-v2.ts` - Creates 7 LCL concepts, 15 LCSTX variants (PAY, EXC, IP, DEL, TRM, CNF, FTC), 10 test cases
+  - Similarity thresholds: GREEN (>=0.75), AMBER (0.60-0.75), RED (<0.60), LOW_CONFIDENCE (<0.70), PATTERN_CANDIDATE (>=0.85)
+
+- **Contract Buddy LCL Sandbox Environment** - Isolated sandbox for testing LCL clause matching via embeddings with synthetic data
+  - Database migration for sandbox schema (`supabase/migrations/20260122000001_create_sandbox_schema.sql`)
+  - Tables: `sandbox.legal_clause_library`, `sandbox.clause_match_results`, `sandbox.admin_review_queue`, `sandbox.test_cases`, `sandbox.test_runs`
+  - RPC functions: `sandbox.find_similar_clauses()`, `sandbox.record_match_result()`, `sandbox.add_to_review_queue()`
+  - Embedding service (`lib/sandbox/embedding-service.ts`) - OpenAI text-embedding-3-large integration
+  - Matching service (`lib/sandbox/matching-service.ts`) - Vector similarity search with escalation logic
+  - API routes: `/api/sandbox/lcl` (CRUD), `/api/sandbox/match` (similarity search), `/api/sandbox/escalation` (review queue), `/api/sandbox/test` (test runner), `/api/sandbox/stats` (dashboard stats)
+  - Seed script (`scripts/seed-sandbox.ts`) - Creates 39 synthetic LCL clauses and 15 test cases
+  - UI pages: dashboard (`/sandbox`), LCL browser (`/sandbox/lcl`), match tester (`/sandbox/matching`), escalation queue (`/sandbox/escalation`), test runner (`/sandbox/test`)
+  - Similarity thresholds: auto_merge (>=0.92), review_required (0.85-0.92), similar (>=0.75), partial (>=0.60), unique (<0.60)
+
 - **Interactive PDF clause actions with redline support** - Users can now approve/reject clauses and manage redlines directly from the PDF view:
   - Click any highlighted clause in PDF → popover appears with Approve/Reject/Comment buttons
   - Actions sync immediately with clause cards and update highlight colors
